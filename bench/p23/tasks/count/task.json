@@ -1,0 +1,1 @@
+{"name": "count", "prompt": "The file count/notes.txt exists. Write count/count.py that prints the number of whitespace-separated words in count/notes.txt. Run it, then write only that number into count/answer.txt.", "check": ["python3", "check.py"]}

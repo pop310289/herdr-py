@@ -1,0 +1,1 @@
+{"name": "top3", "prompt": "Write top3.py that prints the three most frequent words in text.txt, one per line in the form `word count`. Words are case-insensitive (print them in lower case) and consist of letters only: ignore punctuation and digits. Break ties alphabetically.", "check": ["python3", "check.py"]}

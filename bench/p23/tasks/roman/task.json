@@ -1,0 +1,1 @@
+{"name": "roman", "prompt": "Create roman.py with a function to_roman(n) that returns the Roman numeral for an integer 1 <= n <= 3999 (for example 4 -> 'IV', 1994 -> 'MCMXCIV'), and raises ValueError for anything else: 0, numbers above 3999, negative numbers, and values that are not integers.", "check": ["python3", "check.py"]}

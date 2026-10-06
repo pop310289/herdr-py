@@ -1,0 +1,16 @@
+{
+  "default": "deny",
+  "rule": [
+    {"agent": "exec*", "permission": "edit", "action": "allow"},
+    {"agent": "exec*", "permission": "bash", "action": "allow",
+     "match": "(python3 [\\w./-]+\\.py( [\\w./-]+)*( > [\\w./-]+)?|python3 -m unittest( [\\w./-]+)*|ls( -\\w+)*( [\\w./-]+)*|cat [\\w./-]+( [\\w./-]+)*|wc( -\\w+)* [\\w./-]+|mkdir -p [\\w./-]+)"},
+    {"agent": "ver", "permission": "bash", "action": "allow",
+     "match": "(python3 [\\w./-]+\\.py( [\\w./-]+)*|python3 -m unittest( [\\w./-]+)*|ls( -\\w+)*( [\\w./-]+)*|cat [\\w./-]+( [\\w./-]+)*|wc( -\\w+)* [\\w./-]+)"},
+    {"agent": "val", "permission": "bash", "action": "allow",
+     "match": "(python3 [\\w./-]+\\.py( [\\w./-]+)*|ls( -\\w+)*( [\\w./-]+)*|cat [\\w./-]+( [\\w./-]+)*|wc( -\\w+)* [\\w./-]+)"},
+    {"permission": "edit", "action": "deny", "message": "Only the executor may edit files. Report what should change instead."},
+    {"permission": "external_directory", "action": "deny", "message": "Stay inside the project folder."},
+    {"permission": "doom_loop", "action": "deny", "message": "You are repeating the same call. Stop and try a different approach."},
+    {"permission": "bash", "action": "deny", "message": "Not allowed: only python3 FILE.py, python3 -m unittest, ls, cat, wc and mkdir -p, without shell operators."}
+  ]
+}

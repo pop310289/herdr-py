@@ -1,0 +1,64 @@
+:root {
+  color-scheme: dark;
+  --bg: #121418; --panel: #1b1e24; --line: #2c313a; --text: #e3e6eb; --muted: #9aa3ae;
+  --accent: #3b74c4; --ok: #3f9c5a; --warn: #c79a2e; --bad: #d0505c; --chip-text: #101214;
+  --radius: 12px; --gap: 12px; --tap: 44px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC", "Noto Sans CJK TC", sans-serif;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --bg: #f5f6f8; --panel: #ffffff; --line: #dde1e6; --text: #15181d; --muted: #5d6673;
+    --accent: #2f63ad; --ok: #2f8048; --warn: #9a7414; --bad: #b8323f; --chip-text: #ffffff;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font-size: 16px; line-height: 1.45; -webkit-text-size-adjust: 100%; }
+.bar { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between;
+  gap: var(--gap); padding: 12px 16px; padding-top: max(12px, env(safe-area-inset-top));
+  background: var(--panel); border-bottom: 1px solid var(--line); }
+.bar h1 { margin: 0; font-size: 18px; }
+.conn { font-size: 13px; color: var(--muted); }
+.conn.ok::before, .conn.bad::before { content: "●"; margin-right: 6px; }
+.conn.ok::before { color: var(--ok); }
+.conn.bad::before { color: var(--bad); }
+main { max-width: 760px; margin: 0 auto; padding: 8px 16px 48px; }
+h2 { font-size: 15px; color: var(--muted); margin: 18px 0 8px; text-transform: uppercase; letter-spacing: .04em; }
+.count { display: inline-block; min-width: 22px; padding: 0 6px; border-radius: 11px; background: var(--bad); color: #fff;
+  text-align: center; font-size: 13px; }
+ul { list-style: none; margin: 0; padding: 0; }
+.needs-list li, .agent { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 12px; margin-bottom: var(--gap); }
+.needs-list li { border-color: var(--bad); }
+.needs-list p { margin: 6px 0 10px; overflow-wrap: anywhere; font-family: ui-monospace, Menlo, monospace; font-size: 14px; }
+.head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.name { font-size: 17px; }
+.chip { padding: 2px 10px; border-radius: 999px; font-size: 13px; font-weight: 600; background: var(--muted); color: var(--chip-text); }
+.chip[data-state="working"], .chip[data-state="starting"], .chip[data-state="retry"] { background: var(--warn); }
+.chip[data-state="blocked"], .chip[data-state="error"] { background: var(--bad); color: #fff; }
+.chip[data-state="idle"] { background: var(--ok); color: #fff; }
+.meta { font-size: 13px; }
+.muted { color: var(--muted); }
+.activity { margin: 8px 0 0; font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
+.activity li { overflow-wrap: anywhere; padding: 2px 0; border-top: 1px dashed var(--line); }
+.activity li[data-tone="ok"] { color: var(--ok); }
+.activity li[data-tone="bad"], .activity li[data-tone="warn"] { color: var(--bad); }
+.activity li[data-tone="dim"] { color: var(--muted); }
+.stream { margin: 8px 0 0; font-size: 13px; overflow-wrap: anywhere; max-height: 4.5em; overflow: hidden; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+button { min-height: var(--tap); padding: 0 16px; border-radius: 10px; border: 1px solid var(--line); background: transparent;
+  color: var(--text); font: inherit; font-size: 15px; cursor: pointer; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { border-color: var(--bad); color: var(--bad); }
+button:disabled { opacity: .45; cursor: default; }
+.prompt-form, #new-agent { display: grid; gap: 8px; margin-top: 10px; }
+label { display: grid; gap: 4px; font-size: 14px; color: var(--muted); }
+input, textarea { width: 100%; min-height: var(--tap); padding: 10px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--bg); color: var(--text); font: inherit; font-size: 16px; }
+details.new { margin-top: 18px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; }
+details.new summary { cursor: pointer; min-height: 28px; font-weight: 600; }
+.toast { position: fixed; left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); margin: 0 auto; max-width: 520px;
+  text-align: center; pointer-events: none; color: var(--text); }
+.toast:not(:empty) { padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+code { font-family: ui-monospace, Menlo, monospace; }

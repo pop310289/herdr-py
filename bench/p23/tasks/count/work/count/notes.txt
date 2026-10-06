@@ -1,0 +1,5 @@
+The supervisor checks the work after every stop, and the  executor
+keeps notes so another session can continue.  Words are separated
+by whitespace only; punctuation stays attached, like this: done.
+
+End.

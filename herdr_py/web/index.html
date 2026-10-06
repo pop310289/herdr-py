@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>herdr-py</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="bar">
+  <h1>herdr-py</h1>
+  <span id="conn" class="conn" aria-live="polite">connecting…</span>
+</header>
+<main>
+  <section id="needs" class="needs" hidden>
+    <h2>Needs you <span id="needs-count" class="count"></span></h2>
+    <ul id="needs-list" class="needs-list"></ul>
+  </section>
+  <section>
+    <h2>Agents</h2>
+    <p id="empty" class="muted" hidden>No agents yet. Start one below or with <code>herdr-py start</code>.</p>
+    <ul id="agents" class="agents"></ul>
+  </section>
+  <details class="new">
+    <summary>Start an agent</summary>
+    <form id="new-agent">
+      <label>Name <input name="name" required pattern="[A-Za-z0-9_.-]{1,40}" autocomplete="off"></label>
+      <label>Prompt <textarea name="prompt" rows="3" required></textarea></label>
+      <label>Time budget (seconds, optional) <input name="budget_s" type="number" min="1" inputmode="numeric"></label>
+      <label>Follow-ups (one per line, optional) <textarea name="followups" rows="2"></textarea></label>
+      <button type="submit" class="primary">Start</button>
+    </form>
+  </details>
+  <p id="toast" class="toast" role="status" aria-live="polite"></p>
+</main>
+<template id="agent-tpl">
+  <li class="agent">
+    <div class="head"><strong class="name"></strong><span class="chip"></span><span class="meta muted"></span></div>
+    <ul class="activity"></ul>
+    <p class="stream muted"></p>
+    <div class="actions">
+      <button type="button" class="act-prompt">Prompt</button>
+      <button type="button" class="act-abort danger">Abort</button>
+    </div>
+    <form class="prompt-form" hidden>
+      <textarea rows="2" required placeholder="Tell the agent what to do next"></textarea>
+      <button type="submit" class="primary">Send</button>
+    </form>
+  </li>
+</template>
+<script src="app.js"></script>
+</body>
+</html>

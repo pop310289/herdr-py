@@ -1,0 +1,1 @@
+{"name": "median", "prompt": "stats.py has bugs. Fix them so that `python3 -m unittest test_stats` passes, without changing test_stats.py. Also make mean() and median() raise ValueError when the list is empty.", "check": ["python3", "check.py"]}
