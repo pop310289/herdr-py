@@ -48,5 +48,39 @@ class BuildTest(unittest.TestCase):
         self.assertIn("did not finish", text)
 
 
+class FindingsTest(unittest.TestCase):
+    DECK = {"slides": [{"elements": [{"id": "title"}, {"id": "credit"}]}]}
+
+    def test_names_the_element_and_splits_by_severity(self):  # the format `open_slide_py validate` printed on 2026-10-07
+        out = json.dumps([{"severity": "warning", "code": "low_contrast", "path": "$.slides[0].elements[1]", "message": "contrast 3.6:1"},
+                          {"severity": "error", "code": "geometry", "path": "$.slides[0].elements[0].width", "message": "positive dimensions"}])
+        self.assertEqual(slide_team.findings(out, self.DECK),
+                         (["geometry at title.width: positive dimensions"], ["low_contrast at credit: contrast 3.6:1"]))
+
+    def test_an_index_that_is_not_in_the_deck_keeps_the_path(self):
+        out = json.dumps([{"severity": "warning", "code": "text_overlap", "path": "$.slides[0].elements[7]", "message": "m"}])
+        self.assertEqual(slide_team.findings(out, self.DECK), ([], ["text_overlap at $.slides[0].elements[7]: m"]))
+
+    def test_output_that_is_not_a_list_of_findings_gives_none(self):
+        self.assertIsNone(slide_team.findings("Traceback (most recent call last):", self.DECK))
+        self.assertIsNone(slide_team.findings('{"severity": "error"}', self.DECK))
+        self.assertIsNone(slide_team.findings('["error"]', self.DECK))
+
+
+class NudgeTest(unittest.TestCase):
+    def test_a_drawer_that_stopped_without_changing_the_file_is_sent_back(self):
+        self.assertEqual(slide_team.nudge_reason("idle", False, True, "make_deck.py ran"), "make_deck.py is unchanged")
+
+    def test_a_drawer_whose_program_fails_gets_the_error(self):
+        self.assertEqual(slide_team.nudge_reason("idle", True, False, "make_deck.py stopped with an error: x"),
+                         "make_deck.py stopped with an error: x")
+
+    def test_finished_work_is_not_nudged(self):
+        self.assertIsNone(slide_team.nudge_reason("idle", True, True, "make_deck.py ran"))
+
+    def test_a_drawer_stopped_at_the_time_limit_is_not_nudged(self):
+        self.assertIsNone(slide_team.nudge_reason("aborted", False, False, "x"))
+
+
 if __name__ == "__main__":
     unittest.main()

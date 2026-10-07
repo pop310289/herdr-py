@@ -7,12 +7,14 @@ Agents (herdr-py, one OpenCode server):
   art            vision model; looks at the original picture and our render, answers SCORE n/10 and FIX lines.
 Program roles (no model): build = run make_deck.py again in the agents' sandbox after every turn (so the checks judge the
 slide the program makes now, never a deck.json an earlier round left behind), lint = `open_slide_py validate`, content =
-required labels present, render = open-slide-py SVG export + headless Chrome screenshot. The supervisor (this program) routes every message and writes chat.jsonl
+required labels present, render = open-slide-py SVG export + headless Chrome screenshot. A drawer that stops on its
+own without changing make_deck.py, or leaves it failing, is sent back with the reason (nudge, --nudges times per round). The supervisor (this program) routes every message and writes chat.jsonl
 (who said what to whom), which the viewer shows and the video is made from.
 
 usage: slide_team.py --socket SOCK --workdir DIR --reference ref.png --open-slide PATH [--rounds 4] [--target 8]
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -24,7 +26,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
-from herdr_py.client import Client, ClientError  # noqa: E402
+from herdr_py.client import Client  # noqa: E402
 
 CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 REQUIRED = ["LLM Serving: When to Split", "Prefill and Decode", "Prefill", "KV cache", "Decode", "Shared worker", "Chunked prefill",
@@ -72,6 +74,10 @@ The art director's last review (score {score}/10):
 Labels still missing: {missing}. Layout checker: {lint}.
 Run python3 make_deck.py and python3 -m open_slide_py validate deck.json yourself with the bash tool and fix any error. Update NOTES.md."""
 BUILD_NOTE = "After your turn the supervisor runs python3 make_deck.py itself: if it stops with an error, this round has no slide."
+NUDGE = """Supervisor: you ended your turn, but {reason}.
+Continue from where you are. Your part this round: {where}
+Rewrite the WHOLE make_deck.py with the write tool (keep what is already there), run python3 make_deck.py and
+python3 -m open_slide_py validate deck.json with the bash tool, and fix any error before you stop."""
 ART = """You are the art director. Image 1 is the original infographic. Ignore the like, comment and share icons and the number 53
 on its right edge: they belong to the phone app, not to the diagram. Image 2 is our slide (round {round}).
 Compare them carefully: the three rows, the GPU and pool boxes, the token boxes, colours, labels, connector lines, alignment, spacing.
@@ -114,6 +120,55 @@ def screenshot(chrome, svg, png, profile, timeout=90):
                 proc.kill()
                 proc.wait()
     return os.path.exists(png) and os.path.getsize(png) > 0
+
+
+def clip(text, n=200):
+    """Keep the head and the tail: an error's last line says what is wrong."""
+    return text if len(text) <= n else text[:60] + " ... " + text[-(n - 65):]
+
+
+def digest(path):
+    try:
+        with open(path, "rb") as handle:
+            return hashlib.sha256(handle.read()).hexdigest()
+    except OSError:
+        return None
+
+
+def findings(stdout, deck=None):
+    """`open_slide_py validate` prints a JSON list of findings; turn it into (errors, warnings) lines that name the element by
+    its id, so a drawer knows what to move. None when the output is not that list (the caller falls back to raw lines)."""
+    try:
+        items = json.loads(stdout)
+    except ValueError:
+        return None
+    if not isinstance(items, list) or not all(isinstance(item, dict) for item in items):
+        return None
+    errors, warnings = [], []
+    for item in items:
+        path = str(item.get("path", ""))
+        where = path
+        found = re.search(r"slides\[(\d+)\]\.elements\[(\d+)\]", path)
+        if found and deck:
+            try:
+                where = deck["slides"][int(found.group(1))]["elements"][int(found.group(2))]["id"] + path[found.end():]
+            except (KeyError, IndexError, TypeError):
+                pass
+        line = f"{item.get('code', '?')} at {where}: {item.get('message', '')}"
+        (errors if item.get("severity") == "error" else warnings).append(line)
+    return errors, warnings
+
+
+def nudge_reason(state, changed, built, build_text):
+    """Why the supervisor sends a drawer back to work, or None. Only a drawer that stopped on its own is nudged: one stopped
+    at the time limit has used its turn."""
+    if state != "idle":
+        return None
+    if not changed:
+        return "make_deck.py is unchanged"
+    if not built:
+        return build_text
+    return None
 
 
 def build(work, argv, timeout=120):
@@ -188,8 +243,16 @@ class Team:
             return False, ["deck.json does not exist (run python3 make_deck.py)"], []
         env = dict(os.environ, PYTHONPATH=self.a.open_slide, PYTHONDONTWRITEBYTECODE="1")
         p = subprocess.run([sys.executable, "-m", "open_slide_py", "validate", deck], cwd=self.work, env=env,
-                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=120)
-        lines = [l.strip() for l in p.stdout.splitlines() if l.strip()]
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, timeout=120)
+        try:
+            with open(deck, encoding="utf-8") as handle:
+                parsed = findings(p.stdout, json.load(handle))
+        except (OSError, ValueError):
+            parsed = findings(p.stdout)
+        if parsed is not None:
+            errors, warnings = parsed
+            return p.returncode == 0, errors or ([f"validate exited with code {p.returncode}"] if p.returncode else []), warnings
+        lines = [l.strip() for l in (p.stdout + p.stderr).splitlines() if l.strip()]  # not the JSON list: pass the raw lines on
         errors = [l for l in lines if "error" in l.lower()] if p.returncode else []
         warnings = [l for l in lines if "warn" in l.lower() or "警告" in l]
         return p.returncode == 0, errors or ([lines[-1]] if p.returncode and lines else []), warnings
@@ -225,6 +288,7 @@ class Team:
         score, fixes, lint_text, missing = 0, [], "", []
         for round_no in range(1, a.rounds + 1):
             drawer = drawers[(round_no - 1) % 2]
+            step = None
             if a.plan == "rows":
                 step = PLAN[min(round_no, len(PLAN)) - 1]
                 prev = "The manager (it set up kit.py and the skeleton)" if round_no == 1 else drawers[round_no % 2]
@@ -243,10 +307,24 @@ class Team:
                                                 f"{len(fixes)} fixes from art, {len(missing)} missing labels")
             if a.build_cmd:
                 prompt += "\n" + BUILD_NOTE
+            before = digest(os.path.join(self.work, "make_deck.py"))
             reply, state = self.run_turn(drawer, prompt, a.draw_model, timeout=a.turn_timeout)
             self.chat(drawer, "supervisor", (reply or f"(no reply; {state})")[-400:])
             built, build_text = self.build()
-            self.chat("build", drawers[round_no % 2], build_text, "check")
+            self.chat("build", "supervisor", build_text, "check")
+            nudges = 0
+            while nudges < a.nudges:  # the drawer stopped on its own without finishing: send it back with the reason
+                reason = nudge_reason(state, digest(os.path.join(self.work, "make_deck.py")) != before, built, build_text)
+                if not reason:
+                    break
+                nudges += 1
+                self.chat("supervisor", drawer, f"nudge: {clip(reason)}; continue from where you are", "control")
+                text = NUDGE.format(reason=reason, where=step or "the art director's fixes and the missing labels in your last instructions")
+                reply, state = self.run_turn(drawer, text + ("\n" + BUILD_NOTE if a.build_cmd else ""), a.draw_model,
+                                             timeout=min(a.turn_timeout, 600))
+                self.chat(drawer, "supervisor", (reply or f"(no reply; {state})")[-400:])
+                built, build_text = self.build()
+                self.chat("build", "supervisor", build_text, "check")
             if built:
                 ok, errors, warnings = self.lint()
                 lint_text = "; ".join(errors + warnings[:5]) if (errors or warnings) else ""
@@ -278,7 +356,7 @@ class Team:
                 lint_text = build_text
                 fixes = [f"FIX: make_deck.py - {build_text}; make it run before anything else"]
                 self.chat("render", "art", "no picture this round: make_deck.py did not run", "check")
-            self.history.append({"round": round_no, "drawer": drawer, "built": built, "score": score, "missing": len(missing), "lint_ok": ok,
+            self.history.append({"round": round_no, "drawer": drawer, "built": built, "nudges": nudges, "score": score, "missing": len(missing), "lint_ok": ok,
                                  "warnings": len(warnings), "fixes": fixes})
             if score >= a.target and not missing and ok:
                 self.chat("supervisor", "team", f"accepted after round {round_no} (score {score:g}/10)", "control")
@@ -303,6 +381,7 @@ def main():
     ap.add_argument("--turn-timeout", type=int, default=900)
     ap.add_argument("--chrome", default=CHROME)
     ap.add_argument("--chat")
+    ap.add_argument("--nudges", type=int, default=1, help="times per round the supervisor sends a drawer that stopped early back to work")
     ap.add_argument("--build-cmd", help="runs make_deck.py where the agents run, e.g. 'docker exec -w /work NAME python3 make_deck.py'")
     ap.add_argument("--plan", choices=["none", "rows"], default="none",
                     help="rows: give the drawers a starter kit and let the manager assign one row per round")
