@@ -101,7 +101,8 @@ def main():
                                    "--chat", chat], env=env)
         code = subprocess.call([PY, os.path.join(HERE, "slide_team.py"), "--socket", sock, "--workdir", work, "--reference", a.reference,
                                 "--open-slide", a.open_slide, "--rounds", str(a.rounds), "--target", str(a.target), "--chat", chat,
-                                "--plan", a.plan], env=env)
+                                "--plan", a.plan,
+                                "--build-cmd", "docker exec -w /work %s python3 make_deck.py" % container], env=env)
         viewer.wait(timeout=120)
         print(json.dumps({"run": run, "team_exit": code, "cast": cast}))
         return code

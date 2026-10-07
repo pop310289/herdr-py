@@ -5,8 +5,9 @@ Agents (herdr-py, one OpenCode server):
   drawA, drawB   text model; write make_deck.py -> deck.json with open-slide-py elements. They alternate: every redraw
                  is done by the *other* drawer, starting from the current files and NOTES.md (memory across sessions).
   art            vision model; looks at the original picture and our render, answers SCORE n/10 and FIX lines.
-Program roles (no model): lint = `open_slide_py validate`, content = required labels present, render = open-slide-py
-SVG export + headless Chrome screenshot. The supervisor (this program) routes every message and writes chat.jsonl
+Program roles (no model): build = run make_deck.py again in the agents' sandbox after every turn (so the checks judge the
+slide the program makes now, never a deck.json an earlier round left behind), lint = `open_slide_py validate`, content =
+required labels present, render = open-slide-py SVG export + headless Chrome screenshot. The supervisor (this program) routes every message and writes chat.jsonl
 (who said what to whom), which the viewer shows and the video is made from.
 
 usage: slide_team.py --socket SOCK --workdir DIR --reference ref.png --open-slide PATH [--rounds 4] [--target 8]
@@ -15,6 +16,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -69,6 +71,7 @@ The art director's last review (score {score}/10):
 {fixes}
 Labels still missing: {missing}. Layout checker: {lint}.
 Run python3 make_deck.py and python3 -m open_slide_py validate deck.json yourself with the bash tool and fix any error. Update NOTES.md."""
+BUILD_NOTE = "After your turn the supervisor runs python3 make_deck.py itself: if it stops with an error, this round has no slide."
 ART = """You are the art director. Image 1 is the original infographic. Ignore the like, comment and share icons and the number 53
 on its right edge: they belong to the phone app, not to the diagram. Image 2 is our slide (round {round}).
 Compare them carefully: the three rows, the GPU and pool boxes, the token boxes, colours, labels, connector lines, alignment, spacing.
@@ -113,6 +116,26 @@ def screenshot(chrome, svg, png, profile, timeout=90):
     return os.path.exists(png) and os.path.getsize(png) > 0
 
 
+def build(work, argv, timeout=120):
+    """Run make_deck.py from scratch: returns (ok, message). The old deck.json is removed first, so a program that fails
+    leaves no slide behind instead of an earlier round's deck.json (the morning run judged round 1's file for 3 rounds)."""
+    deck = os.path.join(work, "deck.json")
+    if os.path.exists(deck):
+        os.remove(deck)
+    try:
+        p = subprocess.run(argv, cwd=work, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return False, f"make_deck.py did not finish within {timeout}s"
+    except OSError as exc:
+        return False, f"could not run the build command: {exc}"
+    lines = [l.rstrip() for l in p.stdout.splitlines() if l.strip()]
+    if p.returncode != 0:
+        return False, "make_deck.py stopped with an error: " + " | ".join(lines[-4:])[-300:]
+    if not os.path.exists(deck):
+        return False, "make_deck.py ran but did not write deck.json"
+    return True, "make_deck.py ran; deck.json rebuilt"
+
+
 class Team:
     def __init__(self, a):
         self.a = a
@@ -154,6 +177,11 @@ class Team:
                  if m["kind"] == "text" and m["role"] == "assistant"]
         return (texts[-1].strip() if texts else ""), view["state"]
 
+    def build(self):
+        if not self.a.build_cmd:
+            return True, "not rebuilt (no --build-cmd), so the checks judge deck.json as the drawer left it"
+        return build(self.work, shlex.split(self.a.build_cmd))
+
     def lint(self):
         deck = os.path.join(self.work, "deck.json")
         if not os.path.exists(deck):
@@ -176,6 +204,7 @@ class Team:
             return None, p.stdout.strip()[-300:]
         if not screenshot(self.a.chrome, svg, png, os.path.join(self.renders, ".chrome-profile")):
             return None, "Chrome did not write the screenshot"
+        shutil.copy(os.path.join(self.work, "deck.json"), os.path.join(self.renders, f"round-{round_no}.json"))
         small = os.path.join(self.renders, f"round-{round_no}-small.png")
         subprocess.run(["sips", "-Z", "1000", png, "--out", small], stdout=subprocess.DEVNULL, check=True)
         self.manifest.write(json.dumps({"t": round(time.time(), 2), "round": round_no, "path": png}) + "\n")
@@ -212,34 +241,44 @@ class Team:
                                        lint=lint_text or "no problems", missing=", ".join(missing) or "none")
                 self.chat("supervisor", drawer, f"round {round_no}: improve {prev}'s version (score {score}/10); "
                                                 f"{len(fixes)} fixes from art, {len(missing)} missing labels")
+            if a.build_cmd:
+                prompt += "\n" + BUILD_NOTE
             reply, state = self.run_turn(drawer, prompt, a.draw_model, timeout=a.turn_timeout)
             self.chat(drawer, "supervisor", (reply or f"(no reply; {state})")[-400:])
-            ok, errors, warnings = self.lint()
-            lint_text = "; ".join(errors + warnings[:5]) if (errors or warnings) else ""
-            self.chat("lint", drawers[round_no % 2], ("OK" if ok and not warnings else ("; ".join(errors) if errors else
-                      f"{len(warnings)} warning(s): " + "; ".join(warnings[:3])))[:400], "check")
-            missing = self.content()
-            self.chat("content", drawers[round_no % 2], ("all required labels present" if not missing else
-                      f"{len(missing)} missing: " + ", ".join(missing))[:400], "check")
-            try:
-                small, why = self.render(round_no) if ok or not errors else (None, "invalid deck")
-            except Exception as exc:  # a broken tool must show up in the conversation, not kill the supervisor
-                small, why = None, f"render failed: {type(exc).__name__}: {exc}"[:200]
-            if small is None:
-                score, fixes = 0, [f"FIX: whole slide - the deck could not be rendered ({why})"]
-                self.chat("render", "art", f"no picture this round: {why}", "check")
-            else:
-                self.chat("render", "art", f"round-{round_no}.png ready", "check")
+            built, build_text = self.build()
+            self.chat("build", drawers[round_no % 2], build_text, "check")
+            if built:
+                ok, errors, warnings = self.lint()
+                lint_text = "; ".join(errors + warnings[:5]) if (errors or warnings) else ""
+                self.chat("lint", drawers[round_no % 2], ("OK" if ok and not warnings else ("; ".join(errors) if errors else
+                          f"{len(warnings)} warning(s): " + "; ".join(warnings[:3])))[:400], "check")
+                missing = self.content()
+                self.chat("content", drawers[round_no % 2], ("all required labels present" if not missing else
+                          f"{len(missing)} missing: " + ", ".join(missing))[:400], "check")
                 try:
-                    art_reply, _ = self.run_turn("art", ART.format(round=round_no), a.art_model, files=[self.ref_small, small], timeout=600)
-                except Exception as exc:
-                    art_reply = f"(art director failed: {type(exc).__name__}: {exc})"[:300]
-                found = re.search(r"SCORE:\s*(\d+(?:\.\d+)?)\s*/\s*10", art_reply)
-                score = float(found.group(1)) if found else 0
-                fixes = [l.strip() for l in art_reply.splitlines() if l.strip().upper().startswith("FIX")][:5]
-                self.chat("art", drawers[round_no % 2], f"SCORE {score:g}/10" + ("\n" + "\n".join(fixes) if fixes else
-                          ("\n(no FIX lines; raw reply: " + art_reply[-200:] + ")")))
-            self.history.append({"round": round_no, "drawer": drawer, "score": score, "missing": len(missing), "lint_ok": ok,
+                    small, why = self.render(round_no) if ok or not errors else (None, "invalid deck")
+                except Exception as exc:  # a broken tool must show up in the conversation, not kill the supervisor
+                    small, why = None, f"render failed: {type(exc).__name__}: {exc}"[:200]
+                if small is None:
+                    score, fixes = 0, [f"FIX: whole slide - the deck could not be rendered ({why})"]
+                    self.chat("render", "art", f"no picture this round: {why}", "check")
+                else:
+                    self.chat("render", "art", f"round-{round_no}.png ready", "check")
+                    try:
+                        art_reply, _ = self.run_turn("art", ART.format(round=round_no), a.art_model, files=[self.ref_small, small], timeout=600)
+                    except Exception as exc:
+                        art_reply = f"(art director failed: {type(exc).__name__}: {exc})"[:300]
+                    found = re.search(r"SCORE:\s*(\d+(?:\.\d+)?)\s*/\s*10", art_reply)
+                    score = float(found.group(1)) if found else 0
+                    fixes = [l.strip() for l in art_reply.splitlines() if l.strip().upper().startswith("FIX")][:5]
+                    self.chat("art", drawers[round_no % 2], f"SCORE {score:g}/10" + ("\n" + "\n".join(fixes) if fixes else
+                              ("\n(no FIX lines; raw reply: " + art_reply[-200:] + ")")))
+            else:  # no slide this round: say why, instead of judging a deck.json that an earlier round left behind
+                ok, warnings, missing, score = False, [], list(REQUIRED), 0
+                lint_text = build_text
+                fixes = [f"FIX: make_deck.py - {build_text}; make it run before anything else"]
+                self.chat("render", "art", "no picture this round: make_deck.py did not run", "check")
+            self.history.append({"round": round_no, "drawer": drawer, "built": built, "score": score, "missing": len(missing), "lint_ok": ok,
                                  "warnings": len(warnings), "fixes": fixes})
             if score >= a.target and not missing and ok:
                 self.chat("supervisor", "team", f"accepted after round {round_no} (score {score:g}/10)", "control")
@@ -264,6 +303,7 @@ def main():
     ap.add_argument("--turn-timeout", type=int, default=900)
     ap.add_argument("--chrome", default=CHROME)
     ap.add_argument("--chat")
+    ap.add_argument("--build-cmd", help="runs make_deck.py where the agents run, e.g. 'docker exec -w /work NAME python3 make_deck.py'")
     ap.add_argument("--plan", choices=["none", "rows"], default="none",
                     help="rows: give the drawers a starter kit and let the manager assign one row per round")
     return Team(ap.parse_args()).run()

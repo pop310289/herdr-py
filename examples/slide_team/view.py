@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from herdr_py.client import Client, ClientError  # noqa: E402
 from herdr_py.display import row, tail, text_width  # noqa: E402
 
-ROLE = {"manager": "1;94", "supervisor": "1;97", "drawA": "36", "drawB": "35", "art": "33", "lint": "32", "content": "32", "render": "32", "team": "1;97"}
+ROLE = {"manager": "1;94", "build": "32", "supervisor": "1;97", "drawA": "36", "drawB": "35", "art": "33", "lint": "32", "content": "32", "render": "32", "team": "1;97"}
 STATE = {"starting": ("start", "30;47"), "working": ("working", "30;43"), "retry": ("retry", "30;45"), "blocked": ("asks", "97;41"),
          "idle": ("idle", "30;42"), "aborted": ("stopped", "97;100"), "error": ("error", "97;41")}
 
@@ -42,8 +42,12 @@ def frame(cols, rows, agents, chat, started):
         label, color = STATE.get(a["state"], (a["state"], "0"))
         lines.append(row([(f" {name:<6}", "1;" + ROLE[name]), (f" {label} ", color), (f" {a['tokens']:>7,} tok ", "2"),
                           (tail(a["stream"]["text"], max(0, cols - 34)) if a["stream"]["text"] else "", "2")], cols))
-    checks = {m["from"]: m["text"] for m in chat if m["from"] in ("lint", "content", "render")}
-    lines.append(row([(" checks ", "1;32"), ("lint: " + checks.get("lint", "-")[:22], "2"), ("  labels: " + checks.get("content", "-")[:18], "2")], cols))
+    last_build = max((i for i, m in enumerate(chat) if m["from"] == "build"), default=-1)  # only checks of the current build
+    checks = {m["from"]: m["text"] for m in chat[last_build + 1:] if m["from"] in ("lint", "content")}
+    built = chat[last_build]["text"] if last_build >= 0 else "-"
+    built = "ok" if built.startswith("make_deck.py ran") else "skipped" if built.startswith("not rebuilt") else "-" if built == "-" else "FAILED"
+    lines.append(row([(" checks ", "1;32"), ("build " + built, "1;31" if built == "FAILED" else "2"),
+                      ("  lint " + checks.get("lint", "-")[:14], "2"), ("  labels " + checks.get("content", "-")[:16], "2")], cols))
     lines.append(row([(" conversation " + "─" * cols, "90")], cols))
     body = []
     for m in chat[-60:]:
