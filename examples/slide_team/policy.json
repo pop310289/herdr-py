@@ -1,0 +1,12 @@
+{
+  "default": "deny",
+  "rule": [
+    {"agent": "draw*", "permission": "edit", "action": "allow"},
+    {"agent": "draw*", "permission": "bash", "action": "allow",
+     "match": "(python3 make_deck\\.py|python3 -S? ?-m open_slide_py (validate|export)( [\\w./-]+)*|ls( -\\w+)*( [\\w./-]+)*|cat [\\w./-]+( [\\w./-]+)*)"},
+    {"permission": "edit", "action": "deny", "message": "Only the drawers edit files. Describe the change instead."},
+    {"permission": "external_directory", "action": "deny", "message": "Stay inside the slide folder."},
+    {"permission": "doom_loop", "action": "deny", "message": "You are repeating the same call. Try a different approach."},
+    {"permission": "bash", "action": "deny", "message": "Allowed: python3 make_deck.py, python3 -m open_slide_py validate/export, ls, cat (no shell operators)."}
+  ]
+}

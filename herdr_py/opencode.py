@@ -52,8 +52,9 @@ class OpenCode:
     def session(self, session_id):
         return self.call("GET", f"/session/{session_id}")
 
-    def prompt(self, session_id, text, model=None, agent=None):
-        body = {"parts": [{"type": "text", "text": text}]}
+    def prompt(self, session_id, text, model=None, agent=None, files=()):
+        """files: [{"mime": "image/png", "url": "data:...", "filename": "x.png"}] (OpenCode's FilePartInput)."""
+        body = {"parts": [{"type": "text", "text": text}] + [dict(f, type="file") for f in files]}
         if model:
             provider, _, model_id = model.partition("/")
             body["model"] = {"providerID": provider, "modelID": model_id}

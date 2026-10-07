@@ -175,6 +175,18 @@ class PromptWaitTest(Base):
             self.client.call("agent.prompt", name="exec", text="hello?", wait=True, timeout_s=10)
         self.assertIn("prompt_stalled", str(ctx.exception))
 
+    def test_files_are_attached_as_data_urls(self):
+        png = os.path.join(self.dir, "pic.png")
+        with open(png, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n" + b"0" * 32)
+        self.client.call("agent.start", name="eye", prompt="look", files=[png])
+        parts = self.fake.prompts[-1][1]["parts"]
+        self.assertEqual([p["type"] for p in parts], ["text", "file"])
+        self.assertEqual(parts[1]["mime"], "image/png")
+        self.assertTrue(parts[1]["url"].startswith("data:image/png;base64,iVBORw0KGgo"))
+        with self.assertRaises(ClientError):  # a missing file is an error, not a silently dropped attachment
+            self.client.call("agent.prompt", name="eye", text="again", files=[os.path.join(self.dir, "nope.png")])
+
     def test_max_prompts_per_agent(self):
         self.script()
         self.client.call("agent.start", name="busy", prompt="1")  # max_prompts=8 in Base

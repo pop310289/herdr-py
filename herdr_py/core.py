@@ -12,8 +12,10 @@ State of an agent (what UIs show):
 Only sessions created by herdr-py (and their subagent sessions) are touched: requests from other sessions on the same
 OpenCode server are ignored.
 """
+import base64
 import collections
 import json
+import mimetypes
 import os
 import queue
 import threading
@@ -28,6 +30,23 @@ STATES = ("starting", "working", "retry", "blocked", "idle", "aborted", "error")
 
 class HubError(Exception):
     pass
+
+
+MAX_FILE_BYTES = 8 * 1024 * 1024
+
+
+def file_parts(paths):
+    """Local files -> OpenCode file parts with data URLs (read by the daemon, so paths are the daemon's paths)."""
+    parts = []
+    for path in paths or ():
+        size = os.path.getsize(path)
+        if size > MAX_FILE_BYTES:
+            raise HubError(f"{path} is {size} bytes; attachments are limited to {MAX_FILE_BYTES}")
+        mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+        with open(path, "rb") as handle:
+            data = base64.b64encode(handle.read()).decode()
+        parts.append({"mime": mime, "url": f"data:{mime};base64,{data}", "filename": os.path.basename(path)})
+    return parts
 
 
 class Agent:
@@ -177,7 +196,7 @@ class Hub:
         with self.lock:
             return self.agent(name).view(self.clock())
 
-    def start(self, name, prompt, budget_s=None, followups=(), model=None, title=None):
+    def start(self, name, prompt, budget_s=None, followups=(), model=None, title=None, files=()):
         with self.lock:
             if name in self.agents:
                 raise HubError(f"agent {name!r} already exists")
@@ -190,10 +209,11 @@ class Hub:
             self.by_session[agent.session_id] = name
             self.record({"hub": "start", "agent": name, "session": agent.session_id})
         self.save()
-        self.prompt(name, prompt, source="start")
+        self.prompt(name, prompt, source="start", files=files)
         return self.get(name)
 
-    def prompt(self, name, text, source="user"):
+    def prompt(self, name, text, source="user", files=()):
+        parts = file_parts(files)  # read before changing any state, so a bad path leaves the agent as it was
         with self.lock:
             agent = self.agent(name)
             if self.max_prompts is not None and agent.turns >= self.max_prompts:
@@ -207,7 +227,7 @@ class Hub:
             self.record({"hub": "prompt", "agent": name, "source": source, "text": text})
             self.refresh(agent, "prompt")
             session_id, model = agent.session_id, agent.model
-        self.client.prompt(session_id, text, model=model)
+        self.client.prompt(session_id, text, model=model, files=parts)
         self.save()
         return self.get(name)
 
@@ -262,7 +282,7 @@ class Hub:
             return [{"agent": a.name, "id": rid, "kind": p["kind"], "child": p["child"], "description": p["description"]}
                     for a in agents for rid, p in a.pending.items()]
 
-    def prompt_and_wait(self, name, text, until=("idle",), timeout=None, activity_s=5.0, source="user"):
+    def prompt_and_wait(self, name, text, until=("idle",), timeout=None, activity_s=5.0, source="user", files=()):
         """Send a prompt and wait for the turn it starts to finish (herdr's `agent prompt --wait`).
 
         Within `activity_s` OpenCode must report the session busy (or a request); otherwise HubError("prompt_stalled"):
@@ -271,7 +291,7 @@ class Hub:
         """
         with self.lock:
             baseline = self.agent(name).idles
-        self.prompt(name, text, source=source)
+        self.prompt(name, text, source=source, files=files)
         deadline = None if timeout is None else time.time() + timeout
         activity_deadline = time.time() + activity_s
         until = set(until)

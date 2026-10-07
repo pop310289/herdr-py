@@ -73,14 +73,15 @@ class Daemon:
             return hub.get(p["name"])
         if method == "agent.start":
             view = hub.start(p["name"], p["prompt"], budget_s=p.get("budget_s"), followups=p.get("followups") or [],
-                             model=p.get("model"), title=p.get("title"))
+                             model=p.get("model"), title=p.get("title"), files=p.get("files") or [])
             if p.get("wait"):
                 return hub.wait(p["name"], until=p.get("until") or ["idle", "aborted", "error"], timeout=p.get("timeout_s"))
             return view
         if method == "agent.prompt":
             if p.get("wait"):
-                return hub.prompt_and_wait(p["name"], p["text"], until=p.get("until") or ["idle"], timeout=p.get("timeout_s"))
-            return hub.prompt(p["name"], p["text"])
+                return hub.prompt_and_wait(p["name"], p["text"], until=p.get("until") or ["idle"], timeout=p.get("timeout_s"),
+                                           files=p.get("files") or [])
+            return hub.prompt(p["name"], p["text"], files=p.get("files") or [])
         if method == "agent.abort":
             return hub.abort(p["name"], reason=p.get("reason", "user"))
         if method == "agent.wait":
@@ -169,7 +170,7 @@ class Daemon:
                 return
             try:
                 send({"id": rid, "result": self.call(method, params)})
-            except (HubError, OpenCodeError, KeyError, ValueError, TypeError) as exc:
+            except (HubError, OpenCodeError, KeyError, ValueError, TypeError, OSError) as exc:
                 code = "missing_param" if isinstance(exc, KeyError) else type(exc).__name__.lower()
                 send({"id": rid, "error": {"code": code, "message": str(exc)}})
 

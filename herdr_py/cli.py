@@ -168,11 +168,13 @@ def main(argv=None):
     st.add_argument("--budget", type=float, help="abort after this many seconds of continuous work")
     st.add_argument("--followup", action="append", default=[], help="prompt to send when the agent goes idle (repeatable)")
     st.add_argument("--model")
+    st.add_argument("--file", action="append", default=[], help="attach a file (e.g. an image for a vision model); repeatable")
     st.add_argument("--wait", action="store_true", help="return when the first turn finishes")
     st.add_argument("--timeout", type=float, help="with --wait: give up after this many seconds")
     pr = sub.add_parser("prompt", help="send another prompt")
     pr.add_argument("name")
     pr.add_argument("text")
+    pr.add_argument("--file", action="append", default=[], help="attach a file; repeatable")
     pr.add_argument("--wait", action="store_true", help="return when the turn this prompt starts has finished")
     pr.add_argument("--timeout", type=float, help="with --wait: give up after this many seconds")
     w = sub.add_parser("wait", help="wait until an agent reaches a state")
@@ -224,9 +226,10 @@ def main(argv=None):
             out(client.call("agent.get", name=a.name), True)
         elif a.cmd == "start":
             out(client.call("agent.start", name=a.name, prompt=a.prompt, budget_s=a.budget, followups=a.followup, model=a.model,
-                            wait=a.wait, timeout_s=a.timeout), a.json)
+                            wait=a.wait, timeout_s=a.timeout, files=[os.path.abspath(f) for f in a.file]), a.json)
         elif a.cmd == "prompt":
-            out(client.call("agent.prompt", name=a.name, text=a.text, wait=a.wait, timeout_s=a.timeout), a.json)
+            out(client.call("agent.prompt", name=a.name, text=a.text, wait=a.wait, timeout_s=a.timeout,
+                            files=[os.path.abspath(f) for f in a.file]), a.json)
         elif a.cmd == "wait":
             out(client.call("agent.wait", name=a.name, until=a.until or ["idle"], timeout_s=a.timeout), a.json)
         elif a.cmd == "read":
