@@ -7,6 +7,7 @@ usage: view.py --socket SOCK --chat chat.jsonl
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import textwrap
@@ -16,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from herdr_py.client import Client, ClientError  # noqa: E402
 from herdr_py.display import row, tail, text_width  # noqa: E402
 
-ROLE = {"manager": "1;94", "build": "32", "supervisor": "1;97", "drawA": "36", "drawB": "35", "art": "33", "lint": "32", "content": "32", "render": "32", "team": "1;97"}
+ROLE = {"manager": "1;94", "build": "32", "check": "32", "picture": "1;32", "lessons": "1;35", "operator": "1;91", "supervisor": "1;97", "drawA": "36", "drawB": "35", "art": "33", "lint": "32", "content": "32", "render": "32", "team": "1;97"}
 STATE = {"starting": ("start", "30;47"), "working": ("working", "30;43"), "retry": ("retry", "30;45"), "blocked": ("asks", "97;41"),
          "idle": ("idle", "30;42"), "aborted": ("stopped", "97;100"), "error": ("error", "97;41")}
 
@@ -32,7 +33,15 @@ def frame(cols, rows, agents, chat, started):
     rounds = [m for m in chat if m["from"] in ("supervisor", "manager") and m["text"].startswith("round ")]
     scores = [m["text"].split()[1] for m in chat if m["from"] == "art" and m["text"].startswith("SCORE")]
     left = f" herdr-py · slide team · round {len(rounds)}"
-    right = ("score " + " > ".join(s.split("/")[0] for s in scores) + "/10 " if scores else "") + time.strftime("%H:%M:%S ")
+    kept = {}
+    for m in chat:  # layout runs: the picture match the program kept for each row
+        found = re.match(r"row (\d): match ([\d.]+)(?: -> ([\d.]+))?", m["text"]) if m["from"] == "picture" else None
+        if found:
+            kept[found.group(1)] = found.group(2) if "rejected" in m["text"] or not found.group(3) else found.group(3)
+    if kept:
+        right = "match " + " ".join(f"r{k} {v[1:] if v.startswith('0') else v}" for k, v in sorted(kept.items())) + " " + time.strftime("%H:%M:%S ")
+    else:
+        right = ("score " + " > ".join(s.split("/")[0] for s in scores) + "/10 " if scores else "") + time.strftime("%H:%M:%S ")
     lines = [row([(left + " " * max(1, cols - text_width(left) - text_width(right)) + right, "1;97;44")], cols)]
     for name in ("drawA", "drawB", "art"):
         a = agents.get(name)
@@ -42,12 +51,18 @@ def frame(cols, rows, agents, chat, started):
         label, color = STATE.get(a["state"], (a["state"], "0"))
         lines.append(row([(f" {name:<6}", "1;" + ROLE[name]), (f" {label} ", color), (f" {a['tokens']:>7,} tok ", "2"),
                           (tail(a["stream"]["text"], max(0, cols - 34)) if a["stream"]["text"] else "", "2")], cols))
+    if any(m["from"] == "check" for m in chat):  # layout runs
+        last = [m["text"] for m in chat if m["from"] == "check"][-1]
+        lessons = sum(1 for m in chat if m["from"] == "lessons")
+        lines.append(row([(" checks ", "1;32"), (last[:max(0, cols - 22)], "1;31" if "error" in last else "2"),
+                          (f"  lessons {lessons}", "1;35" if lessons else "2")], cols))
     last_build = max((i for i, m in enumerate(chat) if m["from"] == "build"), default=-1)  # only checks of the current build
     checks = {m["from"]: m["text"] for m in chat[last_build + 1:] if m["from"] in ("lint", "content")}
     built = chat[last_build]["text"] if last_build >= 0 else "-"
     built = "ok" if built.startswith("make_deck.py ran") else "skipped" if built.startswith("not rebuilt") else "-" if built == "-" else "FAILED"
-    lines.append(row([(" checks ", "1;32"), ("build " + built, "1;31" if built == "FAILED" else "2"),
-                      ("  lint " + checks.get("lint", "-")[:14], "2"), ("  labels " + checks.get("content", "-")[:16], "2")], cols))
+    if not any(m["from"] == "check" for m in chat):
+        lines.append(row([(" checks ", "1;32"), ("build " + built, "1;31" if built == "FAILED" else "2"),
+                          ("  lint " + checks.get("lint", "-")[:14], "2"), ("  labels " + checks.get("content", "-")[:16], "2")], cols))
     lines.append(row([(" conversation " + "─" * cols, "90")], cols))
     body = []
     for m in chat[-60:]:

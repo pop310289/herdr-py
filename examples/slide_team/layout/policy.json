@@ -1,0 +1,6 @@
+{
+  "default": "deny",
+  "rule": [
+    {"permission": "*", "action": "deny", "message": "No tools are needed here: reply with the JSON list (or the DIFF lines) in your message."}
+  ]
+}

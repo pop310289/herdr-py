@@ -1,0 +1,156 @@
+[
+ {
+  "id": "h.accent",
+  "type": "rect",
+  "x": 0,
+  "y": 20,
+  "w": 16,
+  "h": 100,
+  "fill": "#2F80ED"
+ },
+ {
+  "id": "h.title1",
+  "type": "text",
+  "x": 48,
+  "y": 20,
+  "text": "LLM Serving: When to Split",
+  "size": 40,
+  "bold": true
+ },
+ {
+  "id": "h.title2",
+  "type": "text",
+  "x": 48,
+  "y": 72,
+  "text": "Prefill and Decode",
+  "size": 40,
+  "bold": true
+ },
+ {
+  "id": "h.leg1",
+  "type": "tokens",
+  "x": 578,
+  "y": 80,
+  "labels": [
+   ""
+  ],
+  "kind": "prefill",
+  "w": 18,
+  "h": 18
+ },
+ {
+  "id": "h.leg1t",
+  "type": "text",
+  "x": 606,
+  "y": 76,
+  "text": "Prefill",
+  "size": 22,
+  "bold": true
+ },
+ {
+  "id": "h.leg2",
+  "type": "tokens",
+  "x": 711,
+  "y": 80,
+  "labels": [
+   ""
+  ],
+  "kind": "kv",
+  "w": 18,
+  "h": 18
+ },
+ {
+  "id": "h.leg2t",
+  "type": "text",
+  "x": 739,
+  "y": 76,
+  "text": "KV cache",
+  "size": 22,
+  "bold": true
+ },
+ {
+  "id": "h.leg3",
+  "type": "tokens",
+  "x": 896,
+  "y": 80,
+  "labels": [
+   ""
+  ],
+  "kind": "decode",
+  "w": 18,
+  "h": 18
+ },
+ {
+  "id": "h.leg3t",
+  "type": "text",
+  "x": 924,
+  "y": 76,
+  "text": "Decode",
+  "size": 22,
+  "bold": true
+ },
+ {
+  "id": "h.credit",
+  "type": "text",
+  "x": 1155,
+  "y": 18,
+  "text": "Based on TheAiEdge.io",
+  "size": 24,
+  "color": "decode",
+  "anchor": "end"
+ },
+ {
+  "id": "h.sep0",
+  "type": "rect",
+  "x": 47,
+  "y": 152,
+  "w": 1113,
+  "h": 2,
+  "fill": "#D5DBE3"
+ },
+ {
+  "id": "h.sep1",
+  "type": "rect",
+  "x": 47,
+  "y": 558,
+  "w": 1113,
+  "h": 2,
+  "fill": "#D5DBE3"
+ },
+ {
+  "id": "h.sep2",
+  "type": "rect",
+  "x": 47,
+  "y": 960,
+  "w": 1113,
+  "h": 2,
+  "fill": "#D5DBE3"
+ },
+ {
+  "id": "h.row1",
+  "type": "text",
+  "x": 48,
+  "y": 176,
+  "text": "Shared worker",
+  "size": 34,
+  "bold": true
+ },
+ {
+  "id": "h.row2",
+  "type": "text",
+  "x": 48,
+  "y": 578,
+  "text": "Chunked prefill",
+  "size": 34,
+  "bold": true
+ },
+ {
+  "id": "h.row3",
+  "type": "text",
+  "x": 48,
+  "y": 981,
+  "text": "Separate prefill + decode",
+  "size": 34,
+  "bold": true
+ }
+]

@@ -53,6 +53,9 @@ def main():
     ap.add_argument("--port", type=int, default=4540)
     ap.add_argument("--check-vision", action="store_true", help="only check that the vision model sees attached images")
     ap.add_argument("--plan", choices=["none", "rows"], default="rows")
+    ap.add_argument("--arch", choices=["code", "layout"], default="layout",
+                    help="code: drawers write make_deck.py (runs 1-3); layout: drawers describe rows in JSON, the program draws (layout_team.py)")
+    ap.add_argument("--revisions", type=int, default=2)
     a = ap.parse_args()
     run = os.path.join(a.out, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     work, state = os.path.join(run, "work"), os.path.join(run, "state")
@@ -76,7 +79,8 @@ def main():
     sock = "/tmp/hps-%s.sock" % os.path.basename(run)[-6:]
     env = dict(os.environ, PYTHONPATH=REPO, PYTHONDONTWRITEBYTECODE="1")
     daemon = subprocess.Popen([PY, "-m", "herdr_py", "--socket", sock, "serve", "--opencode", "http://127.0.0.1:%d" % a.port,
-                               "--password-file", pw_file, "--policy", os.path.join(HERE, "policy.json"), "--state-dir", state,
+                               "--password-file", pw_file, "--policy", os.path.join(HERE, "layout", "policy.json") if a.arch == "layout"
+                               else os.path.join(HERE, "policy.json"), "--state-dir", state,
                                "--questions", "reject", "--max-agents", "6", "--max-prompts", "12", "--wait", "90"],
                               env=env, stdout=open(os.path.join(state, "daemon.out"), "w"), stderr=subprocess.STDOUT)
     try:
@@ -98,10 +102,14 @@ def main():
         viewer = subprocess.Popen([PY, os.path.join(REPO, "tools", "rec.py"), "--cols", "66", "--rows", "34", "--out", cast,
                                    "--title", "herdr-py slide team", "--", PY, os.path.join(HERE, "view.py"), "--socket", sock,
                                    "--chat", chat], env=env)
-        code = subprocess.call([PY, os.path.join(HERE, "slide_team.py"), "--socket", sock, "--workdir", work, "--reference", a.reference,
-                                "--open-slide", a.open_slide, "--rounds", str(a.rounds), "--target", str(a.target), "--chat", chat,
-                                "--plan", a.plan,
-                                "--build-cmd", "docker exec -w /work %s python3 make_deck.py" % container], env=env)
+        if a.arch == "layout":
+            team = [PY, os.path.join(HERE, "layout_team.py"), "--socket", sock, "--workdir", work, "--reference", a.reference,
+                    "--open-slide", a.open_slide, "--chat", chat, "--revisions", str(a.revisions)]
+        else:
+            team = [PY, os.path.join(HERE, "slide_team.py"), "--socket", sock, "--workdir", work, "--reference", a.reference,
+                    "--open-slide", a.open_slide, "--rounds", str(a.rounds), "--target", str(a.target), "--chat", chat,
+                    "--plan", a.plan, "--build-cmd", "docker exec -w /work %s python3 make_deck.py" % container]
+        code = subprocess.call(team, env=env)
         viewer.wait(timeout=120)
         print(json.dumps({"run": run, "team_exit": code, "cast": cast}))
         return code

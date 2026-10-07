@@ -151,6 +151,7 @@ class Painter:
         self.note_font = ImageFont.truetype(PINGFANG, round(size * 0.82), index=2)
         self.note_h = round(size * 0.82 * 1.5) * len(note) + 24 if note else 0
         self.panel = panel
+        self.side = False
         self.w = self.cw * cols + 24
         self.h = self.ch * rows + 24 + self.note_h + panel
         self.w += self.w % 2
@@ -176,6 +177,17 @@ class Painter:
             top = self.ch * self.rows + 24
             d0 = ImageDraw.Draw(img)
             d0.rectangle([0, top, self.w, top + self.panel], fill=(10, 12, 16))
+            if self.side and reference is not None:  # tall pictures: ours on the left, the original on the right
+                half = (self.w - 36) // 2
+                for k, im in enumerate((picture, reference)):
+                    if im is not None:
+                        pic = im.copy()
+                        pic.thumbnail((half, self.panel - 56))
+                        x = 12 + k * (half + 12) + (half - pic.width) // 2
+                        if k:
+                            d0.rectangle([x - 3, top + 41, x + pic.width + 2, top + 44 + pic.height + 2], outline=(240, 200, 80), width=3)
+                        img.paste(pic, (x, top + 44))
+                reference = picture = None
             if picture is not None:
                 pic = picture.copy()
                 pic.thumbnail((self.w - 24, self.panel - 56))
@@ -223,6 +235,7 @@ def main():
     ap.add_argument("--overlay", help="JSON lines {t, path[, round]}: the picture shown below the terminal from time t on")
     ap.add_argument("--reference", help="small reference picture in the corner of the overlay panel")
     ap.add_argument("--panel", type=int, default=660, help="height of the overlay panel in pixels")
+    ap.add_argument("--side-by-side", action="store_true", help="ours on the left, the original on the right (for tall pictures)")
     a = ap.parse_args()
     lines = open(a.cast, encoding="utf-8").read().splitlines()
     head = json.loads(lines[0])
@@ -236,6 +249,7 @@ def main():
     reference = Image.open(a.reference).convert("RGB") if a.reference else None
     pictures = {}
     painter = Painter(head["width"], head["height"], a.size, a.note, panel=a.panel if a.overlay else 0)
+    painter.side = a.side_by_side
     footer = a.note[0].format(speed=f"{a.speed:g}", real=f"{int(real) // 60:02d}:{int(real) % 60:02d}") if a.note else ""
     ff = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{painter.w}x{painter.h}",
                            "-r", str(a.fps), "-i", "-", "-c:v", "libx264", "-preset", "medium", "-crf", "22", "-pix_fmt", "yuv420p",
@@ -257,7 +271,8 @@ def main():
                 if current["path"] not in pictures:
                     pictures[current["path"]] = Image.open(current["path"]).convert("RGB")
                 picture = pictures[current["path"]]
-            caption = (f"our slide after round {current.get('round')}" if current else "") + "   (yellow frame: the original)"
+            caption = ((f"left: ours after round {current.get('round')}   right (yellow frame): the original" if a.side_by_side else
+                        f"our slide after round {current.get('round')}   (yellow frame: the original)") if current else "")
             img = painter.paint(screen, footer, picture, reference if a.overlay else None, caption)
             last_key, last_bytes = key, img.tobytes()
         while shots and shots[0] <= t:  # 不論畫面有沒有變，到了指定時間就存圖

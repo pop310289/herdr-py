@@ -1,0 +1,1167 @@
+[
+ {
+  "id": "r1.lp",
+  "type": "text",
+  "x": 50,
+  "y": 220,
+  "text": "Long prompt",
+  "size": 28,
+  "bold": true
+ },
+ {
+  "id": "r1.prompt",
+  "type": "tokens",
+  "x": 50,
+  "y": 265,
+  "labels": [
+   "P",
+   "P",
+   "P",
+   "P",
+   "P",
+   "P"
+  ],
+  "kind": "prompt",
+  "w": 31,
+  "h": 42,
+  "gap": 4
+ },
+ {
+  "id": "r1.ls",
+  "type": "text",
+  "x": 50,
+  "y": 386,
+  "text": "Live streams",
+  "size": 28,
+  "bold": true
+ },
+ {
+  "id": "r1.streams",
+  "type": "tokens",
+  "x": 53,
+  "y": 428,
+  "labels": [
+   "A",
+   "B"
+  ],
+  "kind": "decode",
+  "w": 67,
+  "h": 48,
+  "gap": 13
+ },
+ {
+  "id": "r1.gpu",
+  "type": "box",
+  "x": 384,
+  "y": 262,
+  "w": 334,
+  "h": 260,
+  "kind": "gpu",
+  "title": "1 GPU",
+  "pins": true
+ },
+ {
+  "id": "r1.dec",
+  "type": "box",
+  "x": 414,
+  "y": 317,
+  "w": 153,
+  "h": 148,
+  "kind": "decode",
+  "title": "Decode"
+ },
+ {
+  "id": "r1.dec1",
+  "type": "tokens",
+  "x": 428,
+  "y": 364,
+  "labels": [
+   "A",
+   "B",
+   "P"
+  ],
+  "kind": "decode",
+  "w": 34,
+  "h": 34,
+  "gap": 5
+ },
+ {
+  "id": "r1.dec2",
+  "type": "tokens",
+  "x": 428,
+  "y": 407,
+  "labels": [
+   "A'",
+   "B'",
+   "P'"
+  ],
+  "kind": "outline",
+  "w": 34,
+  "h": 34,
+  "gap": 5
+ },
+ {
+  "id": "r1.kvl",
+  "type": "text",
+  "x": 619,
+  "y": 293,
+  "text": "KV",
+  "size": 26,
+  "bold": true,
+  "color": "kv"
+ },
+ {
+  "id": "r1.kv",
+  "type": "grid",
+  "x": 612,
+  "y": 340,
+  "rows": 3,
+  "cols": 3,
+  "kind": "kv",
+  "cell": 24,
+  "gap": 8,
+  "row_labels": [
+   "P",
+   "A",
+   "B"
+  ]
+ },
+ {
+  "id": "r1.local",
+  "type": "text",
+  "x": 613,
+  "y": 460,
+  "text": "local",
+  "size": 24,
+  "color": "kv"
+ },
+ {
+  "id": "r1.link1",
+  "type": "arrow",
+  "points": [
+   [
+    262,
+    287
+   ],
+   [
+    335,
+    287
+   ],
+   [
+    335,
+    378
+   ],
+   [
+    412,
+    378
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r1.link2",
+  "type": "arrow",
+  "points": [
+   [
+    205,
+    452
+   ],
+   [
+    218,
+    452
+   ],
+   [
+    287,
+    452
+   ],
+   [
+    355,
+    452
+   ],
+   [
+    412,
+    452
+   ]
+  ],
+  "color": "stream",
+  "dashed": true,
+  "nodes": true
+ },
+ {
+  "id": "r1.toout",
+  "type": "arrow",
+  "points": [
+   [
+    565,
+    466
+   ],
+   [
+    565,
+    492
+   ],
+   [
+    773,
+    492
+   ],
+   [
+    773,
+    379
+   ],
+   [
+    828,
+    379
+   ]
+  ],
+  "color": "stream",
+  "dashed": true,
+  "nodes": true
+ },
+ {
+  "id": "r1.fan",
+  "type": "arrow",
+  "points": [
+   [
+    773,
+    462
+   ],
+   [
+    773,
+    295
+   ],
+   [
+    805,
+    295
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r1.fanB",
+  "type": "arrow",
+  "points": [
+   [
+    773,
+    462
+   ],
+   [
+    805,
+    462
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r1.timing",
+  "type": "text",
+  "x": 1155,
+  "y": 190,
+  "text": "Schematic timing",
+  "size": 18,
+  "color": "muted",
+  "anchor": "end"
+ },
+ {
+  "id": "r1.out",
+  "type": "text",
+  "x": 877,
+  "y": 212,
+  "text": "Output tokens",
+  "size": 30,
+  "bold": true
+ },
+ {
+  "id": "r1.new",
+  "type": "lane",
+  "x": 878,
+  "y": 295,
+  "w": 277,
+  "label": "New",
+  "tokens": [
+   {
+    "at": 906,
+    "text": "P",
+    "kind": "decode"
+   }
+  ],
+  "label_size": 22,
+  "color": "text"
+ },
+ {
+  "id": "r1.laneA",
+  "type": "lane",
+  "x": 878,
+  "y": 379,
+  "w": 277,
+  "label": "A",
+  "tokens": [
+   {
+    "at": 909,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1127,
+    "text": "A",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r1.laneB",
+  "type": "lane",
+  "x": 878,
+  "y": 462,
+  "w": 277,
+  "label": "B",
+  "tokens": [
+   {
+    "at": 904,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1122,
+    "text": "B",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r2.lp",
+  "type": "text",
+  "x": 50,
+  "y": 623,
+  "text": "Long prompt",
+  "size": 28,
+  "bold": true
+ },
+ {
+  "id": "r2.prompt",
+  "type": "tokens",
+  "x": 50,
+  "y": 667,
+  "labels": [
+   "P",
+   "P",
+   "P",
+   "P"
+  ],
+  "kind": "prompt",
+  "w": 31,
+  "h": 42,
+  "gap": 4
+ },
+ {
+  "id": "r2.chunk",
+  "type": "tokens",
+  "x": 199,
+  "y": 667,
+  "labels": [
+   "P",
+   "P"
+  ],
+  "kind": "prefill",
+  "w": 31,
+  "h": 42,
+  "gap": 4
+ },
+ {
+  "id": "r2.ls",
+  "type": "text",
+  "x": 50,
+  "y": 790,
+  "text": "Live streams",
+  "size": 28,
+  "bold": true
+ },
+ {
+  "id": "r2.streams",
+  "type": "tokens",
+  "x": 53,
+  "y": 830,
+  "labels": [
+   "A",
+   "B"
+  ],
+  "kind": "decode",
+  "w": 67,
+  "h": 48,
+  "gap": 13
+ },
+ {
+  "id": "r2.wait",
+  "type": "text",
+  "x": 52,
+  "y": 895,
+  "text": "WAIT",
+  "size": 22,
+  "bold": true,
+  "color": "red"
+ },
+ {
+  "id": "r2.pause",
+  "type": "text",
+  "x": 333,
+  "y": 838,
+  "text": "||",
+  "size": 34,
+  "bold": true,
+  "color": "red"
+ },
+ {
+  "id": "r2.paused",
+  "type": "arrow",
+  "points": [
+   [
+    205,
+    855
+   ],
+   [
+    384,
+    855
+   ]
+  ],
+  "color": "line",
+  "head": false
+ },
+ {
+  "id": "r2.link",
+  "type": "arrow",
+  "points": [
+   [
+    268,
+    688
+   ],
+   [
+    312,
+    688
+   ],
+   [
+    335,
+    712
+   ],
+   [
+    335,
+    775
+   ],
+   [
+    412,
+    775
+   ]
+  ],
+  "color": "chunk",
+  "nodes": true
+ },
+ {
+  "id": "r2.gpu",
+  "type": "box",
+  "x": 384,
+  "y": 663,
+  "w": 334,
+  "h": 262,
+  "kind": "gpu",
+  "title": "1 GPU",
+  "pins": true
+ },
+ {
+  "id": "r2.cbox",
+  "type": "box",
+  "x": 414,
+  "y": 718,
+  "w": 153,
+  "h": 148,
+  "kind": "chunk",
+  "title": "Chunk 3"
+ },
+ {
+  "id": "r2.c1",
+  "type": "tokens",
+  "x": 430,
+  "y": 766,
+  "labels": [
+   "P",
+   "P"
+  ],
+  "kind": "empty",
+  "w": 34,
+  "h": 34,
+  "gap": 5
+ },
+ {
+  "id": "r2.c1o",
+  "type": "tokens",
+  "x": 508,
+  "y": 766,
+  "labels": [
+   "P"
+  ],
+  "kind": "prefill",
+  "w": 34,
+  "h": 34
+ },
+ {
+  "id": "r2.c2",
+  "type": "tokens",
+  "x": 430,
+  "y": 810,
+  "labels": [
+   "P",
+   "P"
+  ],
+  "kind": "empty",
+  "w": 34,
+  "h": 34,
+  "gap": 5
+ },
+ {
+  "id": "r2.c2o",
+  "type": "tokens",
+  "x": 508,
+  "y": 810,
+  "labels": [
+   "P"
+  ],
+  "kind": "prefill",
+  "w": 34,
+  "h": 34
+ },
+ {
+  "id": "r2.kvl",
+  "type": "text",
+  "x": 619,
+  "y": 695,
+  "text": "KV",
+  "size": 26,
+  "bold": true,
+  "color": "kv"
+ },
+ {
+  "id": "r2.kv",
+  "type": "grid",
+  "x": 612,
+  "y": 740,
+  "rows": 3,
+  "cols": 3,
+  "kind": "kv",
+  "cell": 24,
+  "gap": 8,
+  "row_labels": [
+   "P",
+   "A",
+   "B"
+  ]
+ },
+ {
+  "id": "r2.local",
+  "type": "text",
+  "x": 613,
+  "y": 862,
+  "text": "local",
+  "size": 24,
+  "color": "kv"
+ },
+ {
+  "id": "r2.toout",
+  "type": "arrow",
+  "points": [
+   [
+    565,
+    866
+   ],
+   [
+    565,
+    892
+   ],
+   [
+    773,
+    892
+   ],
+   [
+    773,
+    780
+   ],
+   [
+    828,
+    780
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r2.fan",
+  "type": "arrow",
+  "points": [
+   [
+    773,
+    864
+   ],
+   [
+    773,
+    697
+   ],
+   [
+    805,
+    697
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r2.fanB",
+  "type": "arrow",
+  "points": [
+   [
+    773,
+    864
+   ],
+   [
+    805,
+    864
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r2.out",
+  "type": "text",
+  "x": 877,
+  "y": 614,
+  "text": "Output tokens",
+  "size": 30,
+  "bold": true
+ },
+ {
+  "id": "r2.phase",
+  "type": "text",
+  "x": 882,
+  "y": 650,
+  "text": "PREFILL",
+  "size": 18,
+  "bold": true,
+  "color": "muted"
+ },
+ {
+  "id": "r2.new",
+  "type": "lane",
+  "x": 878,
+  "y": 697,
+  "w": 277,
+  "label": "New",
+  "tokens": [],
+  "label_size": 22,
+  "color": "text"
+ },
+ {
+  "id": "r2.laneA",
+  "type": "lane",
+  "x": 878,
+  "y": 780,
+  "w": 277,
+  "label": "A",
+  "tokens": [
+   {
+    "at": 924,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1024,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1127,
+    "text": "A",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r2.laneB",
+  "type": "lane",
+  "x": 878,
+  "y": 864,
+  "w": 277,
+  "label": "B",
+  "tokens": [
+   {
+    "at": 919,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1019,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1122,
+    "text": "B",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r3.lp",
+  "type": "text",
+  "x": 50,
+  "y": 1026,
+  "text": "Long prompt",
+  "size": 28,
+  "bold": true
+ },
+ {
+  "id": "r3.prompt",
+  "type": "tokens",
+  "x": 50,
+  "y": 1070,
+  "labels": [
+   "P",
+   "P",
+   "P",
+   "P",
+   "P",
+   "P"
+  ],
+  "kind": "prompt",
+  "w": 31,
+  "h": 42,
+  "gap": 4
+ },
+ {
+  "id": "r3.ls",
+  "type": "text",
+  "x": 50,
+  "y": 1190,
+  "text": "Live streams",
+  "size": 28,
+  "bold": true
+ },
+ {
+  "id": "r3.streams",
+  "type": "tokens",
+  "x": 53,
+  "y": 1233,
+  "labels": [
+   "A",
+   "B"
+  ],
+  "kind": "decode",
+  "w": 67,
+  "h": 48,
+  "gap": 13
+ },
+ {
+  "id": "r3.ppool",
+  "type": "box",
+  "x": 322,
+  "y": 1065,
+  "w": 176,
+  "h": 250,
+  "kind": "pool",
+  "title": "Prefill pool",
+  "title_size": 24,
+  "stack": 2,
+  "pins": true
+ },
+ {
+  "id": "r3.pre",
+  "type": "box",
+  "x": 350,
+  "y": 1123,
+  "w": 120,
+  "h": 74,
+  "kind": "prefill",
+  "title": "Prefill",
+  "title_size": 22
+ },
+ {
+  "id": "r3.pcells",
+  "type": "tokens",
+  "x": 362,
+  "y": 1170,
+  "labels": [
+   "",
+   "",
+   "",
+   "",
+   "",
+   ""
+  ],
+  "kind": "prefill",
+  "w": 13,
+  "h": 15,
+  "gap": 3
+ },
+ {
+  "id": "r3.kvc",
+  "type": "text",
+  "x": 410,
+  "y": 1214,
+  "text": "KV cache",
+  "size": 22,
+  "bold": true,
+  "color": "kv",
+  "anchor": "middle"
+ },
+ {
+  "id": "r3.kvcells",
+  "type": "tokens",
+  "x": 352,
+  "y": 1248,
+  "labels": [
+   "",
+   "",
+   ""
+  ],
+  "kind": "kv",
+  "w": 34,
+  "h": 27,
+  "gap": 6
+ },
+ {
+  "id": "r3.tr",
+  "type": "text",
+  "x": 410,
+  "y": 1285,
+  "text": "TRANSFERRING",
+  "size": 15,
+  "bold": true,
+  "color": "kv",
+  "anchor": "middle"
+ },
+ {
+  "id": "r3.copy",
+  "type": "text",
+  "x": 542,
+  "y": 1140,
+  "text": "KV",
+  "size": 22,
+  "bold": true,
+  "color": "kv",
+  "anchor": "middle"
+ },
+ {
+  "id": "r3.copy2",
+  "type": "text",
+  "x": 542,
+  "y": 1166,
+  "text": "copy",
+  "size": 22,
+  "bold": true,
+  "color": "kv",
+  "anchor": "middle"
+ },
+ {
+  "id": "r3.copyl",
+  "type": "arrow",
+  "points": [
+   [
+    498,
+    1262
+   ],
+   [
+    548,
+    1262
+   ],
+   [
+    548,
+    1205
+   ],
+   [
+    598,
+    1205
+   ]
+  ],
+  "color": "kv",
+  "nodes": true
+ },
+ {
+  "id": "r3.dpool",
+  "type": "box",
+  "x": 590,
+  "y": 1150,
+  "w": 178,
+  "h": 165,
+  "kind": "pool",
+  "title": "Decode pool",
+  "title_size": 24,
+  "stack": 2,
+  "pins": true
+ },
+ {
+  "id": "r3.dkv1",
+  "type": "tokens",
+  "x": 610,
+  "y": 1193,
+  "labels": [
+   ""
+  ],
+  "kind": "kv",
+  "w": 38,
+  "h": 22
+ },
+ {
+  "id": "r3.dkv2",
+  "type": "tokens",
+  "x": 655,
+  "y": 1193,
+  "labels": [
+   "",
+   ""
+  ],
+  "kind": "empty",
+  "w": 38,
+  "h": 22,
+  "gap": 5
+ },
+ {
+  "id": "r3.dab",
+  "type": "tokens",
+  "x": 610,
+  "y": 1223,
+  "labels": [
+   "A",
+   "B"
+  ],
+  "kind": "kv",
+  "w": 60,
+  "h": 20,
+  "gap": 6
+ },
+ {
+  "id": "r3.dec",
+  "type": "box",
+  "x": 617,
+  "y": 1255,
+  "w": 124,
+  "h": 45,
+  "kind": "decode",
+  "title": "Decode",
+  "title_size": 24
+ },
+ {
+  "id": "r3.prompt_in",
+  "type": "arrow",
+  "points": [
+   [
+    262,
+    1090
+   ],
+   [
+    305,
+    1090
+   ],
+   [
+    305,
+    1160
+   ],
+   [
+    320,
+    1160
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r3.stream_in",
+  "type": "arrow",
+  "points": [
+   [
+    205,
+    1256
+   ],
+   [
+    282,
+    1256
+   ],
+   [
+    296,
+    1345
+   ],
+   [
+    567,
+    1345
+   ],
+   [
+    578,
+    1278
+   ],
+   [
+    615,
+    1278
+   ]
+  ],
+  "color": "stream",
+  "dashed": true,
+  "nodes": true
+ },
+ {
+  "id": "r3.toout",
+  "type": "arrow",
+  "points": [
+   [
+    768,
+    1272
+   ],
+   [
+    786,
+    1272
+   ],
+   [
+    786,
+    1183
+   ],
+   [
+    828,
+    1183
+   ]
+  ],
+  "color": "stream",
+  "nodes": true
+ },
+ {
+  "id": "r3.fan",
+  "type": "arrow",
+  "points": [
+   [
+    786,
+    1183
+   ],
+   [
+    786,
+    1100
+   ],
+   [
+    805,
+    1100
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r3.fanB",
+  "type": "arrow",
+  "points": [
+   [
+    786,
+    1267
+   ],
+   [
+    828,
+    1267
+   ]
+  ],
+  "color": "stream"
+ },
+ {
+  "id": "r3.out",
+  "type": "text",
+  "x": 877,
+  "y": 1016,
+  "text": "Output tokens",
+  "size": 30,
+  "bold": true
+ },
+ {
+  "id": "r3.phase",
+  "type": "text",
+  "x": 882,
+  "y": 1052,
+  "text": "KV COPY",
+  "size": 18,
+  "bold": true,
+  "color": "muted"
+ },
+ {
+  "id": "r3.new",
+  "type": "lane",
+  "x": 878,
+  "y": 1099,
+  "w": 277,
+  "label": "New",
+  "tokens": [],
+  "label_size": 22,
+  "color": "text"
+ },
+ {
+  "id": "r3.laneA",
+  "type": "lane",
+  "x": 878,
+  "y": 1183,
+  "w": 277,
+  "label": "A",
+  "tokens": [
+   {
+    "at": 909,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 952,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 995,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1038,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1081,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1124,
+    "text": "A",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r3.laneB",
+  "type": "lane",
+  "x": 878,
+  "y": 1267,
+  "w": 277,
+  "label": "B",
+  "tokens": [
+   {
+    "at": 904,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 947,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 990,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1033,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1076,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1119,
+    "text": "B",
+    "kind": "decode"
+   }
+  ]
+ }
+]

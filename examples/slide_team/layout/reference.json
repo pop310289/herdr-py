@@ -1,0 +1,1019 @@
+[
+ {
+  "id": "r1.lp",
+  "type": "text",
+  "x": 40,
+  "y": 205,
+  "text": "Long prompt",
+  "size": 26,
+  "bold": true
+ },
+ {
+  "id": "r1.prompt",
+  "type": "tokens",
+  "x": 40,
+  "y": 245,
+  "labels": [
+   "P",
+   "P",
+   "P",
+   "P",
+   "P",
+   "P"
+  ],
+  "kind": "prompt"
+ },
+ {
+  "id": "r1.ls",
+  "type": "text",
+  "x": 40,
+  "y": 335,
+  "text": "Live streams",
+  "size": 26,
+  "bold": true
+ },
+ {
+  "id": "r1.streams",
+  "type": "tokens",
+  "x": 40,
+  "y": 375,
+  "labels": [
+   "A",
+   "B"
+  ],
+  "kind": "decode",
+  "w": 70,
+  "h": 48,
+  "gap": 14
+ },
+ {
+  "id": "r1.gpu",
+  "type": "box",
+  "x": 640,
+  "y": 185,
+  "w": 480,
+  "h": 265,
+  "kind": "gpu",
+  "title": "1 GPU",
+  "pins": true
+ },
+ {
+  "id": "r1.dec",
+  "type": "box",
+  "x": 670,
+  "y": 235,
+  "w": 250,
+  "h": 160,
+  "kind": "decode",
+  "title": "Decode",
+  "title_size": 24
+ },
+ {
+  "id": "r1.dec1",
+  "type": "tokens",
+  "x": 690,
+  "y": 290,
+  "labels": [
+   "A",
+   "B",
+   "P"
+  ],
+  "kind": "decode",
+  "w": 40,
+  "h": 36,
+  "gap": 8
+ },
+ {
+  "id": "r1.dec2",
+  "type": "tokens",
+  "x": 690,
+  "y": 340,
+  "labels": [
+   "A'",
+   "B'",
+   "P'"
+  ],
+  "kind": "outline",
+  "w": 40,
+  "h": 36,
+  "gap": 8
+ },
+ {
+  "id": "r1.kvl",
+  "type": "text",
+  "x": 1010,
+  "y": 225,
+  "text": "KV",
+  "size": 26,
+  "bold": true,
+  "color": "kv"
+ },
+ {
+  "id": "r1.kv",
+  "type": "grid",
+  "x": 990,
+  "y": 265,
+  "rows": 3,
+  "cols": 3,
+  "kind": "kv",
+  "row_labels": [
+   "P",
+   "A",
+   "B"
+  ]
+ },
+ {
+  "id": "r1.local",
+  "type": "text",
+  "x": 1000,
+  "y": 380,
+  "text": "local",
+  "size": 24,
+  "color": "kv"
+ },
+ {
+  "id": "r1.link1",
+  "type": "arrow",
+  "points": [
+   [
+    320,
+    265
+   ],
+   [
+    600,
+    265
+   ],
+   [
+    600,
+    315
+   ],
+   [
+    668,
+    315
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r1.link2",
+  "type": "arrow",
+  "points": [
+   [
+    200,
+    399
+   ],
+   [
+    600,
+    399
+   ],
+   [
+    600,
+    375
+   ],
+   [
+    668,
+    375
+   ]
+  ],
+  "color": "stream",
+  "dashed": true,
+  "nodes": true
+ },
+ {
+  "id": "r1.toout",
+  "type": "arrow",
+  "points": [
+   [
+    1120,
+    420
+   ],
+   [
+    1200,
+    420
+   ],
+   [
+    1200,
+    330
+   ],
+   [
+    1240,
+    330
+   ]
+  ],
+  "color": "stream",
+  "dashed": true,
+  "nodes": true
+ },
+ {
+  "id": "r1.out",
+  "type": "text",
+  "x": 1230,
+  "y": 195,
+  "text": "Output tokens",
+  "size": 28,
+  "bold": true
+ },
+ {
+  "id": "r1.timing",
+  "type": "text",
+  "x": 1880,
+  "y": 166,
+  "text": "Schematic timing",
+  "size": 18,
+  "color": "muted",
+  "anchor": "end"
+ },
+ {
+  "id": "r1.new",
+  "type": "lane",
+  "x": 1300,
+  "y": 255,
+  "w": 560,
+  "label": "New",
+  "tokens": [
+   {
+    "at": 1340,
+    "text": "P",
+    "kind": "decode"
+   }
+  ],
+  "label_size": 24
+ },
+ {
+  "id": "r1.laneA",
+  "type": "lane",
+  "x": 1300,
+  "y": 330,
+  "w": 560,
+  "label": "A",
+  "tokens": [
+   {
+    "at": 1340,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1820,
+    "text": "A",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r1.laneB",
+  "type": "lane",
+  "x": 1300,
+  "y": 405,
+  "w": 560,
+  "label": "B",
+  "tokens": [
+   {
+    "at": 1340,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1820,
+    "text": "B",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r2.lp",
+  "type": "text",
+  "x": 40,
+  "y": 515,
+  "text": "Long prompt",
+  "size": 26,
+  "bold": true
+ },
+ {
+  "id": "r2.prompt",
+  "type": "tokens",
+  "x": 40,
+  "y": 555,
+  "labels": [
+   "P",
+   "P",
+   "P",
+   "P"
+  ],
+  "kind": "prompt"
+ },
+ {
+  "id": "r2.chunk",
+  "type": "tokens",
+  "x": 240,
+  "y": 555,
+  "labels": [
+   "P",
+   "P"
+  ],
+  "kind": "prefill"
+ },
+ {
+  "id": "r2.ls",
+  "type": "text",
+  "x": 40,
+  "y": 645,
+  "text": "Live streams",
+  "size": 26,
+  "bold": true
+ },
+ {
+  "id": "r2.streams",
+  "type": "tokens",
+  "x": 40,
+  "y": 685,
+  "labels": [
+   "A",
+   "B"
+  ],
+  "kind": "decode",
+  "w": 70,
+  "h": 48,
+  "gap": 14
+ },
+ {
+  "id": "r2.wait",
+  "type": "text",
+  "x": 40,
+  "y": 742,
+  "text": "WAIT",
+  "size": 22,
+  "bold": true,
+  "color": "red"
+ },
+ {
+  "id": "r2.pause",
+  "type": "text",
+  "x": 330,
+  "y": 683,
+  "text": "||",
+  "size": 40,
+  "bold": true,
+  "color": "red"
+ },
+ {
+  "id": "r2.gpu",
+  "type": "box",
+  "x": 640,
+  "y": 495,
+  "w": 480,
+  "h": 265,
+  "kind": "gpu",
+  "title": "1 GPU",
+  "pins": true
+ },
+ {
+  "id": "r2.cbox",
+  "type": "box",
+  "x": 670,
+  "y": 545,
+  "w": 250,
+  "h": 170,
+  "kind": "chunk",
+  "title": "Chunk 3",
+  "title_size": 24
+ },
+ {
+  "id": "r2.c1",
+  "type": "tokens",
+  "x": 690,
+  "y": 600,
+  "labels": [
+   "P",
+   "P"
+  ],
+  "kind": "empty",
+  "w": 40,
+  "h": 36,
+  "gap": 8
+ },
+ {
+  "id": "r2.c1o",
+  "type": "tokens",
+  "x": 786,
+  "y": 600,
+  "labels": [
+   "P"
+  ],
+  "kind": "prefill",
+  "w": 40,
+  "h": 36
+ },
+ {
+  "id": "r2.c2",
+  "type": "tokens",
+  "x": 690,
+  "y": 650,
+  "labels": [
+   "P",
+   "P"
+  ],
+  "kind": "empty",
+  "w": 40,
+  "h": 36,
+  "gap": 8
+ },
+ {
+  "id": "r2.c2o",
+  "type": "tokens",
+  "x": 786,
+  "y": 650,
+  "labels": [
+   "P"
+  ],
+  "kind": "prefill",
+  "w": 40,
+  "h": 36
+ },
+ {
+  "id": "r2.kvl",
+  "type": "text",
+  "x": 1010,
+  "y": 535,
+  "text": "KV",
+  "size": 26,
+  "bold": true,
+  "color": "kv"
+ },
+ {
+  "id": "r2.kv",
+  "type": "grid",
+  "x": 990,
+  "y": 575,
+  "rows": 3,
+  "cols": 3,
+  "kind": "kv",
+  "row_labels": [
+   "P",
+   "A",
+   "B"
+  ]
+ },
+ {
+  "id": "r2.local",
+  "type": "text",
+  "x": 1000,
+  "y": 690,
+  "text": "local",
+  "size": 24,
+  "color": "kv"
+ },
+ {
+  "id": "r2.link",
+  "type": "arrow",
+  "points": [
+   [
+    340,
+    575
+   ],
+   [
+    600,
+    575
+   ],
+   [
+    600,
+    625
+   ],
+   [
+    668,
+    625
+   ]
+  ],
+  "color": "chunk",
+  "nodes": true
+ },
+ {
+  "id": "r2.paused",
+  "type": "arrow",
+  "points": [
+   [
+    200,
+    709
+   ],
+   [
+    610,
+    709
+   ]
+  ],
+  "color": "line",
+  "head": false
+ },
+ {
+  "id": "r2.toout",
+  "type": "arrow",
+  "points": [
+   [
+    1120,
+    730
+   ],
+   [
+    1200,
+    730
+   ],
+   [
+    1200,
+    660
+   ],
+   [
+    1240,
+    660
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r2.out",
+  "type": "text",
+  "x": 1230,
+  "y": 495,
+  "text": "Output tokens",
+  "size": 28,
+  "bold": true
+ },
+ {
+  "id": "r2.phase",
+  "type": "text",
+  "x": 1230,
+  "y": 532,
+  "text": "PREFILL",
+  "size": 20,
+  "bold": true,
+  "color": "muted"
+ },
+ {
+  "id": "r2.new",
+  "type": "lane",
+  "x": 1300,
+  "y": 590,
+  "w": 560,
+  "label": "New",
+  "tokens": [],
+  "label_size": 24
+ },
+ {
+  "id": "r2.laneA",
+  "type": "lane",
+  "x": 1300,
+  "y": 660,
+  "w": 560,
+  "label": "A",
+  "tokens": [
+   {
+    "at": 1360,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1580,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1800,
+    "text": "A",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r2.laneB",
+  "type": "lane",
+  "x": 1300,
+  "y": 730,
+  "w": 560,
+  "label": "B",
+  "tokens": [
+   {
+    "at": 1360,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1580,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1800,
+    "text": "B",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r3.lp",
+  "type": "text",
+  "x": 40,
+  "y": 825,
+  "text": "Long prompt",
+  "size": 26,
+  "bold": true
+ },
+ {
+  "id": "r3.prompt",
+  "type": "tokens",
+  "x": 40,
+  "y": 865,
+  "labels": [
+   "P",
+   "P",
+   "P",
+   "P",
+   "P",
+   "P"
+  ],
+  "kind": "prompt"
+ },
+ {
+  "id": "r3.ls",
+  "type": "text",
+  "x": 40,
+  "y": 950,
+  "text": "Live streams",
+  "size": 26,
+  "bold": true
+ },
+ {
+  "id": "r3.streams",
+  "type": "tokens",
+  "x": 40,
+  "y": 990,
+  "labels": [
+   "A",
+   "B"
+  ],
+  "kind": "decode",
+  "w": 70,
+  "h": 48,
+  "gap": 14
+ },
+ {
+  "id": "r3.ppool",
+  "type": "box",
+  "x": 560,
+  "y": 830,
+  "w": 250,
+  "h": 235,
+  "kind": "pool",
+  "title": "Prefill pool",
+  "title_size": 24,
+  "stack": 2
+ },
+ {
+  "id": "r3.pre",
+  "type": "box",
+  "x": 585,
+  "y": 880,
+  "w": 200,
+  "h": 72,
+  "kind": "prefill",
+  "title": "Prefill",
+  "title_size": 22
+ },
+ {
+  "id": "r3.pcells",
+  "type": "tokens",
+  "x": 609,
+  "y": 918,
+  "labels": [
+   "",
+   "",
+   "",
+   "",
+   "",
+   ""
+  ],
+  "kind": "prefill",
+  "w": 22,
+  "h": 22,
+  "gap": 4
+ },
+ {
+  "id": "r3.kvc",
+  "type": "text",
+  "x": 685,
+  "y": 962,
+  "text": "KV cache",
+  "size": 22,
+  "bold": true,
+  "color": "kv",
+  "anchor": "middle"
+ },
+ {
+  "id": "r3.kvcells",
+  "type": "tokens",
+  "x": 621,
+  "y": 994,
+  "labels": [
+   "",
+   "",
+   ""
+  ],
+  "kind": "kv",
+  "w": 40,
+  "h": 30,
+  "gap": 8
+ },
+ {
+  "id": "r3.tr",
+  "type": "text",
+  "x": 685,
+  "y": 1036,
+  "text": "TRANSFERRING",
+  "size": 16,
+  "bold": true,
+  "color": "kv",
+  "anchor": "middle"
+ },
+ {
+  "id": "r3.copy",
+  "type": "text",
+  "x": 872,
+  "y": 880,
+  "text": "KV copy",
+  "size": 22,
+  "bold": true,
+  "color": "kv",
+  "anchor": "middle"
+ },
+ {
+  "id": "r3.copyl",
+  "type": "arrow",
+  "points": [
+   [
+    812,
+    1000
+   ],
+   [
+    860,
+    1000
+   ],
+   [
+    860,
+    935
+   ],
+   [
+    928,
+    935
+   ]
+  ],
+  "color": "kv",
+  "nodes": true
+ },
+ {
+  "id": "r3.dpool",
+  "type": "box",
+  "x": 930,
+  "y": 860,
+  "w": 250,
+  "h": 205,
+  "kind": "pool",
+  "title": "Decode pool",
+  "title_size": 24,
+  "stack": 2
+ },
+ {
+  "id": "r3.dkv1",
+  "type": "tokens",
+  "x": 955,
+  "y": 905,
+  "labels": [
+   ""
+  ],
+  "kind": "kv",
+  "w": 60,
+  "h": 26
+ },
+ {
+  "id": "r3.dkv2",
+  "type": "tokens",
+  "x": 1021,
+  "y": 905,
+  "labels": [
+   "",
+   ""
+  ],
+  "kind": "empty",
+  "w": 60,
+  "h": 26,
+  "gap": 6
+ },
+ {
+  "id": "r3.dab",
+  "type": "tokens",
+  "x": 955,
+  "y": 938,
+  "labels": [
+   "A",
+   "B"
+  ],
+  "kind": "kv",
+  "w": 96,
+  "h": 26,
+  "gap": 8
+ },
+ {
+  "id": "r3.dec",
+  "type": "box",
+  "x": 950,
+  "y": 978,
+  "w": 210,
+  "h": 62,
+  "kind": "decode",
+  "title": "Decode",
+  "title_size": 24
+ },
+ {
+  "id": "r3.prompt_in",
+  "type": "arrow",
+  "points": [
+   [
+    320,
+    885
+   ],
+   [
+    540,
+    885
+   ],
+   [
+    540,
+    915
+   ],
+   [
+    583,
+    915
+   ]
+  ],
+  "color": "line"
+ },
+ {
+  "id": "r3.stream_in",
+  "type": "arrow",
+  "points": [
+   [
+    200,
+    1014
+   ],
+   [
+    480,
+    1014
+   ],
+   [
+    480,
+    1062
+   ],
+   [
+    900,
+    1062
+   ],
+   [
+    900,
+    1010
+   ],
+   [
+    948,
+    1010
+   ]
+  ],
+  "color": "stream",
+  "dashed": true,
+  "nodes": true
+ },
+ {
+  "id": "r3.toout",
+  "type": "arrow",
+  "points": [
+   [
+    1182,
+    1010
+   ],
+   [
+    1220,
+    1010
+   ],
+   [
+    1220,
+    965
+   ],
+   [
+    1240,
+    965
+   ]
+  ],
+  "color": "stream",
+  "nodes": true
+ },
+ {
+  "id": "r3.out",
+  "type": "text",
+  "x": 1230,
+  "y": 805,
+  "text": "Output tokens",
+  "size": 28,
+  "bold": true
+ },
+ {
+  "id": "r3.phase",
+  "type": "text",
+  "x": 1230,
+  "y": 842,
+  "text": "KV COPY",
+  "size": 20,
+  "bold": true,
+  "color": "muted"
+ },
+ {
+  "id": "r3.new",
+  "type": "lane",
+  "x": 1300,
+  "y": 900,
+  "w": 560,
+  "label": "New",
+  "tokens": [],
+  "label_size": 24
+ },
+ {
+  "id": "r3.laneA",
+  "type": "lane",
+  "x": 1300,
+  "y": 965,
+  "w": 560,
+  "label": "A",
+  "tokens": [
+   {
+    "at": 1340,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1390,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1440,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1490,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1540,
+    "text": "A",
+    "kind": "decode"
+   },
+   {
+    "at": 1590,
+    "text": "A",
+    "kind": "decode"
+   }
+  ]
+ },
+ {
+  "id": "r3.laneB",
+  "type": "lane",
+  "x": 1300,
+  "y": 1035,
+  "w": 560,
+  "label": "B",
+  "tokens": [
+   {
+    "at": 1340,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1390,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1440,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1490,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1540,
+    "text": "B",
+    "kind": "decode"
+   },
+   {
+    "at": 1590,
+    "text": "B",
+    "kind": "decode"
+   }
+  ]
+ }
+]

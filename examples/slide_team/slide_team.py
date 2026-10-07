@@ -87,14 +87,14 @@ FIX: <row or area> - <one specific change>
 (at most 5 FIX lines, the most important first; 10 means as clear and polished as the original)"""
 
 
-def screenshot(chrome, svg, png, profile, timeout=90):
+def screenshot(chrome, svg, png, profile, timeout=90, size=(1920, 1080)):
     """Headless Chrome screenshot of an SVG file. Chrome with a fresh profile can write the PNG and then not exit, so
     wait for the file to appear and stop changing, then end Chrome ourselves (it never touches the user's own profile)."""
     if os.path.exists(png):
         os.remove(png)
     proc = subprocess.Popen([chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
                              "--no-default-browser-check", "--disable-extensions", "--disable-component-update",
-                             "--disable-background-networking", "--disable-sync", "--window-size=1920,1080",
+                             "--disable-background-networking", "--disable-sync", "--window-size=%d,%d" % tuple(size),
                              "--user-data-dir=" + profile, "--screenshot=" + png, "file://" + svg],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     deadline, last, steady = time.time() + timeout, -1, None
