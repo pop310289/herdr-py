@@ -79,10 +79,11 @@ def frame(cols, rows, agents, chat, started):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--socket", required=True)
+    ap.add_argument("--socket", help="herdr-py daemon socket (OpenCode members)")
+    ap.add_argument("--agents-file", help="agents.json written by codex_agents.py (Codex members)")
     ap.add_argument("--chat", required=True)
     a = ap.parse_args()
-    client = Client(a.socket, timeout=10)
+    client = Client(a.socket, timeout=10) if a.socket else None
     chat, pos, ended, started = [], 0, None, time.time()
     sys.stdout.write("\x1b[?25l\x1b[2J")
     while True:
@@ -93,10 +94,18 @@ def main():
                     if line.endswith("\n"):
                         chat.append(json.loads(line))
                         pos += len(line.encode("utf-8"))
-        try:
-            agents = {x["name"]: x for x in client.call("agent.list")["agents"]}
-        except ClientError:
-            agents = {}
+        agents = {}
+        if client:
+            try:
+                agents = {x["name"]: x for x in client.call("agent.list")["agents"]}
+            except ClientError:
+                agents = {}
+        elif a.agents_file and os.path.exists(a.agents_file):
+            try:
+                with open(a.agents_file, encoding="utf-8") as handle:
+                    agents = json.load(handle)
+            except ValueError:
+                agents = {}
         cols, rows = shutil.get_terminal_size((66, 34))
         sys.stdout.write(frame(cols, rows, agents, chat, started))
         sys.stdout.flush()

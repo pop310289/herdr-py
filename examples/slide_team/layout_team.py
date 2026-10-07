@@ -13,6 +13,7 @@ Per row: drawA drafts -> check (errors go back to the same drawer, up to --fixes
 drawB revises -> keep the better -> art notes -> drawA revises ... (--revisions per row). chat.jsonl records who said
 what to whom (view.py shows it; the video is made from it).
 usage: layout_team.py --socket SOCK --workdir DIR --reference ref.png --open-slide PATH [--revisions 2]
+       layout_team.py --backend codex --workdir DIR --reference ref.png --open-slide PATH   (Codex CLI members)
 """
 import argparse
 import json
@@ -25,6 +26,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import components as C  # noqa: E402
+from codex_agents import CodexAgents  # noqa: E402
 import imgcmp  # noqa: E402
 import slide_team  # noqa: E402
 
@@ -122,8 +124,15 @@ def summary_of(comps):
 class LayoutTeam(slide_team.Team):
     def __init__(self, a):  # pylint: disable=super-init-not-called  (only chat and run_turn are shared with Team)
         self.a = a
-        self.client = slide_team.Client(a.socket, timeout=None)
         self.work = os.path.abspath(a.workdir)
+        if a.backend == "codex":  # Codex CLI sessions instead of OpenCode agents: same turns, same checks, same scores
+            self.codex = CodexAgents(os.path.join(self.work, "codex"), a.codex, a.codex_model)
+            self.run_turn = self.codex.run_turn
+            a.draw_model = a.art_model = a.codex_model
+        else:
+            if not a.socket:
+                raise SystemExit("--socket is needed with --backend opencode")
+            self.client = slide_team.Client(a.socket, timeout=None)
         self.renders = os.path.join(self.work, "renders")
         os.makedirs(self.renders, exist_ok=True)
         self.chat_file = open(a.chat or os.path.join(self.work, "chat.jsonl"), "a", encoding="utf-8", buffering=1)
@@ -279,6 +288,8 @@ class LayoutTeam(slide_team.Team):
         self.chat("supervisor", "team", f"finished: whole-slide match {result['match']:.3f}, PSNR {result['psnr']:.1f} dB, "
                                        f"{len(missing)} required labels missing", "control")
         self.chat("supervisor", "team", "finished", "end")
+        if getattr(self, "codex", None):
+            self.codex.close()
         return 0
 
     def make_deck(self, png):
@@ -300,7 +311,10 @@ class LayoutTeam(slide_team.Team):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--socket", required=True)
+    ap.add_argument("--socket", help="herdr-py daemon socket (backend opencode)")
+    ap.add_argument("--backend", choices=["opencode", "codex"], default="opencode")
+    ap.add_argument("--codex", help="codex executable (default: $CODEX_BIN, the one inside ChatGPT.app, or codex on PATH)")
+    ap.add_argument("--codex-model", help="model for every Codex member (default: the one in the user's Codex config)")
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--reference", required=True, help="the original picture, 1206 x 1441 PNG")
     ap.add_argument("--open-slide", required=True, help="folder that contains the open_slide_py package")

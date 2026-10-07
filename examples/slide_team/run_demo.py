@@ -43,6 +43,22 @@ def wait_for(cond, timeout, what):
     raise SystemExit(f"timed out waiting for {what}")
 
 
+def run_codex(a, run):
+    """Codex members: layout_team.py drives `codex exec` itself; the viewer reads codex/agents.json for their states."""
+    work = os.path.join(run, "work")
+    os.makedirs(work)
+    env = dict(os.environ, PYTHONPATH=REPO, PYTHONDONTWRITEBYTECODE="1")
+    chat, cast = os.path.join(work, "chat.jsonl"), os.path.join(run, "view.cast")
+    viewer = subprocess.Popen([PY, os.path.join(REPO, "tools", "rec.py"), "--cols", "66", "--rows", "34", "--out", cast,
+                               "--title", "herdr-py slide team (Codex)", "--", PY, os.path.join(HERE, "view.py"), "--chat", chat,
+                               "--agents-file", os.path.join(work, "codex", "agents.json")], env=env)
+    code = subprocess.call([PY, os.path.join(HERE, "layout_team.py"), "--backend", "codex", "--workdir", work, "--reference", a.reference,
+                            "--open-slide", a.open_slide, "--chat", chat, "--revisions", str(a.revisions)], env=env)
+    viewer.wait(timeout=120)
+    print(json.dumps({"run": run, "team_exit": code, "cast": cast}))
+    return code
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--reference", required=True)
@@ -56,8 +72,12 @@ def main():
     ap.add_argument("--arch", choices=["code", "layout"], default="layout",
                     help="code: drawers write make_deck.py (runs 1-3); layout: drawers describe rows in JSON, the program draws (layout_team.py)")
     ap.add_argument("--revisions", type=int, default=2)
+    ap.add_argument("--backend", choices=["opencode", "codex"], default="opencode",
+                    help="codex: Codex CLI members (layout architecture only); no container and no herdr-py daemon")
     a = ap.parse_args()
     run = os.path.join(a.out, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    if a.backend == "codex":
+        return run_codex(a, run)
     work, state = os.path.join(run, "work"), os.path.join(run, "state")
     os.makedirs(work)
     os.makedirs(state)
