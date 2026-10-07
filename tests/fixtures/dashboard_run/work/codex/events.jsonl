@@ -1,0 +1,6 @@
+{"t": 1001.0, "agent": "drawA", "argv": ["codex", "exec", "--json", "--skip-git-repo-check", "--", "<prompt>"]}
+{"t": 1001.1, "agent": "drawA", "event": {"type": "thread.started", "thread_id": "th-a1"}}
+{"t": 1020.1, "agent": "drawB", "event": {"type": "thread.started", "thread_id": "th-b1"}}
+{"t": 1029.9, "agent": "drawB", "event": {"type": "item.completed", "item": {"type": "agent_message", "text": "[...]"}}}
+{"t": 1040.1, "agent": "drawA", "event": {"type": "thread.started", "thread_id": "th-a2"}}
+{"t": 1070.1, "agent": "drawA", "event": {"type": "thread.started", "thread_id": "th-a2"}}

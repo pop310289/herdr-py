@@ -1,0 +1,3 @@
+{"drawA": {"name": "drawA", "state": "idle", "tokens": 12000, "turns": 3, "stream": {"kind": "text", "text": "(no reply)"}},
+ "drawB": {"name": "drawB", "state": "error", "tokens": 8000, "turns": 2, "stream": {"kind": "text", "text": ""}},
+ "art": {"name": "art", "state": "aborted", "tokens": 3000, "turns": 3, "stream": {"kind": "text", "text": "(no DIFF lines) the two rows look close"}}}

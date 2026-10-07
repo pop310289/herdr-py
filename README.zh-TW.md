@@ -82,6 +82,17 @@ herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，�
 
 `python3 -m herdr_py.diagnose 執行資料夾` 讀一次執行留下的紀錄（常駐程式的 `state/events.jsonl`、Codex 成員的 `work/codex/events.jsonl`、團隊的 `work/chat.jsonl`），列出每位成員的輪數、token、有效輸出與被採用的修改，以及找到的問題；每個問題都附上證明它的紀錄行號和一個建議。規則來自真實執行：輸出停在 token 上限而沒有文字、整輪只有思考（沒有文字也沒有工具呼叫）、對話中途被壓縮而回覆變成摘要、回覆不是要求的格式、超過每輪時間上限、整輪因錯誤失敗、同一個工具錯誤或權限拒絕一再發生、同一輪的程式檢查沒過卻宣稱完成、修改一再被退回、什麼都沒改就停下。每一輪最多只歸一個結果，最具體的原因優先。`--member drawA --turn 4` 印出那一輪的完整紀錄（指令開頭、回覆、思考長度、工具呼叫、token、結束原因、壓縮、錯誤、之後的檢查）；`--json` 給程式讀；`herdr_py.diagnose.findings(run_dir)` 回傳 dict 清單。
 
+## 團隊即時面板
+
+一頁唯讀網頁，在手機或電腦上即時看一次團隊執行：成員卡（狀態、token、輪數、用過幾個 session、最後說的話）、可依成員與種類篩選的對話時間軸、每一排的分數圖（初稿與每次修改、接受或退回、保留的版本）、我們的圖與原圖並排（滑桿切換每個保留的版本）、教訓清單與最後的數字。變化用 Server-Sent Events 推送。
+
+```bash
+python3 -m herdr_py.dashboard ~/.cache/herdr-slides/<某次執行> [--port 8770] [--socket <常駐程式的 socket>]
+# 會印出  open: http://127.0.0.1:8770/#token=...
+```
+
+RUN_DIR 是 `run_demo.py` 產生的執行資料夾（或 `layout_team.py --workdir`）。成員狀態來自 `work/codex/agents.json`（Codex 成員），加 `--socket` 則來自 herdr-py 常駐程式。`summary.json` 要到結束才寫，在那之前分數從對話讀出，所以圖會隨執行更新。和常駐程式的網頁一樣只聽 127.0.0.1，而且要用印出的連結裡的 token；只提供 RUN_DIR 裡的圖片檔、不跟隨任何符號連結（執行資料夾裡也有常駐程式的 `state/token`），沒有任何寫入的端點。
+
 ## 部署到 RHEL 8
 
 - RHEL 8 的 `python3` 是 3.6（`/usr/libexec/platform-python` 一定在）：herdr-py 可以用，設定檔請用 JSON。

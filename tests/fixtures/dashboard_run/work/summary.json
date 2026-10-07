@@ -1,0 +1,14 @@
+{
+ "turns": [
+  {"turn": 1, "row": 1, "drawer": "drawA", "kind": "draft", "valid": true, "match": 0.6121, "missing": ["KV"], "accepted": true},
+  {"turn": 2, "row": 1, "drawer": "drawB", "kind": "revise", "valid": true, "accepted": false, "match": 0.5984, "missing": ["KV"]},
+  {"turn": 3, "row": 1, "drawer": "drawA", "kind": "revise", "valid": true, "accepted": true, "match": 0.7012, "missing": []},
+  {"turn": 4, "row": 2, "drawer": "drawB", "kind": "draft", "valid": true, "match": 0.5403, "missing": ["WAIT", "Chunk 3"], "accepted": true},
+  {"turn": 5, "row": 2, "drawer": "drawA", "kind": "revise", "valid": false, "accepted": false}
+ ],
+ "final": {"match": 0.6551, "psnr": 14.21, "missing": ["WAIT", "Chunk 3", "KV copy"]},
+ "lessons": {
+  "a revision that lowered the picture match was rejected: change only what the notes ask": 1,
+  "the reply had no ```json block with a JSON list": 2
+ }
+}

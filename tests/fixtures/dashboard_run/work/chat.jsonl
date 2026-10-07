@@ -1,0 +1,33 @@
+{"t": 1000.0, "from": "supervisor", "to": "team", "kind": "control", "text": "task: rebuild the infographic row by row from the checklist; 2 revisions per row; the program keeps a version only when the picture match improves"}
+{"t": 1001.0, "from": "manager", "to": "drawA", "kind": "message", "text": "round 1: row 1 draft from the checklist"}
+{"t": 1010.0, "from": "drawA", "to": "supervisor", "kind": "message", "text": "12 components: r1.longPrompt, r1.prompt, r1.liveStreams, r1.gpu, r1.decode, r1.kv, ..."}
+{"t": 1010.0, "from": "check", "to": "drawA", "kind": "check", "text": "OK: 12 components"}
+{"t": 1012.0, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.612, 1 labels missing: first version kept"}
+{"t": 1012.5, "from": "render", "to": "art", "kind": "check", "text": "row 1: original and ours ready"}
+{"t": 1020.0, "from": "art", "to": "drawB", "kind": "message", "text": "DIFF: GPU box - move it about 20 px left\nDIFF: KV grid - add the green squares, three by three"}
+{"t": 1020.0, "from": "manager", "to": "drawB", "kind": "message", "text": "round 2: row 1 revise drawA's version: 2 art notes, 3 program notes"}
+{"t": 1030.0, "from": "drawB", "to": "supervisor", "kind": "message", "text": "14 components: r1.longPrompt, r1.prompt, r1.liveStreams, r1.gpu, r1.decode, r1.kv, ..."}
+{"t": 1030.0, "from": "check", "to": "drawB", "kind": "check", "text": "OK: 14 components"}
+{"t": 1032.0, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.612 -> 0.598, 1 labels missing: rejected, kept the better version"}
+{"t": 1032.0, "from": "lessons", "to": "team", "kind": "check", "text": "new lesson: a revision that lowered the picture match was rejected"}
+{"t": 1032.5, "from": "render", "to": "art", "kind": "check", "text": "row 1: original and ours ready"}
+{"t": 1040.0, "from": "art", "to": "drawA", "kind": "message", "text": "SAME"}
+{"t": 1040.0, "from": "manager", "to": "drawA", "kind": "message", "text": "round 3: row 1 revise drawB's version: 0 art notes, 3 program notes"}
+{"t": 1050.0, "from": "drawA", "to": "supervisor", "kind": "message", "text": "15 components: r1.longPrompt, r1.prompt, r1.liveStreams, r1.gpu, r1.decode, r1.kv, ..."}
+{"t": 1050.0, "from": "check", "to": "drawA", "kind": "check", "text": "OK: 15 components"}
+{"t": 1052.0, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.612 -> 0.701, 0 labels missing: accepted"}
+{"t": 1053.0, "from": "manager", "to": "drawB", "kind": "message", "text": "round 4: row 2 draft from the checklist"}
+{"t": 1060.0, "from": "drawB", "to": "supervisor", "kind": "message", "text": "10 components: r2.longPrompt, r2.prompt, r2.liveStreams, r2.gpu, r2.chunk, r2.kv, ..."}
+{"t": 1060.0, "from": "check", "to": "drawB", "kind": "check", "text": "OK: 10 components"}
+{"t": 1062.0, "from": "picture", "to": "team", "kind": "check", "text": "row 2: match 0.540, 2 labels missing: first version kept"}
+{"t": 1062.5, "from": "render", "to": "art", "kind": "check", "text": "row 2: original and ours ready"}
+{"t": 1070.0, "from": "art", "to": "drawA", "kind": "message", "text": "(no DIFF lines) the two rows look close"}
+{"t": 1070.0, "from": "manager", "to": "drawA", "kind": "message", "text": "round 5: row 2 revise drawB's version: 0 art notes, 4 program notes"}
+{"t": 1080.0, "from": "drawA", "to": "supervisor", "kind": "message", "text": "I drew the row."}
+{"t": 1080.0, "from": "lessons", "to": "team", "kind": "check", "text": "new lesson: the reply had no ```json block with a JSON list"}
+{"t": 1080.0, "from": "check", "to": "drawA", "kind": "check", "text": "1 errors: the reply had no ```json block with a JSON list"}
+{"t": 1080.0, "from": "supervisor", "to": "drawA", "kind": "control", "text": "fix: the reply had no ```json block with a JSON list"}
+{"t": 1085.0, "from": "drawA", "to": "supervisor", "kind": "message", "text": "(no reply)"}
+{"t": 1085.0, "from": "check", "to": "drawA", "kind": "check", "text": "1 errors: the reply had no ```json block with a JSON list"}
+{"t": 1090.0, "from": "supervisor", "to": "team", "kind": "control", "text": "finished: whole-slide match 0.655, PSNR 14.2 dB, 3 required labels missing"}
+{"t": 1090.0, "from": "supervisor", "to": "team", "kind": "end", "text": "finished"}

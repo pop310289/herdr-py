@@ -140,6 +140,24 @@ specific cause first. On the qwen3 run in the table above:
 reason, compactions, errors, the checks that followed); `--json` is for programs, and `herdr_py.diagnose.findings(run_dir)`
 returns the findings as a list of dicts.
 
+## Live team dashboard
+
+One read-only page that shows a team run while it happens, on a phone or a desktop: member cards (state, tokens, turns,
+sessions, last words), the conversation as a timeline you can filter by member and kind, a score chart per row (the
+draft and every revision, accepted or rejected, and the version kept), our picture next to the original with a slider
+over the kept versions, the lessons list and the final numbers. Changes arrive over Server-Sent Events.
+
+```bash
+python3 -m herdr_py.dashboard ~/.cache/herdr-slides/<run> [--port 8770] [--socket <daemon socket>]
+# prints  open: http://127.0.0.1:8770/#token=...
+```
+
+RUN_DIR is a run folder from `run_demo.py` (or a `layout_team.py --workdir`). Member states come from
+`work/codex/agents.json` (Codex members) or, with `--socket`, from the herdr-py daemon. Until `summary.json` is written
+at the end, the scores are read from the conversation, so the chart moves during the run. Like the daemon's web page it
+listens on 127.0.0.1 and needs the token in the printed link; it serves only image files inside RUN_DIR and follows no
+symlinks (a run folder also holds the daemon's `state/token`), and it has no write endpoints.
+
 ## Programmatic use
 
 The daemon listens on a Unix socket (default `~/.local/state/herdr-py/herdr-py.sock`) speaking newline-delimited JSON:

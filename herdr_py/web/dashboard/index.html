@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>Team run</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body>
+<a class="skip" href="#timeline">Skip to the conversation</a>
+<header class="bar">
+  <div class="brand">
+    <h1>Team run</h1>
+    <span id="run-name" class="run-name"></span>
+  </div>
+  <div class="tools">
+    <span id="conn" class="conn" role="status" aria-live="polite">connecting…</span>
+    <button id="theme" type="button" class="small">Theme: auto</button>
+  </div>
+</header>
+<main class="layout">
+  <section class="status" aria-labelledby="status-h">
+    <h2 id="status-h" class="sr-only">Status</h2>
+    <p id="progress" class="progress">Waiting for the first update…</p>
+    <ul id="tiles" class="tiles"></ul>
+  </section>
+
+  <section class="members-sec" aria-labelledby="members-h">
+    <h2 id="members-h">Members</h2>
+    <p id="members-note" class="note" hidden></p>
+    <ul id="members" class="members"></ul>
+  </section>
+
+  <section class="scores-sec" aria-labelledby="scores-h">
+    <h2 id="scores-h">Scores per row</h2>
+    <p class="note">Picture match: the share of colour squares that match the original (1 = identical). A revision is
+      kept only when it scores higher.</p>
+    <ul class="legend" aria-label="Legend">
+      <li><svg class="key" viewBox="0 0 24 12" aria-hidden="true"><line class="kept-line" x1="1" y1="6" x2="23" y2="6"></line></svg>kept version</li>
+      <li><svg class="key" viewBox="0 0 12 12" aria-hidden="true"><circle class="dot-accepted" cx="6" cy="6" r="4.5"></circle></svg>accepted</li>
+      <li><svg class="key" viewBox="0 0 12 12" aria-hidden="true"><circle class="dot-rejected" cx="6" cy="6" r="4"></circle></svg>rejected</li>
+      <li><svg class="key" viewBox="0 0 12 12" aria-hidden="true"><path class="cross" d="M2 2 L10 10 M10 2 L2 10"></path></svg>could not be drawn</li>
+    </ul>
+    <p id="scores-empty" class="note">No scores yet: a row gets one when the program has drawn its first version.</p>
+    <div id="charts" class="charts"></div>
+    <div id="tip" class="tip" role="tooltip" hidden></div>
+  </section>
+
+  <section class="pictures-sec" aria-labelledby="pictures-h">
+    <h2 id="pictures-h">Ours and the original</h2>
+    <p id="pictures-empty" class="note">No picture yet: one appears every time the program keeps a version.</p>
+    <div id="pictures" hidden>
+      <div class="stepper">
+        <button id="prev" type="button" class="small" aria-label="Earlier picture">‹</button>
+        <input id="step" type="range" min="0" max="0" value="0" step="1" aria-label="Kept picture">
+        <button id="next" type="button" class="small" aria-label="Later picture">›</button>
+      </div>
+      <p id="step-label" class="caption" aria-live="polite"></p>
+      <div class="pair">
+        <figure>
+          <img id="pic-ours" alt="" decoding="async">
+          <p id="miss-ours" class="note" hidden></p>
+          <figcaption id="cap-ours"></figcaption>
+        </figure>
+        <figure>
+          <img id="pic-original" alt="" decoding="async">
+          <p id="miss-original" class="note" hidden></p>
+          <figcaption id="cap-original"></figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+
+  <section class="talk-sec" aria-labelledby="talk-h">
+    <h2 id="talk-h">Conversation</h2>
+    <div class="filters">
+      <label class="field">Member
+        <select id="f-member"><option value="">everyone</option></select>
+      </label>
+      <fieldset class="kinds">
+        <legend>Kinds</legend>
+        <label><input type="checkbox" name="kind" value="message" checked> message</label>
+        <label><input type="checkbox" name="kind" value="check" checked> check</label>
+        <label><input type="checkbox" name="kind" value="control" checked> control</label>
+        <label><input type="checkbox" name="kind" value="end" checked> end</label>
+      </fieldset>
+    </div>
+    <p id="talk-count" class="note"></p>
+    <ol id="timeline" class="timeline" tabindex="0" role="log" aria-label="Conversation, oldest first"></ol>
+    <button id="latest" type="button" class="small latest" hidden>New lines below: jump to the latest</button>
+  </section>
+
+  <section class="lessons-sec" aria-labelledby="lessons-h">
+    <h2 id="lessons-h">Lessons</h2>
+    <p id="lessons-empty" class="note">None yet: the program adds one for every kind of mistake it catches, and puts the
+      list at the top of every later prompt.</p>
+    <ol id="lessons" class="lessons"></ol>
+  </section>
+</main>
+
+<template id="member-tpl">
+  <li class="member">
+    <div class="m-head"><strong class="m-name"></strong><span class="chip"></span><span class="m-since note"></span></div>
+    <dl class="m-stats">
+      <div><dt>tokens</dt><dd class="m-tokens"></dd></div>
+      <div><dt>turns</dt><dd class="m-turns"></dd></div>
+      <div><dt>sessions</dt><dd class="m-sessions"></dd></div>
+    </dl>
+    <dl class="m-counters" hidden></dl>
+    <p class="m-pending" hidden></p>
+    <p class="m-words-label note"></p>
+    <p class="m-words"></p>
+  </li>
+</template>
+<script src="dashboard.js"></script>
+</body>
+</html>
