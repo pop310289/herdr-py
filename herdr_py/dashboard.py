@@ -476,11 +476,15 @@ class RunFolder:
             lessons = [{"text": str(k), "count": count(v)} for k, v in lessons.items()]
         else:
             lessons = [{"text": m["text"][len(LESSON):], "count": None} for m in run if m["from"] == "lessons" and m["text"].startswith(LESSON)]
-        final = summary.get("final") if isinstance(summary.get("final"), dict) else None
-        if final is not None:
-            missing = final.get("missing")
-            final = {"match": number(final.get("match")), "psnr": number(final.get("psnr")),
+        given = summary.get("final") if isinstance(summary.get("final"), dict) else None
+        final = None
+        if given is not None:
+            missing = given.get("missing")
+            final = {"match": number(given.get("match")), "psnr": number(given.get("psnr")),
                      "missing": [str(x) for x in missing] if isinstance(missing, list) else None}
+            if number(given.get("strict")) is not None:  # runs scored by scoring.py (layout_team.py --score)
+                final["strict"] = number(given.get("strict"))
+                final["score_mode"] = given.get("score_mode") if given.get("score_mode") in ("strict", "match") else None
         progress = None
         for m in reversed(run):
             found = ROUND.match(m["text"]) if m["from"] == "manager" else None

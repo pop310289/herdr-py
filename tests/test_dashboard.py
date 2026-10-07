@@ -57,6 +57,23 @@ def points(rows):
 
 
 class ModelTest(unittest.TestCase):
+    def test_a_strict_run_shows_its_strict_score_and_what_decided(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder)
+        shutil.copytree(os.path.join(FIXTURE, "work"), os.path.join(folder, "work"))
+        path = os.path.join(folder, "work", "summary.json")
+        with open(path) as handle:
+            summary = json.load(handle)
+        summary["final"].update(strict=0.8728, score_mode="strict")
+        with open(path, "w") as handle:
+            json.dump(summary, handle)
+        run = D.RunFolder(folder)
+        run.refresh()
+        self.assertEqual({k: run.state()["final"][k] for k in ("match", "strict", "score_mode")},
+                         {"match": 0.6551, "strict": 0.8728, "score_mode": "strict"})
+        with open(os.path.join(D.WEB_DIR, "dashboard.js"), encoding="utf-8") as handle:
+            self.assertIn('"Strict score"', handle.read())  # the page has a tile for it
+
     def test_the_fixture_pictures_are_16_by_16_pngs(self):
         for name in ("01-row1-draft.png", "row1-original.png"):
             self.assertEqual(imgcmp.read_png(os.path.join(FIXTURE, "work", "renders", name))[:2], (16, 16))

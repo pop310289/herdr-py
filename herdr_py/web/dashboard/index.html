@@ -35,8 +35,9 @@
 
   <section class="scores-sec" aria-labelledby="scores-h">
     <h2 id="scores-h">Scores per row</h2>
-    <p class="note">Picture match: the share of colour squares that match the original (1 = identical). A revision is
-      kept only when it scores higher.</p>
+    <p class="note">The chart shows the picture match: the share of colour squares that match the original (1 = identical).
+      A revision is kept only when its score rises; in strict mode (the default) that score also checks borders and text
+      colour, so a rejected point can sit above the kept line. The conversation gives both numbers.</p>
     <ul class="legend" aria-label="Legend">
       <li><svg class="key" viewBox="0 0 24 12" aria-hidden="true"><line class="kept-line" x1="1" y1="6" x2="23" y2="6"></line></svg>kept version</li>
       <li><svg class="key" viewBox="0 0 12 12" aria-hidden="true"><circle class="dot-accepted" cx="6" cy="6" r="4.5"></circle></svg>accepted</li>

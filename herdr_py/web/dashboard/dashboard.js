@@ -186,7 +186,11 @@ function renderStatus() {
   const f = s.final;
   if (f) {
     const missing = Array.isArray(f.missing) ? f.missing : null;
-    tiles.push(["Whole-slide match", fmt3(f.match), "1 = identical"], ["PSNR", fmtPsnr(f.psnr), "higher is closer"],
+    tiles.push(["Whole-slide match", fmt3(f.match), "1 = identical"]);
+    if (typeof f.strict === "number") {  // scoring.py: match plus borders and text colour
+      tiles.push(["Strict score", fmt3(f.strict), f.score_mode === "strict" ? "decided which revisions were kept" : "logged; match decided"]);
+    }
+    tiles.push(["PSNR", fmtPsnr(f.psnr), "higher is closer"],
       ["Missing labels", missing ? String(missing.length) : "–",
         missing ? (missing.length ? missing.join(", ") : "every required label is there") : ""]);
   }
