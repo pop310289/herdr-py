@@ -1,0 +1,5 @@
+{"t": 1791401999.99, "from": "manager", "to": "drawA", "kind": "message", "text": "round 1: row 1 draft from the checklist"}
+{"t": 1791402041.9, "from": "drawA", "to": "supervisor", "kind": "message", "text": "I placed the title Long prompt at the top left and the 1 GPU box in the middle of the row, with the Decode box inside it."}
+{"t": 1791402041.9, "from": "lessons", "to": "team", "kind": "check", "text": "new lesson: the reply had no ```json block with a JSON list"}
+{"t": 1791402041.9, "from": "check", "to": "drawA", "kind": "check", "text": "1 errors: the reply had no ```json block with a JSON list"}
+{"t": 1791402041.9, "from": "supervisor", "to": "drawA", "kind": "control", "text": "fix: the reply had no ```json block with a JSON list"}

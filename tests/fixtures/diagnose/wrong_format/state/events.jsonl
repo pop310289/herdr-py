@@ -1,0 +1,10 @@
+{"t": 1791402000.0, "hub": "start", "agent": "drawA", "session": "ses_drawA1"}
+{"t": 1791402000.0, "hub": "prompt", "agent": "drawA", "source": "start", "text": "You are drawA, a slide drawer. Turn the checklist for row 1 into a JSON list of components: one checklist line\nbecomes one component (two when the line names two things). Do not write code, do not use tools, do not skip lines.\n\n## Row 1\n- \"Long prompt\": text, bold, size 28, at x 50, y 220\n- the 1 GPU box, kind gpu, at x 384, y 262\nReply with ONLY one ```json block that contains the list."}
+{"t": 1791402000.0, "hub": "state", "agent": "drawA", "state": "starting", "reason": "prompt"}
+{"t": 1791402000.1, "opencode": {"type": "session.status", "properties": {"sessionID": "ses_drawA1", "status": {"type": "busy"}}}}
+{"t": 1791402000.1, "hub": "state", "agent": "drawA", "state": "working", "reason": "busy"}
+{"t": 1791402000.2, "opencode": {"type": "message.updated", "properties": {"sessionID": "ses_drawA1", "info": {"id": "msg_dA_a1", "role": "assistant", "sessionID": "ses_drawA1"}}}}
+{"t": 1791402041.5, "opencode": {"type": "message.part.updated", "properties": {"sessionID": "ses_drawA1", "part": {"id": "prt_dA_t1", "messageID": "msg_dA_a1", "sessionID": "ses_drawA1", "type": "text", "text": "I placed the title Long prompt at the top left and the 1 GPU box in the middle of the row, with the Decode box inside it."}}}}
+{"t": 1791402041.5, "opencode": {"type": "message.part.updated", "properties": {"sessionID": "ses_drawA1", "part": {"id": "prt_dA_f1", "messageID": "msg_dA_a1", "sessionID": "ses_drawA1", "type": "step-finish", "reason": "stop", "tokens": {"total": 6220, "input": 6100, "output": 120, "reasoning": 0, "cache": {"write": 0, "read": 0}}, "cost": 0}}}}
+{"t": 1791402041.5, "opencode": {"type": "session.status", "properties": {"sessionID": "ses_drawA1", "status": {"type": "idle"}}}}
+{"t": 1791402041.5, "hub": "state", "agent": "drawA", "state": "idle", "reason": "idle"}

@@ -1,0 +1,5 @@
+{"t": 1791402199.99, "from": "manager", "to": "drawB", "kind": "message", "text": "round 8: row 3 revise drawA's version: 3 art notes, 4 program notes"}
+{"t": 1791402800.4, "from": "supervisor", "to": "drawB", "kind": "control", "text": "stopped: over the 600s turn limit"}
+{"t": 1791402800.42, "from": "drawB", "to": "supervisor", "kind": "message", "text": "(no reply)"}
+{"t": 1791402800.42, "from": "check", "to": "drawB", "kind": "check", "text": "1 errors: the reply had no ```json block with a JSON list"}
+{"t": 1791402800.42, "from": "supervisor", "to": "drawB", "kind": "control", "text": "fix: the reply had no ```json block with a JSON list"}

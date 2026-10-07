@@ -1,0 +1,13 @@
+{"t": 1791400000.99, "from": "supervisor", "to": "team", "kind": "control", "text": "task: rebuild the infographic row by row from the checklist; 1 revisions per row; the program keeps a version only when the picture match improves"}
+{"t": 1791400000.99, "from": "manager", "to": "drawA", "kind": "message", "text": "round 1: row 1 draft from the checklist"}
+{"t": 1791400035.4, "from": "drawA", "to": "supervisor", "kind": "message", "text": "2 components: r1.title, r1.prompt"}
+{"t": 1791400035.4, "from": "check", "to": "drawA", "kind": "check", "text": "OK: 2 components"}
+{"t": 1791400038.1, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.702, 0 labels missing: first version kept"}
+{"t": 1791400038.5, "from": "render", "to": "art", "kind": "check", "text": "row 1: original and ours ready"}
+{"t": 1791400060.3, "from": "art", "to": "drawB", "kind": "message", "text": "DIFF: Long prompt tokens - make them 6 instead of 3"}
+{"t": 1791400060.3, "from": "manager", "to": "drawB", "kind": "message", "text": "round 2: row 1 revise drawA's version: 1 art notes, 2 program notes"}
+{"t": 1791400090.4, "from": "drawB", "to": "supervisor", "kind": "message", "text": "2 components: r1.title, r1.prompt"}
+{"t": 1791400090.4, "from": "check", "to": "drawB", "kind": "check", "text": "OK: 2 components"}
+{"t": 1791400093.0, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.702 -> 0.781, 0 labels missing: accepted"}
+{"t": 1791400094.0, "from": "supervisor", "to": "team", "kind": "control", "text": "finished: whole-slide match 0.781, PSNR 15.1 dB, 0 required labels missing"}
+{"t": 1791400094.0, "from": "supervisor", "to": "team", "kind": "end", "text": "finished"}

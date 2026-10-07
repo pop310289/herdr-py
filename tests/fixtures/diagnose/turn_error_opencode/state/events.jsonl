@@ -1,0 +1,10 @@
+{"t": 1791407000.0, "hub": "start", "agent": "drawA", "session": "ses_drawA1"}
+{"t": 1791407000.0, "hub": "prompt", "agent": "drawA", "source": "start", "text": "You are drawA, a slide drawer. Turn the checklist for row 1 into a JSON list of components: one checklist line\nbecomes one component (two when the line names two things). Do not write code, do not use tools, do not skip lines.\n\n## Row 1\n- \"Long prompt\": text, bold, size 28, at x 50, y 220\nReply with ONLY one ```json block that contains the list."}
+{"t": 1791407000.0, "hub": "state", "agent": "drawA", "state": "starting", "reason": "prompt"}
+{"t": 1791407000.1, "opencode": {"type": "session.status", "properties": {"sessionID": "ses_drawA1", "status": {"type": "busy"}}}}
+{"t": 1791407000.1, "hub": "state", "agent": "drawA", "state": "working", "reason": "busy"}
+{"t": 1791407000.2, "opencode": {"type": "message.updated", "properties": {"sessionID": "ses_drawA1", "info": {"id": "msg_dA_a1", "role": "assistant", "sessionID": "ses_drawA1"}}}}
+{"t": 1791407001.3, "opencode": {"type": "session.error", "properties": {"sessionID": "ses_drawA1", "error": {"name": "APIError", "data": {"message": "model \"qwen3-8b-32k:latest\" not found, try pulling it first", "statusCode": 404, "isRetryable": false}}}}}
+{"t": 1791407001.3, "hub": "state", "agent": "drawA", "state": "error", "reason": "session.error"}
+{"t": 1791407001.3, "opencode": {"type": "message.updated", "properties": {"sessionID": "ses_drawA1", "info": {"id": "msg_dA_a1", "role": "assistant", "sessionID": "ses_drawA1", "error": {"name": "APIError", "data": {"message": "model \"qwen3-8b-32k:latest\" not found, try pulling it first", "statusCode": 404, "isRetryable": false}}}}}}
+{"t": 1791407001.3, "opencode": {"type": "session.idle", "properties": {"sessionID": "ses_drawA1"}}}

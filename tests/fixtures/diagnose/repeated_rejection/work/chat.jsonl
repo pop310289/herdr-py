@@ -1,0 +1,5 @@
+{"t": 1791403499.99, "from": "manager", "to": "drawA", "kind": "message", "text": "round 1: ROW 1 \"Shared worker\" (top 160)"}
+{"t": 1791403651.4, "from": "drawA", "to": "supervisor", "kind": "message", "text": "make_deck.py now draws the Long prompt label and six P tokens for row 1."}
+{"t": 1791403651.9, "from": "build", "to": "supervisor", "kind": "check", "text": "make_deck.py ran; deck.json rebuilt"}
+{"t": 1791403652.2, "from": "lint", "to": "drawB", "kind": "check", "text": "OK"}
+{"t": 1791403652.2, "from": "content", "to": "drawB", "kind": "check", "text": "all required labels present"}

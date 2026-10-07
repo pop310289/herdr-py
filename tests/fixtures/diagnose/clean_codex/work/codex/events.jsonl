@@ -1,0 +1,15 @@
+{"t": 1791400100.0, "agent": "drawA", "argv": ["codex", "exec", "--json", "--skip-git-repo-check", "-s", "read-only", "-C", "work/codex/drawA", "--", "<prompt>"]}
+{"t": 1791400101.2, "agent": "drawA", "event": {"type": "thread.started", "thread_id": "thread-drawA-1"}}
+{"t": 1791400101.3, "agent": "drawA", "event": {"type": "turn.started"}}
+{"t": 1791400120.0, "agent": "drawA", "event": {"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "```json\n[{\"id\": \"r1.longPrompt\", \"type\": \"text\", \"x\": 50, \"y\": 220, \"text\": \"Long prompt\", \"size\": 28, \"bold\": true},\n {\"id\": \"r1.prompt\", \"type\": \"tokens\", \"x\": 50, \"y\": 265, \"labels\": [\"P\", \"P\", \"P\", \"P\", \"P\", \"P\"], \"kind\": \"prompt\"}]\n```"}}}
+{"t": 1791400120.2, "agent": "drawA", "event": {"type": "turn.completed", "usage": {"input_tokens": 20537, "cached_input_tokens": 13824, "cache_write_input_tokens": 0, "output_tokens": 1117, "reasoning_output_tokens": 233}}}
+{"t": 1791400126.9, "agent": "art", "argv": ["codex", "exec", "--json", "--skip-git-repo-check", "-s", "read-only", "-C", "work/codex/art", "-i", "work/renders/row1-original.png", "-i", "work/renders/row1-ours-01.png", "--", "<prompt>"]}
+{"t": 1791400127.7, "agent": "art", "event": {"type": "thread.started", "thread_id": "thread-art-1"}}
+{"t": 1791400127.8, "agent": "art", "event": {"type": "turn.started"}}
+{"t": 1791400154.1, "agent": "art", "event": {"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "DIFF: Output routing - add the gray vertical connector at x 774 with branches to New and B.\nDIFF: Long prompt - move the tokens 20 px left."}}}
+{"t": 1791400155.5, "agent": "art", "event": {"type": "turn.completed", "usage": {"input_tokens": 20763, "cached_input_tokens": 7168, "cache_write_input_tokens": 0, "output_tokens": 604, "reasoning_output_tokens": 516}}}
+{"t": 1791400160.7, "agent": "drawB", "argv": ["codex", "exec", "--json", "--skip-git-repo-check", "-s", "read-only", "-C", "work/codex/drawB", "--", "<prompt>"]}
+{"t": 1791400162.8, "agent": "drawB", "event": {"type": "thread.started", "thread_id": "thread-drawB-1"}}
+{"t": 1791400163.0, "agent": "drawB", "event": {"type": "turn.started"}}
+{"t": 1791400277.9, "agent": "drawB", "event": {"type": "item.completed", "item": {"id": "item_0", "type": "agent_message", "text": "```json\n[{\"id\": \"r1.longPrompt\", \"type\": \"text\", \"x\": 30, \"y\": 220, \"text\": \"Long prompt\", \"size\": 28, \"bold\": true},\n {\"id\": \"r1.prompt\", \"type\": \"tokens\", \"x\": 30, \"y\": 265, \"labels\": [\"P\", \"P\", \"P\", \"P\", \"P\", \"P\"], \"kind\": \"prompt\"},\n {\"id\": \"r1.route\", \"type\": \"arrow\", \"points\": [[774, 139], [774, 306]], \"color\": \"line\"}]\n```"}}}
+{"t": 1791400278.1, "agent": "drawB", "event": {"type": "turn.completed", "usage": {"input_tokens": 23321, "cached_input_tokens": 7168, "cache_write_input_tokens": 0, "output_tokens": 5043, "reasoning_output_tokens": 2542}}}

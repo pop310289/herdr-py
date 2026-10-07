@@ -1,0 +1,2 @@
+{"t": 1791406500.92, "agent": "art", "argv": ["codex", "exec", "--json", "--skip-git-repo-check", "-s", "read-only", "-C", "work/codex/art", "-i", "work/renders/row1-original.png", "-i", "work/renders/row1-ours-01.png", "<prompt>"]}
+{"t": 1791406502.14, "agent": "art", "exit": 1, "stderr": "Reading prompt from stdin...\nNo prompt provided via stdin.\n"}

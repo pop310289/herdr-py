@@ -1,0 +1,5 @@
+{"t": 1791407499.99, "from": "manager", "to": "drawB", "kind": "message", "text": "round 4: row 2 draft from the checklist"}
+{"t": 1791407533.5, "from": "drawB", "to": "supervisor", "kind": "message", "text": "Row 2 needs the WAIT label in red under the live streams and a chunk box inside the GPU box; the rest can stay as drawA left it."}
+{"t": 1791407533.5, "from": "lessons", "to": "team", "kind": "check", "text": "new lesson: the reply had no ```json block with a JSON list"}
+{"t": 1791407533.5, "from": "check", "to": "drawB", "kind": "check", "text": "1 errors: the reply had no ```json block with a JSON list"}
+{"t": 1791407533.5, "from": "supervisor", "to": "drawB", "kind": "control", "text": "fix: the reply had no ```json block with a JSON list"}

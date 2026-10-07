@@ -1,0 +1,4 @@
+{"t": 1791402300.0, "agent": "drawA", "argv": ["codex", "exec", "--json", "--skip-git-repo-check", "-s", "read-only", "-C", "work/codex/drawA", "--", "<prompt>"]}
+{"t": 1791402301.4, "agent": "drawA", "event": {"type": "thread.started", "thread_id": "thread-drawA-1"}}
+{"t": 1791402301.5, "agent": "drawA", "event": {"type": "turn.started"}}
+{"t": 1791402900.0, "agent": "drawA", "exit": -9, "stderr": ""}

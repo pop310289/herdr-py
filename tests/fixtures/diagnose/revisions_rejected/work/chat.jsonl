@@ -1,0 +1,27 @@
+{"t": 1791404499.99, "from": "supervisor", "to": "team", "kind": "control", "text": "task: rebuild the infographic row by row from the checklist; 2 revisions per row; the program keeps a version only when the picture match improves"}
+{"t": 1791404499.99, "from": "manager", "to": "drawA", "kind": "message", "text": "round 1: row 1 draft from the checklist"}
+{"t": 1791404520.3, "from": "drawA", "to": "supervisor", "kind": "message", "text": "2 components: r1.longPrompt, r1.prompt"}
+{"t": 1791404520.3, "from": "check", "to": "drawA", "kind": "check", "text": "OK: 2 components"}
+{"t": 1791404527.0, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.775, 0 labels missing: first version kept"}
+{"t": 1791404529.99, "from": "manager", "to": "drawB", "kind": "message", "text": "round 2: row 1 revise drawA's version: 3 art notes, 4 program notes"}
+{"t": 1791404640.3, "from": "drawB", "to": "supervisor", "kind": "message", "text": "2 components: r1.longPrompt, r1.prompt"}
+{"t": 1791404640.3, "from": "check", "to": "drawB", "kind": "check", "text": "OK: 2 components; 2 warnings: r1.longPrompt: \"stroke_width\" is not a text setting and was ignored; r1.prompt: \"stroke_width\" is not a tokens setting and was ignored"}
+{"t": 1791404646.9, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.775 -> 0.776, 0 labels missing: rejected, kept the better version"}
+{"t": 1791404646.9, "from": "lessons", "to": "team", "kind": "check", "text": "new lesson: a revision that lowered the picture match was rejected"}
+{"t": 1791404649.99, "from": "manager", "to": "drawA", "kind": "message", "text": "round 3: row 1 revise drawB's version: 3 art notes, 4 program notes"}
+{"t": 1791404740.3, "from": "drawA", "to": "supervisor", "kind": "message", "text": "3 components: r1.longPrompt, r1.prompt, r1.route"}
+{"t": 1791404740.3, "from": "check", "to": "drawA", "kind": "check", "text": "OK: 3 components"}
+{"t": 1791404744.0, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.775 -> 0.864, 0 labels missing: accepted"}
+{"t": 1791404749.99, "from": "manager", "to": "drawB", "kind": "message", "text": "round 4: row 2 draft from the checklist"}
+{"t": 1791404790.3, "from": "drawB", "to": "supervisor", "kind": "message", "text": "2 components: r2.longPrompt, r2.wait"}
+{"t": 1791404790.3, "from": "check", "to": "drawB", "kind": "check", "text": "OK: 2 components"}
+{"t": 1791404793.0, "from": "picture", "to": "team", "kind": "check", "text": "row 2: match 0.834, 0 labels missing: first version kept"}
+{"t": 1791404799.99, "from": "manager", "to": "drawA", "kind": "message", "text": "round 5: row 2 revise drawB's version: 3 art notes, 4 program notes"}
+{"t": 1791404890.3, "from": "drawA", "to": "supervisor", "kind": "message", "text": "2 components: r2.longPrompt, r2.wait"}
+{"t": 1791404890.3, "from": "check", "to": "drawA", "kind": "check", "text": "OK: 2 components"}
+{"t": 1791404895.0, "from": "picture", "to": "team", "kind": "check", "text": "row 2: match 0.834 -> 0.853, 0 labels missing: accepted"}
+{"t": 1791404899.99, "from": "manager", "to": "drawB", "kind": "message", "text": "round 6: row 2 revise drawA's version: 3 art notes, 4 program notes"}
+{"t": 1791405040.3, "from": "drawB", "to": "supervisor", "kind": "message", "text": "3 components: r2.longPrompt, r2.wait, r2.placeholder"}
+{"t": 1791405040.3, "from": "check", "to": "drawB", "kind": "check", "text": "OK: 3 components"}
+{"t": 1791405052.0, "from": "picture", "to": "team", "kind": "check", "text": "row 2: match 0.853 -> 0.821, 0 labels missing: rejected, kept the better version"}
+{"t": 1791405060.0, "from": "supervisor", "to": "team", "kind": "end", "text": "finished"}

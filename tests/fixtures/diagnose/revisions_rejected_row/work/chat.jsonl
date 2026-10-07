@@ -1,0 +1,19 @@
+{"t": 1791405000.0, "from": "supervisor", "to": "team", "kind": "control", "text": "task: rebuild the infographic row by row from the checklist; 2 revisions per row; the program keeps a version only when the picture match improves"}
+{"t": 1791405000.0, "from": "manager", "to": "drawA", "kind": "message", "text": "round 1: row 1 draft from the checklist"}
+{"t": 1791405101.3, "from": "drawA", "to": "supervisor", "kind": "message", "text": "24 components: r1.title, r1.prompt, r1.text2, r1.decode, r1.gpu, r1.decodebox, ..."}
+{"t": 1791405101.3, "from": "check", "to": "drawA", "kind": "check", "text": "OK: 24 components; 1 warnings: texts r1.lane1 and r1.lane1token overlap; move one of them"}
+{"t": 1791405104.5, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.763, 0 labels missing: first version kept"}
+{"t": 1791405104.8, "from": "render", "to": "art", "kind": "check", "text": "row 1: original and ours ready"}
+{"t": 1791405362.1, "from": "art", "to": "drawB", "kind": "message", "text": "(no DIFF lines) "}
+{"t": 1791405362.1, "from": "manager", "to": "drawB", "kind": "message", "text": "round 2: row 1 revise drawA's version: 0 art notes, 4 program notes"}
+{"t": 1791405587.3, "from": "drawB", "to": "supervisor", "kind": "message", "text": "24 components: r1.title, r1.prompt, r1.text2, r1.decode, r1.gpu, r1.decodebox, ..."}
+{"t": 1791405587.3, "from": "check", "to": "drawB", "kind": "check", "text": "OK: 24 components; 1 warnings: texts r1.lane1 and r1.lane1token overlap; move one of them"}
+{"t": 1791405592.8, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.763 -> 0.692, 0 labels missing: rejected, kept the better version"}
+{"t": 1791405592.8, "from": "lessons", "to": "team", "kind": "check", "text": "new lesson: a revision that lowered the picture match was rejected"}
+{"t": 1791405593.1, "from": "render", "to": "art", "kind": "check", "text": "row 1: original and ours ready"}
+{"t": 1791405870.1, "from": "art", "to": "drawA", "kind": "message", "text": "(no DIFF lines) "}
+{"t": 1791405870.1, "from": "manager", "to": "drawA", "kind": "message", "text": "round 3: row 1 revise drawB's version: 0 art notes, 4 program notes"}
+{"t": 1791406260.1, "from": "drawA", "to": "supervisor", "kind": "message", "text": "24 components: r1.title, r1.prompt, r1.text2, r1.decode, r1.gpu, r1.decodebox, ..."}
+{"t": 1791406260.1, "from": "check", "to": "drawA", "kind": "check", "text": "OK: 24 components; 1 warnings: texts r1.lane1 and r1.lane1token overlap; move one of them"}
+{"t": 1791406263.2, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.763 -> 0.711, 1 labels missing: rejected, kept the better version"}
+{"t": 1791406263.2, "from": "manager", "to": "drawB", "kind": "message", "text": "round 4: row 2 draft from the checklist"}

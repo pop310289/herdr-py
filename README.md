@@ -115,6 +115,31 @@ Run it with `python3 examples/slide_team/run_demo.py --reference original.png --
 (add `--backend codex` for Codex members). Renders use headless Chrome; the OpenCode team needs the image from
 `examples/slide_team/Dockerfile` and the two Ollama models named in `run_demo.py`.
 
+## Debugging a run
+
+`python3 -m herdr_py.diagnose RUN_DIR` reads what a run leaves behind (`state/events.jsonl` from the daemon,
+`work/codex/events.jsonl` from Codex members, `work/chat.jsonl` from the team) and says what went wrong with each member
+and what to do about it: a table per member (turns, tokens, valid outputs, accepted revisions) and findings, each with
+the log lines that prove it and one suggestion. The rules come from real runs: output stopped at the token limit with no
+text; a turn that ended with reasoning only; a session compacted mid-turn whose reply was the summary; a reply without
+the asked format; the turn time limit; a turn that failed with an error; the same tool error or permission rejection
+again and again; success claimed while the program's check of the same round failed; revisions rejected again and
+again; a member that stopped without changing anything. Each turn gets at most one of the turn outcomes, the most
+specific cause first. On the qwen3 run in the table above:
+
+```
+[1] output_limit  art: output stopped at the token limit with no text (2 turns)
+    art turn 1  22:48:20  state/events.jsonl:52  step-finish reason length after 4,096 output tokens; 15,598 chars of reasoning, no text
+    do: Raise the model's output limit (limit.output in the OpenCode model config) or ask for a shorter answer.
+[5] compacted_reply  drawA: the session was compacted during the turn and the reply after it is not the asked format
+    drawA turn 4  23:33:03  state/events.jsonl:316, state/events.jsonl:309  compacted at 23:42:13; the reply after it is the compaction summary: '## Objective ...
+    do: Start every turn in a fresh session (agent.start with fresh=true; layout_team.py --sessions fresh) and put ...
+```
+
+`--member drawA --turn 4` prints that turn in full (prompt head, reply, reasoning length, tool calls, tokens, finish
+reason, compactions, errors, the checks that followed); `--json` is for programs, and `herdr_py.diagnose.findings(run_dir)`
+returns the findings as a list of dicts.
+
 ## Programmatic use
 
 The daemon listens on a Unix socket (default `~/.local/state/herdr-py/herdr-py.sock`) speaking newline-delimited JSON:
@@ -147,7 +172,7 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 70 tests; fake OpenCode server and fake Codex CLI, no model needed
+python3 -m unittest discover -s tests        # 105 tests; fake OpenCode server and fake Codex CLI, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

@@ -1,0 +1,5 @@
+{"t": 1791402299.99, "from": "manager", "to": "drawA", "kind": "message", "text": "round 1: row 1 draft from the checklist"}
+{"t": 1791402900.01, "from": "drawA", "to": "supervisor", "kind": "message", "text": "(no reply)"}
+{"t": 1791402900.01, "from": "lessons", "to": "team", "kind": "check", "text": "new lesson: the reply had no ```json block with a JSON list"}
+{"t": 1791402900.01, "from": "check", "to": "drawA", "kind": "check", "text": "1 errors: the reply had no ```json block with a JSON list"}
+{"t": 1791402900.01, "from": "supervisor", "to": "drawA", "kind": "control", "text": "fix: the reply had no ```json block with a JSON list"}

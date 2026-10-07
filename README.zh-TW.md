@@ -78,6 +78,10 @@ herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，�
 
 執行：`python3 examples/slide_team/run_demo.py --reference 原圖.png --open-slide open-slide-py 的路徑`（加 `--backend codex` 改用 Codex）。渲染用無頭 Chrome；OpenCode 團隊需要 `examples/slide_team/Dockerfile` 建的映像，以及 `run_demo.py` 裡寫的兩個 Ollama 模型。
 
+## 除錯：成員哪裡出了問題、該怎麼辦
+
+`python3 -m herdr_py.diagnose 執行資料夾` 讀一次執行留下的紀錄（常駐程式的 `state/events.jsonl`、Codex 成員的 `work/codex/events.jsonl`、團隊的 `work/chat.jsonl`），列出每位成員的輪數、token、有效輸出與被採用的修改，以及找到的問題；每個問題都附上證明它的紀錄行號和一個建議。規則來自真實執行：輸出停在 token 上限而沒有文字、整輪只有思考（沒有文字也沒有工具呼叫）、對話中途被壓縮而回覆變成摘要、回覆不是要求的格式、超過每輪時間上限、整輪因錯誤失敗、同一個工具錯誤或權限拒絕一再發生、同一輪的程式檢查沒過卻宣稱完成、修改一再被退回、什麼都沒改就停下。每一輪最多只歸一個結果，最具體的原因優先。`--member drawA --turn 4` 印出那一輪的完整紀錄（指令開頭、回覆、思考長度、工具呼叫、token、結束原因、壓縮、錯誤、之後的檢查）；`--json` 給程式讀；`herdr_py.diagnose.findings(run_dir)` 回傳 dict 清單。
+
 ## 部署到 RHEL 8
 
 - RHEL 8 的 `python3` 是 3.6（`/usr/libexec/platform-python` 一定在）：herdr-py 可以用，設定檔請用 JSON。
@@ -89,7 +93,7 @@ herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，�
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 70 項，用假的 OpenCode 伺服器和假的 Codex CLI，不需要模型
+python3 -m unittest discover -s tests        # 105 項，用假的 OpenCode 伺服器和假的 Codex CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

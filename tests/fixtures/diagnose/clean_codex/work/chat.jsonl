@@ -1,0 +1,12 @@
+{"t": 1791400099.99, "from": "supervisor", "to": "team", "kind": "control", "text": "task: rebuild the infographic row by row from the checklist; 1 revisions per row; the program keeps a version only when the picture match improves"}
+{"t": 1791400099.99, "from": "manager", "to": "drawA", "kind": "message", "text": "round 1: row 1 draft from the checklist"}
+{"t": 1791400120.3, "from": "drawA", "to": "supervisor", "kind": "message", "text": "2 components: r1.longPrompt, r1.prompt"}
+{"t": 1791400120.3, "from": "check", "to": "drawA", "kind": "check", "text": "OK: 2 components"}
+{"t": 1791400126.5, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.775, 0 labels missing: first version kept"}
+{"t": 1791400126.9, "from": "render", "to": "art", "kind": "check", "text": "row 1: original and ours ready"}
+{"t": 1791400160.7, "from": "art", "to": "drawB", "kind": "message", "text": "DIFF: Output routing - add the gray vertical connector at x 774 with branches to New and B.\nDIFF: Long prompt - move the tokens 20 px left."}
+{"t": 1791400160.7, "from": "manager", "to": "drawB", "kind": "message", "text": "round 2: row 1 revise drawA's version: 2 art notes, 4 program notes"}
+{"t": 1791400278.2, "from": "drawB", "to": "supervisor", "kind": "message", "text": "3 components: r1.longPrompt, r1.prompt, r1.route"}
+{"t": 1791400278.2, "from": "check", "to": "drawB", "kind": "check", "text": "OK: 3 components"}
+{"t": 1791400284.9, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.775 -> 0.864, 0 labels missing: accepted"}
+{"t": 1791400290.0, "from": "supervisor", "to": "team", "kind": "end", "text": "finished"}

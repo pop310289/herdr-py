@@ -1,0 +1,4 @@
+{"t": 1791406500.43, "from": "picture", "to": "team", "kind": "check", "text": "row 1: match 0.775, 0 labels missing: first version kept"}
+{"t": 1791406500.9, "from": "render", "to": "art", "kind": "check", "text": "row 1: original and ours ready"}
+{"t": 1791406502.15, "from": "art", "to": "drawB", "kind": "message", "text": "(no DIFF lines) "}
+{"t": 1791406502.15, "from": "manager", "to": "drawB", "kind": "message", "text": "round 2: row 1 revise drawA's version: 0 art notes, 4 program notes"}
