@@ -53,6 +53,7 @@ def main():
     ap.add_argument("--out", default=os.path.join(os.path.expanduser("~"), ".cache", "herdr-slides"))
     ap.add_argument("--port", type=int, default=4540)
     ap.add_argument("--check-vision", action="store_true", help="only check that the vision model sees attached images")
+    ap.add_argument("--plan", choices=["none", "rows"], default="rows")
     a = ap.parse_args()
     run = os.path.join(a.out, datetime.datetime.now().strftime("%Y%m%d-%H%M%S"))
     work, state = os.path.join(run, "work"), os.path.join(run, "state")
@@ -99,7 +100,8 @@ def main():
                                    "--title", "herdr-py slide team", "--", PY, os.path.join(HERE, "view.py"), "--socket", sock,
                                    "--chat", chat], env=env)
         code = subprocess.call([PY, os.path.join(HERE, "slide_team.py"), "--socket", sock, "--workdir", work, "--reference", a.reference,
-                                "--open-slide", a.open_slide, "--rounds", str(a.rounds), "--target", str(a.target), "--chat", chat], env=env)
+                                "--open-slide", a.open_slide, "--rounds", str(a.rounds), "--target", str(a.target), "--chat", chat,
+                                "--plan", a.plan], env=env)
         viewer.wait(timeout=120)
         print(json.dumps({"run": run, "team_exit": code, "cast": cast}))
         return code

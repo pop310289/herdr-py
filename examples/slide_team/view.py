@@ -16,7 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from herdr_py.client import Client, ClientError  # noqa: E402
 from herdr_py.display import row, tail, text_width  # noqa: E402
 
-ROLE = {"supervisor": "1;97", "drawA": "36", "drawB": "35", "art": "33", "lint": "32", "content": "32", "render": "32", "team": "1;97"}
+ROLE = {"manager": "1;94", "supervisor": "1;97", "drawA": "36", "drawB": "35", "art": "33", "lint": "32", "content": "32", "render": "32", "team": "1;97"}
 STATE = {"starting": ("start", "30;47"), "working": ("working", "30;43"), "retry": ("retry", "30;45"), "blocked": ("asks", "97;41"),
          "idle": ("idle", "30;42"), "aborted": ("stopped", "97;100"), "error": ("error", "97;41")}
 
@@ -29,7 +29,7 @@ def wrap(text, width):
 
 
 def frame(cols, rows, agents, chat, started):
-    rounds = [m for m in chat if m["from"] == "supervisor" and m["text"].startswith("round ")]
+    rounds = [m for m in chat if m["from"] in ("supervisor", "manager") and m["text"].startswith("round ")]
     scores = [m["text"].split()[1] for m in chat if m["from"] == "art" and m["text"].startswith("SCORE")]
     left = f" herdr-py · slide team · round {len(rounds)}"
     right = ("score " + " > ".join(s.split("/")[0] for s in scores) + "/10 " if scores else "") + time.strftime("%H:%M:%S ")

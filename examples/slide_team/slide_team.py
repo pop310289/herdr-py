@@ -52,6 +52,23 @@ Layout checker (open_slide_py validate): {lint}
 Labels still missing from the slide: {missing}
 Edit make_deck.py, then run python3 make_deck.py and python3 -m open_slide_py validate deck.json yourself with the bash tool,
 and update NOTES.md. The work is not done until deck.json is regenerated and validate passes."""
+PLAN = ["ROW 1 \"Shared worker\" (top 160): Long prompt + six P tokens, Live streams + A and B, the 1 GPU box with the Decode box "
+        "and the KV grid (labels KV, local), the connector lines, and the Output tokens lanes New / A / B.",
+        "ROW 2 \"Chunked prefill\" (top 470): the same parts as row 1, but the GPU box holds an orange \"Chunk 3\" box, the last two P "
+        "tokens are orange, and the live streams wait (red || mark and red WAIT label); output label PREFILL.",
+        "ROW 3 \"Separate prefill + decode\" (top 780): the Prefill pool (orange Prefill box, green KV cache squares, TRANSFERRING) and "
+        "the Decode pool (green A B squares, blue Decode box), the KV copy label between them, dense A and B outputs; output label KV COPY.",
+        "POLISH: fix the art director's points and any missing labels; make spacing even and nothing overlap."]
+PLANNED = """You are {name}, a slide drawer. The manager gives you this round's part:
+{assignment}
+{prev} worked on the slide before you. First read make_deck.py, kit.py and SPEC.md. kit.py has the helpers:
+text(x, y, w, h, s, size, color, bold, align), box(x, y, w, h, fill, stroke, radius), token(x, y, label, kind), tokens(x, y, labels, kind),
+line(x, y, w, h, color, width) and dot(x, y). Token kinds: prompt, prefill, kv, decode.
+Then rewrite the WHOLE make_deck.py with the write tool (do not use the edit tool): keep everything that is already there and add your part.
+The art director's last review (score {score}/10):
+{fixes}
+Labels still missing: {missing}. Layout checker: {lint}.
+Run python3 make_deck.py and python3 -m open_slide_py validate deck.json yourself with the bash tool and fix any error. Update NOTES.md."""
 ART = """You are the art director. Image 1 is the original infographic. Ignore the like, comment and share icons and the number 53
 on its right edge: they belong to the phone app, not to the diagram. Image 2 is our slide (round {round}).
 Compare them carefully: the three rows, the GPU and pool boxes, the token boxes, colours, labels, connector lines, alignment, spacing.
@@ -110,6 +127,9 @@ class Team:
         self.ref_small = os.path.join(self.renders, "reference-small.png")
         subprocess.run(["sips", "-Z", "1000", a.reference, "--out", self.ref_small], stdout=subprocess.DEVNULL, check=True)
         shutil.copy(os.path.join(HERE, "SPEC.md"), os.path.join(self.work, "SPEC.md"))
+        if a.plan == "rows":  # a starter kit, as a real project would provide: helpers plus a skeleton with the header done
+            for name in ("kit.py", "make_deck.py"):
+                shutil.copy(os.path.join(HERE, "scaffold", name), os.path.join(self.work, name))
 
     def chat(self, frm, to, text, kind="message"):
         self.chat_file.write(json.dumps({"t": round(time.time(), 2), "from": frm, "to": to, "kind": kind, "text": text}, ensure_ascii=False) + "\n")
@@ -176,7 +196,14 @@ class Team:
         score, fixes, lint_text, missing = 0, [], "", []
         for round_no in range(1, a.rounds + 1):
             drawer = drawers[(round_no - 1) % 2]
-            if round_no == 1:
+            if a.plan == "rows":
+                step = PLAN[min(round_no, len(PLAN)) - 1]
+                prev = "The manager (it set up kit.py and the skeleton)" if round_no == 1 else drawers[round_no % 2]
+                prompt = PLANNED.format(name=drawer, assignment=step, prev=prev, score=score,
+                                        fixes="\n".join(fixes) or "(no review yet)", missing=", ".join(missing) or "none",
+                                        lint=lint_text or "no problems")
+                self.chat("manager", drawer, f"round {round_no}: {step.split(':')[0]}" + (f" + {len(fixes)} fixes from art" if fixes else ""))
+            elif round_no == 1:
                 prompt = FIRST.format(name=drawer, example=EXAMPLE)
                 self.chat("supervisor", drawer, "round 1: draw the slide from SPEC.md (open-slide-py, make_deck.py -> deck.json)")
             else:
@@ -237,6 +264,8 @@ def main():
     ap.add_argument("--turn-timeout", type=int, default=900)
     ap.add_argument("--chrome", default=CHROME)
     ap.add_argument("--chat")
+    ap.add_argument("--plan", choices=["none", "rows"], default="none",
+                    help="rows: give the drawers a starter kit and let the manager assign one row per round")
     return Team(ap.parse_args()).run()
 
 
