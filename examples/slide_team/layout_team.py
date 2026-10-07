@@ -198,7 +198,7 @@ class LayoutTeam(slide_team.Team):
         missing = C.missing(comps, ROW_LABELS[n])
         return {"match": round(result["match"], 4), "psnr": round(result["psnr"], 2), "missing": missing, "png": png,
                 "strict": round(result["strict"], 4), "score": round(score_of(result["score"], missing), 4),
-                "notes": scoring.feedback(result, limit=4),
+                "notes": scoring.feedback(result, limit=4) if self.a.notes == "strict" else imgcmp.feedback(result, limit=4),
                 "comps": comps}
 
     def strict_note(self, old, ev):
@@ -370,6 +370,10 @@ def arguments():
     ap.add_argument("--score", choices=scoring.SCORE_MODES, default="strict",
                     help="strict: keep a revision only when the score that also sees borders and text colour rises (scoring.py); "
                          "match: the square-colour match alone, as before")
+    ap.add_argument("--notes", choices=("match", "strict"), default="match",
+                    help="program notes in revise prompts: match (fill notes, as before) or strict (border and text colour notes "
+                         "first). On 2026-10-08 Codex revisions with the strict notes lost on average; with the match notes they "
+                         "gained on the strict score")
     ap.add_argument("--draw-model", default="ollama/qwen3-8b-32k:latest")
     ap.add_argument("--art-model", default="ollama/qwen3-vl-32k:latest")
     ap.add_argument("--turn-timeout", type=int, default=600)

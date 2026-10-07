@@ -120,6 +120,9 @@ strict = (fill + stroke + text) / 3 from `scoring.py` rises: fill is the square 
 on edge pixels only. On the Codex run's row 3, the draft scores strict 0.843 and the revision that turned a Prefill box's
 border and title blue 0.777 (match said 0.562 → 0.634), so strict keeps the draft; putting only that border and title
 back to orange moves match 0.6345 → 0.6368 but strict 0.777 → 0.861. `--score match` is the old rule.
+Revisers still get the fill notes (`--notes match`, the default): with strict's colour notes instead, 12 Codex revisions
+lost 0.072 strict on average and none improved, while 4 of 6 improved with the fill notes (one night, one-sided Fisher
+p = 0.005; the revisions of one run are not independent, so treat it as a strong hint).
 Drawers can also set border widths, title colours, dashed boxes, outlined tokens, taller grid cells, curved arrows and
 italic text, and use an `svg` component: its markup is checked before it is drawn (SVG drawing elements only, no
 scripts, events or animation, links only to `#id` or embedded png/jpeg/gif) and re-written from the parsed tree.
@@ -212,7 +215,7 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 254 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 257 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

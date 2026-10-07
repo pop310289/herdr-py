@@ -11,7 +11,7 @@ The spec is JSON; relative paths are relative to the spec file:
      "members": [{"name": "drawA", "role": "drawer", "backend": "claude", "model": "haiku", "sessions": "fresh"},
                  {"name": "drawB", "role": "drawer", "backend": "opencode", "model": "ollama/qwen3-8b-32k:latest"},
                  {"name": "art", "role": "art", "backend": "codex", "sessions": "keep"}],
-     "rounds": {"revisions": 2, "fixes": 2, "score": "strict"},                                    (optional; score: strict|match)
+     "rounds": {"revisions": 2, "fixes": 2, "score": "strict", "notes": "match"},                  (optional; score, notes: strict|match)
      "timeouts": {"turn": 600, "art": 300},                                                        (optional, seconds)
      "opencode": {"url": "http://127.0.0.1:4096", "password_file": "~/.config/opencode-password"},  (when a member uses it)
      "chrome": "/path/to/chrome", "open_slide": "/path/to/open-slide-py",                          (optional)
@@ -172,7 +172,7 @@ def load_spec(path):
             problems.append("members: at least one drawer (role drawer)")
     spec["members"] = members
 
-    rounds = section(raw, "rounds", {"revisions", "fixes", "score"}, problems)
+    rounds = section(raw, "rounds", {"revisions", "fixes", "score", "notes"}, problems)
     spec["rounds"] = {"revisions": rounds.get("revisions", defaults.revisions), "fixes": rounds.get("fixes", defaults.fixes)}
     for key, value in spec["rounds"].items():
         if not whole(value, 0):
@@ -180,6 +180,9 @@ def load_spec(path):
     spec["rounds"]["score"] = rounds.get("score", defaults.score)  # which score keeps a revision (layout_team.py --score)
     if spec["rounds"]["score"] not in L.scoring.SCORE_MODES:
         problems.append(f"rounds.score: one of {', '.join(L.scoring.SCORE_MODES)}")
+    spec["rounds"]["notes"] = rounds.get("notes", defaults.notes)  # which program notes revisers get (layout_team.py --notes)
+    if spec["rounds"]["notes"] not in ("match", "strict"):
+        problems.append("rounds.notes: one of match, strict")
     timeouts = section(raw, "timeouts", {"turn", "art"}, problems)
     spec["timeouts"] = {"turn": timeouts.get("turn", defaults.turn_timeout), "art": timeouts.get("art", defaults.art_timeout)}
     for key, value in spec["timeouts"].items():
@@ -350,7 +353,7 @@ def stop_daemon(proc, sock):
 
 def team_args(spec, folder):
     argv = ["--workdir", folder, "--reference", spec["task"]["original"], "--open-slide", spec["open_slide"] or "",
-            "--revisions", str(spec["rounds"]["revisions"]), "--fixes", str(spec["rounds"]["fixes"]), "--score", spec["rounds"]["score"],
+            "--revisions", str(spec["rounds"]["revisions"]), "--fixes", str(spec["rounds"]["fixes"]), "--score", spec["rounds"]["score"], "--notes", spec["rounds"]["notes"],
             "--turn-timeout", str(spec["timeouts"]["turn"]), "--art-timeout", str(spec["timeouts"]["art"]),
             "--chrome", spec["chrome"]]
     if spec["task"]["checklist"]:

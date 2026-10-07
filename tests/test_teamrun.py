@@ -121,7 +121,7 @@ class RepeatedRunTest(unittest.TestCase):
         with open(again, "rb") as a, open(os.path.join(self.rep(1), "slide.png"), "rb") as b:
             self.assertEqual(a.read(), b.read())
         with open(os.path.join(self.out, "spec.json")) as handle:
-            self.assertEqual(json.load(handle)["rounds"], {"revisions": 2, "fixes": 2, "score": "strict"})  # the default score that keeps a revision
+            self.assertEqual(json.load(handle)["rounds"], {"revisions": 2, "fixes": 2, "score": "strict", "notes": "match"})  # the defaults
         self.assertIn(f"{self.REPS} of {self.REPS} runs finished", self.stdout)
 
     def test_report_numbers_come_from_the_files(self):
@@ -351,7 +351,8 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(spec["task"]["original"], os.path.join(self.dir, "original.png"))
         self.assertEqual(spec["output"], os.path.join(self.dir, "specs", "out"))
         defaults = L.arguments().parse_args(["--workdir", ".", "--reference", ".", "--open-slide", ""])
-        self.assertEqual(spec["rounds"], {"revisions": defaults.revisions, "fixes": defaults.fixes, "score": defaults.score})
+        self.assertEqual(spec["rounds"], {"revisions": defaults.revisions, "fixes": defaults.fixes, "score": defaults.score,
+                                          "notes": defaults.notes})
         self.assertEqual(spec["timeouts"], {"turn": defaults.turn_timeout, "art": defaults.art_timeout})
         self.assertEqual({m["sessions"] for m in spec["members"]}, {"fresh"})
         self.assertEqual(spec["opencode"]["policy"], os.path.join(LAYOUT, "policy.json"))
@@ -363,9 +364,37 @@ class SpecTest(unittest.TestCase):
         self.assertEqual(spec["rounds"]["score"], "match")
         self.assertEqual(teamrun.team_args(spec, self.dir).score, "match")
         self.assertEqual(teamrun.team_args(teamrun.load_spec(spec_with()), self.dir).score, "strict")
-        code, _, err = quiet(teamrun.main, [spec_with(score="fuzzy")], renderer=RectRenderer())
+        code, _, err = quiet(teamrun.main, [spec_with(score="fuzzy", notes="loud")], renderer=RectRenderer())
         self.assertEqual(code, 2)
         self.assertIn("rounds.score: one of match, strict", err)
+        self.assertIn("rounds.notes: one of match, strict", err)
+        self.assertEqual(teamrun.team_args(teamrun.load_spec(spec_with(notes="strict")), self.dir).notes, "strict")
+
+    def test_revisers_get_the_notes_asked_for_while_strict_decides(self):
+        """evaluate() picks the program notes by --notes, independent of --score (stub renderer, no Chrome)."""
+        import types
+        svg, picture = os.path.join(self.dir, "ours.svg"), os.path.join(self.dir, "ours.png")
+        with open(svg, "w") as handle:  # an orange box where row 1 of the original has other things: notes in both modes
+            handle.write('<svg xmlns="http://www.w3.org/2000/svg" width="1206" height="1441">'
+                         '<rect x="0" y="0" width="1206" height="1441" fill="#FFFFFF"/>'
+                         '<rect x="400" y="200" width="300" height="300" fill="#FDEBD0" stroke="#C77C02" stroke-width="4"/></svg>')
+        RectRenderer().render(svg, picture, L.SIZE)
+        original = imgcmp.read_png(os.path.join(self.dir, "original.png"))
+        team = types.SimpleNamespace(rows={1: [], 2: [], 3: []}, base=[], original=original,
+                                     prepared=L.scoring.prepare(original, L.phone_icons), render=lambda comps, tag: picture)
+        notes = {}
+        for mode in ("match", "strict"):
+            team.a = types.SimpleNamespace(score="strict", notes=mode)
+            ev = L.LayoutTeam.evaluate(team, 1, [], "t")
+            notes[mode] = ev["notes"]
+            self.assertAlmostEqual(ev["score"], L.score_of(ev["strict"], ev["missing"]), places=3)  # strict decides in both cases
+        y0, y1 = L.ROWS[1]
+        result = L.scoring.compare(imgcmp.read_png(picture), original, L.phone_icons, box=(0, y0, L.SIZE[0], y1),
+                                   regions=[(f"row 1 {zone} (x {a}-{b})", a, y0, b, y1) for zone, a, b in L.ZONES],
+                                   prepared=team.prepared, score_mode="strict")
+        self.assertEqual(notes["match"], imgcmp.feedback(result, limit=4))
+        self.assertEqual(notes["strict"], L.scoring.feedback(result, limit=4))
+        self.assertNotEqual(notes["match"], notes["strict"])
 
     def test_an_output_that_holds_files_is_never_overwritten(self):
         os.makedirs(os.path.join(self.dir, "runs"))
