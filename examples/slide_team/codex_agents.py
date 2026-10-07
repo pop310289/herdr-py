@@ -24,8 +24,9 @@ def default_codex():
 
 
 class CodexAgents:
-    def __init__(self, root, codex=None, model=None, sandbox="read-only"):
-        self.root, self.codex, self.model, self.sandbox = root, codex or default_codex(), model, sandbox
+    def __init__(self, root, codex=None, model=None, sandbox="read-only", fresh=False):
+        """fresh=True: every turn is a new conversation (no resume); the caller's prompt carries everything."""
+        self.root, self.codex, self.model, self.sandbox, self.fresh = root, codex or default_codex(), model, sandbox, fresh
         os.makedirs(root, exist_ok=True)
         self.threads, self.agents = {}, {}
         self.lock = threading.Lock()
@@ -48,7 +49,7 @@ class CodexAgents:
             self._publish()
 
     def args(self, name, prompt, model=None, files=()):
-        thread = self.threads.get(name)
+        thread = None if self.fresh else self.threads.get(name)
         out = [self.codex, "exec"] + (["resume", thread] if thread else []) + ["--json", "--skip-git-repo-check"]
         if not thread:
             folder = os.path.join(self.root, name)

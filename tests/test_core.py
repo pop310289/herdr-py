@@ -179,6 +179,34 @@ class HubTest(unittest.TestCase):
         self.assertEqual(again.root_of(child), sid)
         again.close()
 
+    def test_fresh_start_gives_a_finished_agent_a_new_session_and_ignores_the_old_one(self):
+        old = self.start()
+        self.fake.emit("session.status", sessionID=old, status={"type": "busy"})
+        wait_for(lambda: self.state() == "working")
+        with self.assertRaises(HubError):  # still working: a new session would orphan the running turn
+            self.hub.start("a", "again", fresh=True)
+        self.fake.emit("session.status", sessionID=old, status={"type": "idle"})
+        wait_for(lambda: self.state() == "idle")
+        with self.assertRaises(HubError):  # without fresh the name is still taken
+            self.hub.start("a", "again")
+        self.hub.max_agents = 1  # a new session for the same name is not a new agent
+        self.hub.start("a", "again", fresh=True)
+        agent = self.hub.agents["a"]
+        self.assertNotEqual(agent.session_id, old)
+        self.assertEqual((agent.past_sessions, agent.turns, len(self.hub.agents)), ([old], 2, 1))
+        self.assertEqual(self.fake.prompts[-1][0], agent.session_id)
+        self.assertEqual(self.state(), "starting")
+        self.fake.emit("session.status", sessionID=old, status={"type": "busy"})  # a late event from the old session
+        time.sleep(0.2)
+        self.assertEqual(self.state(), "starting")
+        self.fake.emit("session.status", sessionID=agent.session_id, status={"type": "busy"})
+        wait_for(lambda: self.state() == "working")
+        self.hub.save()
+        again = self.make_hub()
+        again.load()
+        self.assertEqual(again.agents["a"].past_sessions, [old])
+        again.close()
+
     def test_a_slow_subscriber_is_told_events_were_lost(self):
         hub = self.make_hub(max_queue=3)
         q = hub.subscribe()

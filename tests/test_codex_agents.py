@@ -48,6 +48,16 @@ class CodexAgentsTest(unittest.TestCase):
         self.team.run_turn("drawB", "You are drawB")
         self.assertNotEqual(self.calls()[2]["thread"], a["thread"])  # every member has its own conversation
 
+    def test_fresh_members_start_a_new_conversation_every_turn(self):
+        team = CodexAgents(os.path.join(self.root, "team3"), codex=self.codex, fresh=True)
+        self.addCleanup(team.close)
+        team.run_turn("drawA", "You are drawA")
+        team.run_turn("drawA", "Supervisor: fix it")
+        a, b = self.calls()
+        self.assertNotIn("resume", b["args"])
+        self.assertEqual(b["args"][b["args"].index("-s") + 1], "read-only")
+        self.assertNotEqual(a["thread"], b["thread"])
+
     def test_images_go_with_absolute_paths_and_the_model_is_passed(self):
         team = CodexAgents(os.path.join(self.root, "team2"), codex=self.codex, model="gpt-test")
         self.addCleanup(team.close)

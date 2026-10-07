@@ -1,7 +1,7 @@
 """herdr-py command line.
 
     herdr-py serve --opencode http://127.0.0.1:4096 [--policy policy.toml] [--http 127.0.0.1:8765]
-    herdr-py start NAME "prompt" [--budget 60] [--followup "next prompt"]...
+    herdr-py start NAME "prompt" [--budget 60] [--followup "next prompt"]... [--fresh]
     herdr-py list | get NAME | read NAME | pending | events | status
     herdr-py prompt NAME "text" | wait NAME --until idle | abort NAME
     herdr-py approve REQUEST_ID [--always] | reject REQUEST_ID [--message TEXT]
@@ -169,6 +169,7 @@ def main(argv=None):
     st.add_argument("--followup", action="append", default=[], help="prompt to send when the agent goes idle (repeatable)")
     st.add_argument("--model")
     st.add_argument("--file", action="append", default=[], help="attach a file (e.g. an image for a vision model); repeatable")
+    st.add_argument("--fresh", action="store_true", help="the name exists: give that agent a new session (no compaction surprises)")
     st.add_argument("--wait", action="store_true", help="return when the first turn finishes")
     st.add_argument("--timeout", type=float, help="with --wait: give up after this many seconds")
     pr = sub.add_parser("prompt", help="send another prompt")
@@ -226,7 +227,7 @@ def main(argv=None):
             out(client.call("agent.get", name=a.name), True)
         elif a.cmd == "start":
             out(client.call("agent.start", name=a.name, prompt=a.prompt, budget_s=a.budget, followups=a.followup, model=a.model,
-                            wait=a.wait, timeout_s=a.timeout, files=[os.path.abspath(f) for f in a.file]), a.json)
+                            wait=a.wait, timeout_s=a.timeout, files=[os.path.abspath(f) for f in a.file], fresh=a.fresh), a.json)
         elif a.cmd == "prompt":
             out(client.call("agent.prompt", name=a.name, text=a.text, wait=a.wait, timeout_s=a.timeout,
                             files=[os.path.abspath(f) for f in a.file]), a.json)

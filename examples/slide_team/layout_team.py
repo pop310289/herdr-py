@@ -9,6 +9,8 @@ compares the picture with the original square by square (imgcmp.py) and accepts 
 improves. The art director (vision model) compares the same row of both pictures and suggests changes; the program
 decides. Every mistake the program catches goes into a lessons list that is put at the top of every later prompt.
 
+Every turn starts a new session by default (--sessions fresh): the program puts the checklist, the current list, the
+lessons and the notes into each prompt, so no member depends on a conversation that OpenCode may compact at any moment.
 Per row: drawA drafts -> check (errors go back to the same drawer, up to --fixes times) -> picture match -> art notes ->
 drawB revises -> keep the better -> art notes -> drawA revises ... (--revisions per row). chat.jsonl records who said
 what to whom (view.py shows it; the video is made from it).
@@ -67,8 +69,15 @@ Current list:
 {current}
 ```
 Reply with ONLY one ```json block that contains the whole improved list for row {n}."""
-FIX = """Supervisor: the program cannot draw your list for row {n} yet:
+FIX = """Supervisor: the program cannot draw this list for row {n} yet:
 {errors}
+{guide}
+
+{checklist}
+The list to fix:
+```json
+{previous}
+```
 Fix exactly these problems, keep the rest, and reply with ONLY one ```json block that contains the whole list for row {n}."""
 ART = """You are the art director. Image 1 is row {n} of the original infographic. Image 2 is the same row of our drawing, at
 the same scale. Ignore shading, shadows and any phone icons on the right edge of image 1.
@@ -126,7 +135,7 @@ class LayoutTeam(slide_team.Team):
         self.a = a
         self.work = os.path.abspath(a.workdir)
         if a.backend == "codex":  # Codex CLI sessions instead of OpenCode agents: same turns, same checks, same scores
-            self.codex = CodexAgents(os.path.join(self.work, "codex"), a.codex, a.codex_model)
+            self.codex = CodexAgents(os.path.join(self.work, "codex"), a.codex, a.codex_model, fresh=a.sessions == "fresh")
             self.run_turn = self.codex.run_turn
             a.draw_model = a.art_model = a.codex_model
         else:
@@ -179,6 +188,9 @@ class LayoutTeam(slide_team.Team):
         return "\n".join(f"- {x}" for x in notes) or "- nothing big"
 
     # ---- talking to the agents
+    def run_turn(self, name, prompt, model, files=(), timeout=900):  # OpenCode members (Codex members replace this)
+        return slide_team.Team.run_turn(self, name, prompt, model, files=files, timeout=timeout, fresh=self.a.sessions == "fresh")
+
     def next_turn(self):
         self.turn_no += 1
         return self.turn_no
@@ -204,7 +216,9 @@ class LayoutTeam(slide_team.Team):
             if attempt == self.a.fixes:
                 return None
             self.chat("supervisor", drawer, f"fix: {'; '.join(errors[:2])[:160]}", "control")
-            reply, _ = self.run_turn(drawer, FIX.format(n=n, errors="\n".join(f"- {e}" for e in errors[:8])), self.a.draw_model,
+            previous = json.dumps(comps, indent=0) if comps is not None else (reply or "")[-6000:]
+            reply, _ = self.run_turn(drawer, FIX.format(n=n, errors="\n".join(f"- {e}" for e in errors[:8]), guide=C.guide(SIZE),
+                                                        checklist=self.checklist[n], previous=previous), self.a.draw_model,
                                      timeout=self.a.turn_timeout)
         return None
 
@@ -319,6 +333,9 @@ def main():
     ap.add_argument("--reference", required=True, help="the original picture, 1206 x 1441 PNG")
     ap.add_argument("--open-slide", required=True, help="folder that contains the open_slide_py package")
     ap.add_argument("--revisions", type=int, default=2, help="revisions per row after the draft")
+    ap.add_argument("--sessions", choices=["fresh", "keep"], default="fresh",
+                    help="fresh: every turn in a new session, the prompt carries everything (a long session gets compacted "
+                         "at an unknown moment); keep: one conversation per member")
     ap.add_argument("--fixes", type=int, default=2, help="times a drawer may fix a list the program cannot draw")
     ap.add_argument("--draw-model", default="ollama/qwen3-8b-32k:latest")
     ap.add_argument("--art-model", default="ollama/qwen3-vl-32k:latest")

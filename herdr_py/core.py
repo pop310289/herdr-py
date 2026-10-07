@@ -70,6 +70,7 @@ class Agent:
         self.working_since = None         # start of the current busy period (for the time budget)
         self.decisions = []               # [(t, request id, description, action, by)]
         self.seq = 0                      # +1 on every state change (waits compare against a baseline, as in herdr)
+        self.past_sessions = []           # earlier OpenCode sessions of this name (start with fresh=True)
 
     @property
     def state(self):
@@ -89,7 +90,7 @@ class Agent:
                             for rid, p in self.pending.items()],
                 "activity": [{"t": round(t, 3), "text": text, "tone": tone} for t, text, tone in list(self.activity.values())[-6:]],
                 "stream": {"kind": self.stream["kind"], "text": self.stream["text"][-400:]},
-                "model": self.model}
+                "model": self.model, "past_sessions": self.past_sessions[-5:]}
 
 
 class Hub:
@@ -169,7 +170,8 @@ class Hub:
         with self.lock:
             data = {"version": 1, "agents": [{"name": a.name, "session_id": a.session_id, "model": a.model, "budget_s": a.budget_s,
                                                "followups": a.followups, "turns": a.turns, "idles": a.idles, "created": a.created,
-                                               "children": sorted(a.children)} for a in self.agents.values()]}
+                                               "children": sorted(a.children), "past_sessions": a.past_sessions}
+                                              for a in self.agents.values()]}
         tmp = self.state_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=1)
@@ -196,18 +198,34 @@ class Hub:
         with self.lock:
             return self.agent(name).view(self.clock())
 
-    def start(self, name, prompt, budget_s=None, followups=(), model=None, title=None, files=()):
+    def start(self, name, prompt, budget_s=None, followups=(), model=None, title=None, files=(), fresh=False):
+        """Create an agent (an OpenCode session) and send its first prompt. fresh=True with a name that exists gives that
+        agent a new session instead: OpenCode compacts a long session at a moment nobody chooses, so a caller that puts
+        everything the turn needs into the prompt can start every turn clean. The role's counters (tokens, turns,
+        decisions) carry on; the old session and its subagents are dropped, and their late events are ignored."""
         with self.lock:
-            if name in self.agents:
-                raise HubError(f"agent {name!r} already exists")
-            if self.max_agents is not None and len(self.agents) >= self.max_agents:
+            old = self.agents.get(name)
+            if old is not None:
+                if not fresh:
+                    raise HubError(f"agent {name!r} already exists")
+                if old.state not in FINAL or old.awaiting_busy:
+                    raise HubError(f"agent {name!r} is {old.state}: abort it or wait for it before giving it a new session")
+            elif self.max_agents is not None and len(self.agents) >= self.max_agents:
                 raise HubError(f"max_agents ({self.max_agents}) reached")
         session = self.client.create_session(title or f"herdr-py: {name}")
         with self.lock:
-            agent = Agent(name, session["id"], model or self.model, budget_s, followups, created=self.clock())
+            agent = Agent(name, session["id"], model or (old.model if old else self.model), budget_s, followups, created=self.clock())
+            if old is not None:
+                agent.tokens, agent.turns, agent.idles, agent.decisions = old.tokens, old.turns, old.idles, old.decisions
+                agent.seq, agent.history = old.seq, old.history
+                agent.past_sessions = old.past_sessions + [old.session_id]
+                for sid in [old.session_id] + sorted(old.children):
+                    self.by_session.pop(sid, None)
+                    self.child_root.pop(sid, None)
             self.agents[name] = agent
             self.by_session[agent.session_id] = name
-            self.record({"hub": "start", "agent": name, "session": agent.session_id})
+            self.record({"hub": "start", "agent": name, "session": agent.session_id,
+                         **({"renewed_from": old.session_id} if old is not None else {})})
         self.save()
         self.prompt(name, prompt, source="start", files=files)
         return self.get(name)
@@ -565,6 +583,7 @@ class Hub:
                 agent.turns, agent.idles = item.get("turns", 0), item.get("idles", 0)
                 agent.base = "idle"
                 agent.children = set(item.get("children") or [])
+                agent.past_sessions = list(item.get("past_sessions") or [])
                 self.agents[agent.name] = agent
                 self.by_session[agent.session_id] = agent.name
                 for child in agent.children:

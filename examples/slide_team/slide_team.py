@@ -212,12 +212,13 @@ class Team:
     def chat(self, frm, to, text, kind="message"):
         self.chat_file.write(json.dumps({"t": round(time.time(), 2), "from": frm, "to": to, "kind": kind, "text": text}, ensure_ascii=False) + "\n")
 
-    def run_turn(self, name, prompt, model, files=(), timeout=900):
+    def run_turn(self, name, prompt, model, files=(), timeout=900, fresh=False):
+        """One turn; fresh=True starts it in a new OpenCode session (the prompt must then carry everything)."""
         names = {x["name"] for x in self.client.call("agent.list")["agents"]}
-        if name in names:
+        if name in names and not fresh:
             self.client.call("agent.prompt", name=name, text=prompt, files=list(files))
         else:
-            self.client.call("agent.start", name=name, prompt=prompt, model=model, files=list(files))
+            self.client.call("agent.start", name=name, prompt=prompt, model=model, files=list(files), fresh=fresh)
         start = time.time()
         while True:
             view = self.client.call("agent.get", name=name)
