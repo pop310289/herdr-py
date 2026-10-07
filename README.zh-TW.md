@@ -81,6 +81,8 @@ herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，�
 分數現在也看得到框線和字的顏色。`layout_team.py --score strict`（預設）只在 `scoring.py` 的 strict = (fill + stroke + text) / 3 上升時保留修改：fill 是上面的逐格比對，stroke 和 text 只看邊緣像素。在 Codex 那次的第 3 排，初稿的 strict 是 0.843，把 Prefill 框的框線和標題改成藍色的那次修改是 0.777（match 卻是 0.562 → 0.634），所以 strict 會留下初稿；只把那個框線和標題改回橘色，match 只從 0.6345 變 0.6368，strict 從 0.777 升到 0.861。`--score match` 是原本的規則。
 畫圖者也可以設定框線粗細、標題顏色、虛線框、空心方塊、較高的格子、圓角箭頭、斜體字，還可以用 `svg` 元件：畫之前會先檢查內容（只收 SVG 繪圖元素，不收程式、事件和動畫，連結只能指向 `#id` 或內嵌的 png/jpeg/gif），再從解析後的結構重新寫出。
 
+要比較不同團隊，就把一次執行寫成設定檔再重複跑：`python3 examples/slide_team/teamrun.py spec.json --repeat 5`。設定檔寫原圖、成員（畫手和一位美術，各自指定後端 `opencode`、`codex`、`claude` 或 `fake`、模型，以及每回合新開或沿用對話）、回合數、OpenCode 伺服器（teamrun 每次執行都自己啟動一個 herdr-py 常駐程式，但不會啟動 OpenCode）、保留修改用哪個分數（`rounds.score`：`strict` 或 `match`）和輸出資料夾；格式寫在 [`teamrun.py`](examples/slide_team/teamrun.py) 開頭。每次執行產生 `report.md`（每列草稿 -> 保留的分數、被接受與被擋下的修改、修正次數、教訓、整張圖的吻合度與 PSNR、每位成員的 token 和時間），重複執行另外產生 `aggregate.md`（平均、最小、最大）；`teamrun.py --compare 甲 乙` 把兩組結果並排印出。數字都由程式從每次執行的檔案算出（`runreport.py`），不手寫。Claude Code 成員（[`claude_agents.py`](examples/slide_team/claude_agents.py)）每回合跑一次 `claude -p`，不載入這台機器的 CLAUDE.md、hook 和 MCP 伺服器（`--safe-mode`），也不給工具，只有美術看圖時可以用 Read；`fake` 成員照腳本回答，用來試跑而不呼叫任何模型。
+
 ## 除錯：成員哪裡出了問題、該怎麼辦
 
 `python3 -m herdr_py.diagnose 執行資料夾` 讀一次執行留下的紀錄（常駐程式的 `state/events.jsonl`、Codex 成員的 `work/codex/events.jsonl`、團隊的 `work/chat.jsonl`），列出每位成員的輪數、token、有效輸出與被採用的修改，以及找到的問題；每個問題都附上證明它的紀錄行號和一個建議。規則來自真實執行：輸出停在 token 上限而沒有文字、整輪只有思考（沒有文字也沒有工具呼叫）、對話中途被壓縮而回覆變成摘要、回覆不是要求的格式、超過每輪時間上限、整輪因錯誤失敗、同一個工具錯誤或權限拒絕一再發生、同一輪的程式檢查沒過卻宣稱完成、修改一再被退回、什麼都沒改就停下。每一輪最多只歸一個結果，最具體的原因優先。`--member drawA --turn 4` 印出那一輪的完整紀錄（指令開頭、回覆、思考長度、工具呼叫、token、結束原因、壓縮、錯誤、之後的檢查）；`--json` 給程式讀；`herdr_py.diagnose.findings(run_dir)` 回傳 dict 清單。
@@ -107,7 +109,7 @@ RUN_DIR 是 `run_demo.py` 產生的執行資料夾（或 `layout_team.py --workd
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 216 項，用假的 OpenCode 伺服器和假的 Codex CLI，不需要模型
+python3 -m unittest discover -s tests        # 254 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 
@@ -115,6 +117,6 @@ GitHub Actions（`.github/workflows/tests.yml`）會在 RHEL 8 自己的 Python 
 
 ## 限制
 
-常駐程式只支援 OpenCode（投影片團隊範例可以自己驅動 Codex CLI 成員）。agent 提出的問題只能駁回、不能回答。介面只顯示最近的活動，完整對話用 `herdr-py read`。團隊模式還在實驗階段，請先看實驗結果再依賴它。
+常駐程式只支援 OpenCode（投影片團隊範例可以自己驅動 Codex CLI 和 Claude Code 成員）。agent 提出的問題只能駁回、不能回答。介面只顯示最近的活動，完整對話用 `herdr-py read`。團隊模式還在實驗階段，請先看實驗結果再依賴它。
 
 MIT 授權。

@@ -131,11 +131,26 @@ def summary_of(comps):
     return f"{len(comps)} components: {ids}" + (", ..." if len(comps) > 6 else "")
 
 
+class ChromeRenderer:
+    """SVG -> PNG with headless Chrome. Any object with the same render method can replace it (tests draw the PNG directly)."""
+
+    def __init__(self, chrome, profile):
+        self.chrome, self.profile = chrome, profile
+
+    def render(self, svg_path, png_path, size):
+        return slide_team.screenshot(self.chrome, svg_path, png_path, self.profile, size=size)
+
+
 class LayoutTeam(slide_team.Team):
-    def __init__(self, a):  # pylint: disable=super-init-not-called  (only chat and run_turn are shared with Team)
+    def __init__(self, a, members=None, renderer=None, drawers=("drawA", "drawB"), art="art"):  # pylint: disable=super-init-not-called
+        """members: one object whose run_turn answers for every member (teamrun.py mixes backends with it); renderer:
+        render(svg_path, png_path, size) -> True once the PNG is written (default: headless Chrome)."""
         self.a = a
         self.work = os.path.abspath(a.workdir)
-        if a.backend == "codex":  # Codex CLI sessions instead of OpenCode agents: same turns, same checks, same scores
+        self.drawers, self.art = list(drawers), art
+        if members is not None:
+            self.run_turn = members.run_turn
+        elif a.backend == "codex":  # Codex CLI sessions instead of OpenCode agents: same turns, same checks, same scores
             self.codex = CodexAgents(os.path.join(self.work, "codex"), a.codex, a.codex_model, fresh=a.sessions == "fresh")
             self.run_turn = self.codex.run_turn
             a.draw_model = a.art_model = a.codex_model
@@ -145,10 +160,12 @@ class LayoutTeam(slide_team.Team):
             self.client = slide_team.Client(a.socket, timeout=None)
         self.renders = os.path.join(self.work, "renders")
         os.makedirs(self.renders, exist_ok=True)
+        self.renderer = renderer or ChromeRenderer(a.chrome, os.path.join(self.renders, ".chrome-profile"))
         self.chat_file = open(a.chat or os.path.join(self.work, "chat.jsonl"), "a", encoding="utf-8", buffering=1)
         self.manifest = open(os.path.join(self.renders, "manifest.jsonl"), "a", encoding="utf-8", buffering=1)
-        spec = open(os.path.join(HERE, "layout", "SPEC_portrait.md"), encoding="utf-8").read()
-        shutil.copy(os.path.join(HERE, "layout", "SPEC_portrait.md"), os.path.join(self.work, "SPEC.md"))
+        checklist = a.checklist or os.path.join(HERE, "layout", "SPEC_portrait.md")
+        spec = open(checklist, encoding="utf-8").read()
+        shutil.copy(checklist, os.path.join(self.work, "SPEC.md"))
         self.checklist = {n: spec[spec.index(f"## Row {n}"):spec.index(f"## Row {n + 1}") if n < 3 else len(spec)].strip() for n in ROWS}
         base_errors, _, self.base = C.check(json.load(open(os.path.join(HERE, "layout", "base_portrait.json"))), size=SIZE)
         assert not base_errors, base_errors
@@ -167,8 +184,8 @@ class LayoutTeam(slide_team.Team):
         base = os.path.join(self.renders, f"{self.render_no:02d}-{tag}")
         with open(base + ".svg", "w", encoding="utf-8") as handle:
             handle.write(C.svg(comps, size=SIZE))
-        if not slide_team.screenshot(self.a.chrome, base + ".svg", base + ".png", os.path.join(self.renders, ".chrome-profile"), size=SIZE):
-            raise RuntimeError("Chrome did not write the screenshot")
+        if not self.renderer.render(base + ".svg", base + ".png", SIZE):
+            raise RuntimeError("the renderer did not write the picture")
         return base + ".png"
 
     def evaluate(self, n, comps, tag):
@@ -236,24 +253,24 @@ class LayoutTeam(slide_team.Team):
         imgcmp.write_png(ours, imgcmp.crop(imgcmp.read_png(ev["png"]), 0, y0, SIZE[0], y1))
         if not os.path.exists(theirs):
             imgcmp.write_png(theirs, imgcmp.crop(self.original, 0, y0, SIZE[0], y1))
-        self.chat("render", "art", f"row {n}: original and ours ready", "check")
+        self.chat("render", self.art, f"row {n}: original and ours ready", "check")
         try:
-            reply, _ = self.run_turn("art", ART.format(n=n), self.a.art_model, files=[theirs, ours], timeout=self.a.art_timeout)
+            reply, _ = self.run_turn(self.art, ART.format(n=n), self.a.art_model, files=[theirs, ours], timeout=self.a.art_timeout)
         except Exception as exc:  # a broken reviewer must show up in the conversation, not stop the team
             reply = f"(art director failed: {type(exc).__name__}: {exc})"
         notes, same = art_notes(reply)
-        self.chat("art", to, "\n".join(notes) if notes else ("SAME" if same else "(no DIFF lines) " + reply[-160:]))
+        self.chat(self.art, to, "\n".join(notes) if notes else ("SAME" if same else "(no DIFF lines) " + reply[-160:]))
         return notes
 
     # ---- the run
     def run(self):
         a = self.a
-        drawers = ["drawA", "drawB"]
+        drawers = self.drawers
         self.chat("supervisor", "team", f"task: rebuild the infographic row by row from the checklist; {a.revisions} revisions per row; "
                                        "the program keeps a version only when the picture match improves", "control")
         k = 0
         for n in ROWS:
-            drawer = drawers[k % 2]
+            drawer = drawers[k % len(drawers)]
             k += 1
             self.chat("manager", drawer, f"round {self.next_turn()}: row {n} draft from the checklist")
             comps = self.ask(drawer, DRAFT.format(name=drawer, n=n, lessons=self.lessons.text(), guide=C.guide(SIZE),
@@ -268,9 +285,9 @@ class LayoutTeam(slide_team.Team):
                                  "match": best and best["match"], "strict": best and best["strict"], "score": best and best["score"],
                                  "missing": best and best["missing"], "accepted": comps is not None})
             for _ in range(a.revisions):
-                drawer = drawers[k % 2]
+                drawer = drawers[k % len(drawers)]
                 k += 1
-                prev = drawers[k % 2]
+                prev = drawers[(k - 2) % len(drawers)]  # who had the turn before (with two drawers: the other one)
                 notes = self.review(n, best, drawer) if best else []
                 program = self.program_notes(best) if best else "- there is no version yet: build the row from the checklist"
                 self.chat("manager", drawer, f"round {self.next_turn()}: row {n} revise {prev}'s version: {len(notes)} art notes, "
@@ -302,11 +319,12 @@ class LayoutTeam(slide_team.Team):
         final = os.path.join(self.work, "slide")
         with open(final + ".svg", "w", encoding="utf-8") as handle:
             handle.write(C.svg(comps, size=SIZE))
-        slide_team.screenshot(self.a.chrome, final + ".svg", final + ".png", os.path.join(self.renders, ".chrome-profile"), size=SIZE)
+        self.renderer.render(final + ".svg", final + ".png", SIZE)
         result = scoring.compare(imgcmp.read_png(final + ".png"), self.original, phone_icons, prepared=self.prepared,
                                  score_mode=self.a.score)
         missing = C.missing(comps, slide_team.REQUIRED)
-        self.make_deck(final + ".png")
+        if self.a.open_slide:  # the PPTX is optional for teamrun.py runs
+            self.make_deck(final + ".png")
         json.dump({"turns": self.history, "final": {"match": round(result["match"], 4), "strict": round(result["strict"], 4),
                                                     "psnr": round(result["psnr"], 2), "missing": missing, "score_mode": self.a.score},
                    "lessons": self.lessons.items}, open(os.path.join(self.work, "summary.json"), "w"), indent=1)
@@ -334,7 +352,8 @@ class LayoutTeam(slide_team.Team):
         self.chat("render", "team", "slide.pptx written" if p.returncode == 0 else "PPTX export failed: " + p.stdout.strip()[-200:], "check")
 
 
-def main():
+def arguments():
+    """The command line; teamrun.py builds its runs from it too, so both get the same defaults."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--socket", help="herdr-py daemon socket (backend opencode)")
     ap.add_argument("--backend", choices=["opencode", "codex"], default="opencode")
@@ -357,7 +376,12 @@ def main():
     ap.add_argument("--art-timeout", type=int, default=300)
     ap.add_argument("--chrome", default=slide_team.CHROME)
     ap.add_argument("--chat")
-    return LayoutTeam(ap.parse_args()).run()
+    ap.add_argument("--checklist", help="the checklist the drawers follow (default: layout/SPEC_portrait.md)")
+    return ap
+
+
+def main():
+    return LayoutTeam(arguments().parse_args()).run()
 
 
 if __name__ == "__main__":

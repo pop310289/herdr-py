@@ -35,6 +35,10 @@ class CodexAgents:
     def close(self):
         self.events.close()
 
+    def forget(self, name):
+        """This member's next turn starts a new conversation (teamrun.py: members with fresh sessions)."""
+        self.threads.pop(name, None)
+
     def _publish(self):
         tmp = os.path.join(self.root, "agents.json.tmp")
         with open(tmp, "w", encoding="utf-8") as handle:

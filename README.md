@@ -124,6 +124,19 @@ Drawers can also set border widths, title colours, dashed boxes, outlined tokens
 italic text, and use an `svg` component: its markup is checked before it is drawn (SVG drawing elements only, no
 scripts, events or animation, links only to `#id` or embedded png/jpeg/gif) and re-written from the parsed tree.
 
+To compare teams, describe a run in a spec and repeat it: `python3 examples/slide_team/teamrun.py spec.json --repeat 5`.
+The spec names the original, the members (drawers and one art director, each with its own backend: `opencode`,
+`codex`, `claude` or `fake`, model, and fresh or kept sessions), the rounds, the OpenCode server (teamrun starts a
+herdr-py daemon of its own for each run; it never starts OpenCode), the score that keeps a revision (`rounds.score`:
+`strict` or `match`) and the output folder; the format is at the top of
+[`teamrun.py`](examples/slide_team/teamrun.py). Every run gets `report.md` (rows draft -> kept, accepted and rejected
+revisions, fix-ups, lessons, whole-slide match and PSNR, tokens and time per member) and the repeats get
+`aggregate.md` (mean, min and max); `teamrun.py --compare RUN_A RUN_B` prints two aggregates side by side. The
+numbers are computed from each run's files (`runreport.py`), never typed in. Claude Code members
+([`claude_agents.py`](examples/slide_team/claude_agents.py)) run one `claude -p` per turn without the machine's
+CLAUDE.md, hooks or MCP servers (`--safe-mode`) and without tools, except Read for the art director's pictures;
+`fake` members answer from a script, for a dry run that calls no model.
+
 ## Debugging a run
 
 `python3 -m herdr_py.diagnose RUN_DIR` reads what a run leaves behind (`state/events.jsonl` from the daemon,
@@ -199,7 +212,7 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 216 tests; fake OpenCode server and fake Codex CLI, no model needed
+python3 -m unittest discover -s tests        # 254 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
@@ -209,7 +222,7 @@ paths or e-mail addresses other than GitHub noreply ones.
 
 ## Limitations
 
-The daemon drives OpenCode only (the slide team example can also drive Codex CLI members itself). Questions agents ask
+The daemon drives OpenCode only (the slide team example can also drive Codex CLI and Claude Code members itself). Questions agents ask
 can only be dismissed, not answered. The dashboard and web page show the latest
 activity, not full transcripts (`herdr-py read`). Team mode is an experiment: see the bench results before relying on it.
 
