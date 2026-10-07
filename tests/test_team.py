@@ -131,6 +131,37 @@ class TeamTest(Base):
         self.assertIn("taking over", handoff)
         self.assertEqual(len([e for e in s["interventions"] if e["kind"] == "stall"]), 1)
 
+    def test_a_spinning_executor_is_interrupted_at_the_checkpoint(self):
+        def on_prompt(sid, text):
+            name = self.fake.name_of(sid)
+            self.prompts.append((name, text))
+            if name == "exec" and "Supervisor:" not in text:
+                self.write("NO", notes="Done: tried\nNext: fix ok.txt")
+
+                def spin():  # keeps producing output without ever stopping
+                    for _ in range(400):
+                        if sid in self.fake.aborts:
+                            self.fake.emit("session.error", sessionID=sid, error={"name": "MessageAbortedError"})
+                            self.fake.emit("session.idle", sessionID=sid)
+                            return
+                        self.fake.emit("session.status", sessionID=sid, status={"type": "busy"})
+                        self.fake.emit("message.part.updated", part={"id": "p", "sessionID": sid, "type": "tool", "callID": str(time.time()),
+                                                                       "tool": "bash", "state": {"status": "completed", "input": {"command": "python3 x.py"}}})
+                        time.sleep(0.05)
+                spin()
+            elif name == "exec":
+                self.write("OK")
+                self.fake.turn(sid, "fixed")
+            elif name == "ver":
+                self.fake.turn(sid, "PROBLEM: ok.txt says NO | EVIDENCE: cat ok.txt")
+            elif name == "val":
+                self.fake.turn(sid, "VERDICT: ACCEPT")
+        self.fake.on_prompt = on_prompt
+        s = self.run_team("T", checkpoint_s=1.0, stall_s=30)
+        self.assertEqual((s["outcome"], s["final_check"]), ("accepted", True))
+        self.assertIn("checkpoint", [e["kind"] for e in s["interventions"]])
+        self.assertEqual(self.fake.aborts[:1], [self.client.call("agent.get", name="exec")["session_id"]])
+
 
 class PromptWaitTest(Base):
     def test_prompt_and_wait_returns_after_the_new_turn_and_flags_a_stall(self):
@@ -143,6 +174,15 @@ class PromptWaitTest(Base):
         with self.assertRaises(ClientError) as ctx:
             self.client.call("agent.prompt", name="exec", text="hello?", wait=True, timeout_s=10)
         self.assertIn("prompt_stalled", str(ctx.exception))
+
+    def test_max_prompts_per_agent(self):
+        self.script()
+        self.client.call("agent.start", name="busy", prompt="1")  # max_prompts=8 in Base
+        for i in range(7):
+            self.client.call("agent.prompt", name="busy", text=str(i + 2))
+        with self.assertRaises(ClientError) as ctx:
+            self.client.call("agent.prompt", name="busy", text="9")
+        self.assertIn("max_prompts", str(ctx.exception))
 
     def test_limits_stop_a_runaway_manager(self):
         self.script()

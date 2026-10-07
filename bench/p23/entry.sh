@@ -13,7 +13,7 @@ python3 -m herdr_py --socket /tmp/hp.sock serve --opencode http://127.0.0.1:4096
   --policy /bench/policy.json --state-dir /state --questions reject --max-agents 6 --max-prompts 10 --wait 60 > /state/daemon.log 2>&1 &
 for _ in $(seq 1 90); do [ -S /tmp/hp.sock ] && break; sleep 1; done
 python3 -m herdr_py --socket /tmp/hp.sock team "$task/task.json" --condition "$cond" --workdir /work \
-  --summary /state/summary.json --log /state/team.jsonl --wall "${WALL:-720}" --rounds 3 --stall 120
+  --summary /state/summary.json --log /state/team.jsonl --wall "${WALL:-720}" --rounds 3 --stall 120 --checkpoint "${CHECKPOINT:-240}"
 code=$?
 python3 -m herdr_py --socket /tmp/hp.sock stop > /dev/null 2>&1
 exit $code

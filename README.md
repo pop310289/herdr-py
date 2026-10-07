@@ -1,0 +1,119 @@
+# herdr-py
+
+Drive several [OpenCode](https://opencode.ai) agents from one place, with each agent's live state taken from OpenCode's own
+event stream: who is working, who needs an answer, who is done. A permission policy answers what it can and leaves the
+rest to you (terminal dashboard, phone-friendly web page, or CLI). A small team mode adds a supervisor that checks the
+work when an agent stops and tells it where to continue.
+
+An unofficial Python take on ideas from [herdr](https://github.com/herdrdev/herdr) (Apache-2.0); not affiliated with it.
+No herdr code is used. 中文說明：[README.zh-TW.md](README.zh-TW.md).
+
+- Python 3.6 or newer, standard library only (runs on RHEL 8's built-in `platform-python`).
+- Talks to `opencode serve` over HTTP + Server-Sent Events. Tested with OpenCode 1.18.32.
+
+## How it differs from herdr
+
+| | herdr | herdr-py |
+|---|---|---|
+| What it is | A terminal multiplexer: every agent's real TUI in a pane | A daemon that drives agents through `opencode serve` |
+| Agent state | Integration plugins when installed, otherwise screen-reading rules | OpenCode's events (`session.status`, `permission.asked`, ...) |
+| Headless `opencode serve` | Not tracked | The only mode it uses |
+| Permission answers | A person in the pane (or keys sent by another agent) | A policy (allow / always / deny / ask) per agent and command; "ask" goes to a person |
+| Agents supported | 22 (Claude Code, Codex, OpenCode, ...) | OpenCode only |
+| A person typing into an agent's TUI | Yes | No (prompts only) |
+| Supervisor / stall watchdog | No | Team mode (below) |
+| Size | ~250k lines of Rust + a vendored terminal emulator | ~2k lines of Python |
+
+## Install (no curl needed)
+
+```bash
+git clone https://github.com/pop310289/herdr-py
+cd herdr-py && ./scripts/install.sh          # puts a `herdr-py` wrapper in ~/.local/bin
+```
+
+Or run it in place: `python3 -m herdr_py ...` from the repository folder.
+
+## Quick start
+
+```bash
+# 1. an OpenCode server (any folder you want the agents to work in)
+OPENCODE_SERVER_PASSWORD=change-me opencode serve --port 4096 &
+echo change-me > ~/.config/opencode-password && chmod 600 ~/.config/opencode-password
+
+# 2. the herdr-py daemon
+herdr-py serve --opencode http://127.0.0.1:4096 --password-file ~/.config/opencode-password \
+    --policy examples/policy.json --http 127.0.0.1:8765 &
+# it prints:  web UI: http://127.0.0.1:8765/#token=...
+
+# 3. agents
+herdr-py start fixer "Fix the failing test in test_stats.py" --budget 600
+herdr-py start docs  "Write a README for this folder" --followup "Now add a usage example"
+herdr-py tui        # up/down select, a approve, A always, r reject, p prompt, x abort, q quit (agents keep running)
+herdr-py list | pending | read fixer | approve per_... | reject per_... --message "no network"
+herdr-py prompt fixer "Also handle empty lists" --wait --timeout 900
+```
+
+## Permission policy
+
+Rules are checked in order; the first match wins. `match` is a regular expression that must match the whole target
+(the shell command for `bash`, otherwise the requested paths). `agent` is a shell-style glob.
+
+```json
+{"default": "ask",
+ "rule": [
+   {"permission": "bash", "match": "(python3 [\\w./-]+\\.py|ls( -\\w+)*)", "action": "allow"},
+   {"permission": "external_directory", "action": "deny", "message": "Stay inside the project folder."},
+   {"agent": "reviewer*", "permission": "edit", "action": "deny"}
+ ]}
+```
+
+Actions: `allow` (once), `always`, `deny` (the agent reads the message), `ask` (waits for a person). JSON works on every
+Python version; TOML (`.toml`) needs Python 3.11+. Keep shell operators (`; | & $`) out of allowed patterns.
+
+## Team mode (supervisor)
+
+`herdr-py team task.json --condition T --workdir DIR` runs one task with three roles: the executor (edits files), a
+read-only verifier (explains why the acceptance check fails) and a read-only validator (compares the result with the task).
+The supervisor is code, not a model: when the executor stops it runs the task's check; unless the check passes and the
+validator accepts, it sends a "continue from here" prompt built from the check output, the roles' evidence, the
+executor's `NOTES.md` and its recent tool log. If the executor makes no progress for `--stall` seconds, it is replaced by
+a new session that receives a hand-off (that is how memory carries across sessions). `--condition S` (single agent) and
+`N` (generic "check your work" reminders) exist for comparison. Bench: [`bench/p23`](bench/p23).
+
+## Programmatic use
+
+The daemon listens on a Unix socket (default `~/.local/state/herdr-py/herdr-py.sock`) speaking newline-delimited JSON:
+
+```json
+{"id": "1", "method": "agent.start", "params": {"name": "a", "prompt": "...", "budget_s": 600}}
+{"id": "1", "result": {"name": "a", "state": "starting", ...}}
+```
+
+Methods: `ping`, `agent.list`, `agent.get`, `agent.start` (`wait`), `agent.prompt` (`wait`, `timeout_s`), `agent.abort`,
+`agent.wait`, `agent.read`, `permission.list`, `permission.reply`, `events.subscribe`, `server.stop`. `agent.prompt`
+with `wait` returns when the turn it started has finished; if OpenCode shows no activity within 5 s it fails with
+`prompt_stalled` (the prompt may still arrive: read before resending). `--max-agents` and `--max-prompts` stop a runaway
+manager agent. The HTTP API behind the web page needs the token from `<state dir>/token`.
+
+## RHEL 8 notes
+
+- `python3` on RHEL 8 is 3.6 (`/usr/libexec/platform-python` is always there): fine for herdr-py; use JSON config files.
+- Put the socket on a local filesystem (the default under `~/.local/state` is fine). Unix sockets fail on some network or
+  VM-shared filesystems.
+- OpenCode's glibc build runs on RHEL 8 (tested: 1.18.32, x86_64 and aarch64, a full agent turn); the musl build does not.
+- A systemd user unit example is in [`examples/herdr-py.service`](examples/herdr-py.service). The web UI binds to
+  127.0.0.1 by default; reach it through an SSH tunnel rather than opening a port.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests        # 28 tests; uses a fake OpenCode server, no model needed
+python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
+```
+
+## Limitations
+
+OpenCode only. Questions agents ask can only be dismissed, not answered. The dashboard and web page show the latest
+activity, not full transcripts (`herdr-py read`). Team mode is an experiment: see the bench results before relying on it.
+
+MIT License.

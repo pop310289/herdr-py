@@ -10,7 +10,8 @@ Conditions (the executor gets the same instructions in all of them; only what ha
                 built from the check output, the role's evidence, the executor's NOTES.md and its recent tool log,
                 up to `rounds` times. It also watches for stalls (no progress for `stall_s` while working): it aborts
                 that executor session and starts a new one with a hand-off summary, so the work continues across
-                sessions through NOTES.md.
+                sessions through NOTES.md. And it checkpoints: an executor that has worked for `checkpoint_s` without
+                stopping (often spinning on the same mistake) is interrupted and checked as if it had stopped.
 The supervisor never asks an LLM to summarise: every prompt it sends is assembled by code from recorded facts.
 """
 import json
@@ -76,11 +77,12 @@ Last acceptance check output:
 
 class TeamRun:
     def __init__(self, client, task, condition, workdir, rounds=3, wall_s=720, stall_s=120, poll_s=1.0, check_timeout=120,
-                 log_path=None, clock=time.time, sleep=time.sleep):
+                 log_path=None, clock=time.time, sleep=time.sleep, checkpoint_s=240):
         if condition not in ("S", "N", "T"):
             raise ValueError("condition must be S, N or T")
         self.client, self.task, self.condition, self.workdir = client, task, condition, workdir
         self.rounds, self.wall_s, self.stall_s, self.poll_s = rounds, wall_s, stall_s, poll_s
+        self.checkpoint_s = checkpoint_s
         self.check_timeout = check_timeout
         self.clock, self.sleep = clock, sleep
         self.log = open(log_path, "a", encoding="utf-8", buffering=1) if log_path else None
@@ -100,8 +102,8 @@ class TeamRun:
         return self.wall_s - (self.clock() - self.started)
 
     def wait_turn(self, name, watch_stall=False):
-        """Poll until the agent stops. Returns "idle"/"aborted"/"error", "stalled" or "timeout"."""
-        last_sig, last_change = None, self.clock()
+        """Poll until the agent stops. Returns "idle"/"aborted"/"error", "stalled", "checkpoint" or "timeout"."""
+        last_sig, last_change, turn_start = None, self.clock(), self.clock()
         while True:
             view = self.client.call("agent.get", name=name)
             if view["state"] in FINAL and view["followups_left"] == 0:
@@ -112,6 +114,8 @@ class TeamRun:
                 last_sig, last_change = sig, self.clock()
             elif watch_stall and view["state"] in ("working", "retry", "starting") and self.clock() - last_change > self.stall_s:
                 return "stalled"
+            if watch_stall and self.checkpoint_s and view["state"] in ("working", "retry") and self.clock() - turn_start > self.checkpoint_s:
+                return "checkpoint"
             if self.left() <= 0:
                 return "timeout"
             self.sleep(self.poll_s)
@@ -214,7 +218,8 @@ class TeamRun:
                    "first_check": next((ok for r, ok, _ in self.checks if r == 1), None),
                    "checks": [{"round": r, "ok": ok} for r, ok, _ in self.checks],
                    "tokens": sum(a["tokens"] for a in agents), "tokens_by_agent": {a["name"]: a["tokens"] for a in agents},
-                   "executors": self.executors, "interventions": [e for e in self.events if e["kind"] in ("feedback", "nudge", "stall")]}
+                   "executors": self.executors,
+                   "interventions": [e for e in self.events if e["kind"] in ("feedback", "nudge", "stall", "checkpoint")]}
         self.note("summary", **{k: v for k, v in summary.items() if k != "interventions"})
         if self.log:
             self.log.close()
@@ -224,6 +229,10 @@ class TeamRun:
         for round_no in range(1, self.rounds + 2):
             if state == "timeout" or self.left() <= 0:
                 return "timeout"
+            if state == "checkpoint":
+                self.client.call("agent.abort", name=exec_name, reason="checkpoint")
+                self.note("checkpoint", agent=exec_name)
+                state = "idle"  # checked below exactly like a stop
             if state == "stalled":
                 self.client.call("agent.abort", name=exec_name, reason="stalled")
                 check = self.checks[-1][2] if self.checks else "(not run yet)"

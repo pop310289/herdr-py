@@ -204,6 +204,7 @@ def main(argv=None):
     tm.add_argument("--rounds", type=int, default=3)
     tm.add_argument("--wall", type=float, default=720, help="wall-clock limit in seconds")
     tm.add_argument("--stall", type=float, default=120, help="T: seconds without progress before the executor is replaced")
+    tm.add_argument("--checkpoint", type=float, default=240, help="T: interrupt and check an executor that has worked this long without stopping")
     tm.add_argument("--summary", help="write the run summary (JSON) here")
     tm.add_argument("--log", help="append the supervisor's decisions (JSON lines) here")
     sub.add_parser("tui", help="full-screen dashboard")
@@ -246,7 +247,7 @@ def main(argv=None):
         elif a.cmd == "team":
             from .team import TeamRun, load_task
             summary = TeamRun(client, load_task(a.task), a.condition, os.path.abspath(a.workdir), rounds=a.rounds,
-                              wall_s=a.wall, stall_s=a.stall, log_path=a.log).run()
+                              wall_s=a.wall, stall_s=a.stall, checkpoint_s=a.checkpoint, log_path=a.log).run()
             if a.summary:
                 with open(a.summary, "w", encoding="utf-8") as handle:
                     json.dump(summary, handle, ensure_ascii=False, indent=1)

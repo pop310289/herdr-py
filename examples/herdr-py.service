@@ -1,0 +1,16 @@
+# systemd user unit (RHEL 8: systemd 239). Install:
+#   mkdir -p ~/.config/systemd/user && cp examples/herdr-py.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload && systemctl --user enable --now herdr-py
+#   loginctl enable-linger $USER     # keep it running after you log out
+[Unit]
+Description=herdr-py daemon (drives OpenCode agents)
+After=network.target
+
+[Service]
+Environment=LANG=C.UTF-8
+ExecStart=%h/.local/bin/herdr-py serve --opencode http://127.0.0.1:4096 --password-file %h/.config/opencode-password --policy %h/.config/herdr-py/policy.json --http 127.0.0.1:8765
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

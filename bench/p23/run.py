@@ -56,7 +56,7 @@ def one_run(out, stage, task, cond, wall, attempt):
                     "--security-opt", "no-new-privileges", "--read-only", "--tmpfs", "/tmp:rw,exec,size=1g",
                     "--memory", "4g", "--memory-swap", "4g", "--cpus", "2", "--pids-limit", "512", "--network", "bridge",
                     "-v", work + ":/work", "-v", state + ":/state", "-v", HERE + ":/bench:ro", "-v", REPO + ":/opt/herdr-py:ro",
-                    "-w", "/work", "-e", "OPENCODE_CONFIG_CONTENT=" + json.dumps(OPENCODE_CONFIG), "-e", "WALL=%d" % wall,
+                    "-w", "/work", "-e", "OPENCODE_CONFIG_CONTENT=" + json.dumps(OPENCODE_CONFIG), "-e", "WALL=%d" % wall, "-e", "CHECKPOINT=%d" % int(os.environ.get("P23_CHECKPOINT", "240")),
                     IMAGE, "/bench/entry.sh", "/bench/tasks/" + task, cond], timeout=wall + 300)
         team_out = p.stdout[-2000:]
     except subprocess.TimeoutExpired:

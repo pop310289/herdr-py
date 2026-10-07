@@ -282,6 +282,8 @@ class Hub:
                 if not started and time.time() > activity_deadline:
                     raise HubError(f"prompt_stalled: {name} showed no activity within {activity_s}s; "
                                    f"the prompt may still be delivered, read it before sending again")
+                # `idles > baseline` is a second guard: on_idle already ignores idles while awaiting_busy, so an idle
+                # from an older turn cannot get here (mutation testing found `>=` equivalent for that reason)
                 if started and (agent.state in ("aborted", "error") or
                                 (agent.state in until and (agent.state != "idle" or agent.idles > baseline))):
                     return agent.view(self.clock())
