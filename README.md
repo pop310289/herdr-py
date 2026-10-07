@@ -115,6 +115,15 @@ Run it with `python3 examples/slide_team/run_demo.py --reference original.png --
 (add `--backend codex` for Codex members). Renders use headless Chrome; the OpenCode team needs the image from
 `examples/slide_team/Dockerfile` and the two Ollama models named in `run_demo.py`.
 
+The score now also sees borders and text colour. `layout_team.py --score strict` (the default) keeps a revision only when
+strict = (fill + stroke + text) / 3 from `scoring.py` rises: fill is the square match above, stroke and text are measured
+on edge pixels only. On the Codex run's row 3, the draft scores strict 0.843 and the revision that turned a Prefill box's
+border and title blue 0.777 (match said 0.562 → 0.634), so strict keeps the draft; putting only that border and title
+back to orange moves match 0.6345 → 0.6368 but strict 0.777 → 0.861. `--score match` is the old rule.
+Drawers can also set border widths, title colours, dashed boxes, outlined tokens, taller grid cells, curved arrows and
+italic text, and use an `svg` component: its markup is checked before it is drawn (SVG drawing elements only, no
+scripts, events or animation, links only to `#id` or embedded png/jpeg/gif) and re-written from the parsed tree.
+
 ## Debugging a run
 
 `python3 -m herdr_py.diagnose RUN_DIR` reads what a run leaves behind (`state/events.jsonl` from the daemon,
@@ -190,9 +199,13 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 105 tests; fake OpenCode server and fake Codex CLI, no model needed
+python3 -m unittest discover -s tests        # 216 tests; fake OpenCode server and fake Codex CLI, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
+
+GitHub Actions (`.github/workflows/tests.yml`) runs the suite on RHEL 8's own Python 3.6 (UBI 8 container) and on the
+newest Python, and `scripts/ci_privacy.py` fails a push whose commits carry Claude attribution trailers, home-directory
+paths or e-mail addresses other than GitHub noreply ones.
 
 ## Limitations
 

@@ -78,6 +78,9 @@ herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，�
 
 執行：`python3 examples/slide_team/run_demo.py --reference 原圖.png --open-slide open-slide-py 的路徑`（加 `--backend codex` 改用 Codex）。渲染用無頭 Chrome；OpenCode 團隊需要 `examples/slide_team/Dockerfile` 建的映像，以及 `run_demo.py` 裡寫的兩個 Ollama 模型。
 
+分數現在也看得到框線和字的顏色。`layout_team.py --score strict`（預設）只在 `scoring.py` 的 strict = (fill + stroke + text) / 3 上升時保留修改：fill 是上面的逐格比對，stroke 和 text 只看邊緣像素。在 Codex 那次的第 3 排，初稿的 strict 是 0.843，把 Prefill 框的框線和標題改成藍色的那次修改是 0.777（match 卻是 0.562 → 0.634），所以 strict 會留下初稿；只把那個框線和標題改回橘色，match 只從 0.6345 變 0.6368，strict 從 0.777 升到 0.861。`--score match` 是原本的規則。
+畫圖者也可以設定框線粗細、標題顏色、虛線框、空心方塊、較高的格子、圓角箭頭、斜體字，還可以用 `svg` 元件：畫之前會先檢查內容（只收 SVG 繪圖元素，不收程式、事件和動畫，連結只能指向 `#id` 或內嵌的 png/jpeg/gif），再從解析後的結構重新寫出。
+
 ## 除錯：成員哪裡出了問題、該怎麼辦
 
 `python3 -m herdr_py.diagnose 執行資料夾` 讀一次執行留下的紀錄（常駐程式的 `state/events.jsonl`、Codex 成員的 `work/codex/events.jsonl`、團隊的 `work/chat.jsonl`），列出每位成員的輪數、token、有效輸出與被採用的修改，以及找到的問題；每個問題都附上證明它的紀錄行號和一個建議。規則來自真實執行：輸出停在 token 上限而沒有文字、整輪只有思考（沒有文字也沒有工具呼叫）、對話中途被壓縮而回覆變成摘要、回覆不是要求的格式、超過每輪時間上限、整輪因錯誤失敗、同一個工具錯誤或權限拒絕一再發生、同一輪的程式檢查沒過卻宣稱完成、修改一再被退回、什麼都沒改就停下。每一輪最多只歸一個結果，最具體的原因優先。`--member drawA --turn 4` 印出那一輪的完整紀錄（指令開頭、回覆、思考長度、工具呼叫、token、結束原因、壓縮、錯誤、之後的檢查）；`--json` 給程式讀；`herdr_py.diagnose.findings(run_dir)` 回傳 dict 清單。
@@ -104,9 +107,11 @@ RUN_DIR 是 `run_demo.py` 產生的執行資料夾（或 `layout_team.py --workd
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 105 項，用假的 OpenCode 伺服器和假的 Codex CLI，不需要模型
+python3 -m unittest discover -s tests        # 216 項，用假的 OpenCode 伺服器和假的 Codex CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
+
+GitHub Actions（`.github/workflows/tests.yml`）會在 RHEL 8 自己的 Python 3.6（UBI 8 容器）和最新版 Python 上跑測試；`scripts/ci_privacy.py` 會擋下帶 Claude 署名、家目錄路徑或 GitHub noreply 以外信箱的提交。
 
 ## 限制
 
