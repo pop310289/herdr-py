@@ -143,7 +143,8 @@ class RepeatedRunTest(unittest.TestCase):
                 self.assertEqual(rows[str(n)], expect, (k, n))
             self.assertEqual(rows["all"][5], str(sum(1 for t in turns if t["kind"] == "fix")))
             final = summary["final"]
-            self.assertIn("Match {:.3f} · PSNR {:.2f} dB".format(final["match"], final["psnr"]), report)
+            self.assertIn("Match {:.3f} · strict {:.3f} · PSNR {:.2f} dB".format(final["match"], final["strict"], final["psnr"]), report)
+            self.assertIn("(the strict score (match, borders and text colour together; scoring.py) minus", report)
             members = {r[0]: r for r in table_with(report, "Member")[1:]}
             for name in ("drawA", "drawB", "art"):
                 self.assertEqual(members[name][5], str(sum(1 for t in turns if t["agent"] == name)), (k, name))
@@ -155,7 +156,7 @@ class RepeatedRunTest(unittest.TestCase):
         per = []
         for k in range(1, self.REPS + 1):
             summary, turns, chat, agents = self.files(k)
-            per.append({"match": summary["final"]["match"],
+            per.append({"match": summary["final"]["match"], "strict": summary["final"]["strict"],
                         "accepted": sum(1 for t in summary["turns"] if t["kind"] == "revise" and t["accepted"]),
                         "fixups": sum(1 for t in turns if t["kind"] == "fix"),
                         "minutes": (chat[-1]["t"] - chat[0]["t"]) / 60,
@@ -164,13 +165,14 @@ class RepeatedRunTest(unittest.TestCase):
             text = handle.read()
         self.assertTrue(text.startswith(f"# scripted team: {self.REPS} of {self.REPS} runs"), text[:80])
         stats = {r[0]: r[1:] for r in table_with(text, "")[1:]}
-        for label, key, form in (("Final match", "match", "{:.3f}"), ("Accepted revisions", "accepted", "{:.2f}"),
+        for label, key, form in (("Final match", "match", "{:.3f}"), ("Final strict", "strict", "{:.3f}"), ("Accepted revisions", "accepted", "{:.2f}"),
                                  ("Fix-ups", "fixups", "{:.2f}"), ("Minutes", "minutes", "{:.2f}"), ("Tokens", "tokens", "{:,.0f}")):
             values = [p[key] for p in per]
             self.assertEqual(stats[label], [form.format(sum(values) / len(values)), form.format(min(values)), form.format(max(values))],
                              label)
         runs = {r[0]: r for r in table_with(text, "Run")[1:]}
         self.assertEqual([runs[f"rep-{k}"][1] for k in range(1, self.REPS + 1)], ["{:.3f}".format(p["match"]) for p in per])
+        self.assertEqual([runs[f"rep-{k}"][2] for k in range(1, self.REPS + 1)], ["{:.3f}".format(p["strict"]) for p in per])
         # the scripted runs differ (seed = run number), so a mix-up of runs would show
         self.assertGreater(len({(p["accepted"], p["fixups"]) for p in per}), 1)
 

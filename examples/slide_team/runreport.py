@@ -12,7 +12,7 @@ import re
 import time
 
 ROUND = re.compile(r"round \d+: row (\d+) ")
-STATS = (("final_match", "Final match", "{:.3f}"), ("accepted", "Accepted revisions", "{:.2f}"), ("fixups", "Fix-ups", "{:.2f}"),
+STATS = (("final_match", "Final match", "{:.3f}"), ("final_strict", "Final strict", "{:.3f}"), ("accepted", "Accepted revisions", "{:.2f}"), ("fixups", "Fix-ups", "{:.2f}"),
          ("minutes", "Minutes", "{:.2f}"), ("tokens", "Tokens", "{:,.0f}"))
 
 
@@ -92,7 +92,7 @@ def metrics(folder):
         return m
     rows = rows_of(summary, chat)
     tokens = [x.get("tokens") for x in (run or {}).get("members", [])]
-    m.update(final_match=summary["final"]["match"], psnr=summary["final"]["psnr"], missing=len(summary["final"]["missing"]),
+    m.update(final_match=summary["final"]["match"], final_strict=summary["final"].get("strict"), psnr=summary["final"]["psnr"], missing=len(summary["final"]["missing"]),
              accepted=sum(r["accepted"] for r in rows.values()), rejected=sum(r["rejected"] for r in rows.values()),
              invalid=sum(r["invalid"] for r in rows.values()), fixups=sum(fixups(chat).values()), minutes=team_minutes(chat),
              tokens=sum(tokens) if tokens and all(isinstance(x, (int, float)) for x in tokens) else None)
@@ -153,16 +153,19 @@ def report_text(folder):
         lines += [f"- {m.get('from')} -> {m.get('to')}: {str(m.get('text'))[:160]}" for m in chat[-5:]] or ["- (none)"]
         return "\n".join(lines) + "\n"
     rows = rows_of(summary, chat)
+    rule = ("the strict score (match, borders and text colour together; scoring.py)" if summary["final"].get("score_mode") == "strict"
+            else "the match")
     lines += ["## Rows", "", "Match: share of colour squares that agree with the original (1 = the same picture). Draft: the "
               "first list the program could draw; kept: the version kept at the end. A revision is kept only when its score "
-              "(the match minus a penalty for every missing label) is higher.", ""]
+              f"({rule} minus a penalty for every missing label) is higher.", ""]
     body = [[n, num(r["draft"], "{:.3f}"), num(r["kept"], "{:.3f}"), r["accepted"], r["rejected"], r["invalid"], r["fixups"],
              num(r["kept_missing"], "{}")] for n, r in sorted(rows.items())]
     body.append(["all", "", "", sum(r["accepted"] for r in rows.values()), sum(r["rejected"] for r in rows.values()),
                  sum(r["invalid"] for r in rows.values()), sum(fixups(chat).values()), ""])
     lines += table(["Row", "Draft", "Kept", "Revisions accepted", "Rejected", "Invalid", "Fix-ups", "Labels missing (kept)"], body)
     final = summary["final"]
-    lines += ["", "## Whole slide", "", f"Match {final['match']:.3f} · PSNR {num(final['psnr'], '{:.2f}')} dB · required labels "
+    strict = f" · strict {final['strict']:.3f}" if final.get("strict") is not None else ""  # runs before scoring.py have none
+    lines += ["", "## Whole slide", "", f"Match {final['match']:.3f}{strict} · PSNR {num(final['psnr'], '{:.2f}')} dB · required labels "
               f"missing: {len(final['missing'])}" + (f" ({', '.join(final['missing'])})" if final["missing"] else ""), ""]
     lessons = summary.get("lessons") or {}
     lines += [f"## Lessons ({len(lessons)})", ""] + [f"- {text} ({n} time{'s' if n > 1 else ''})" for text, n in lessons.items()]
@@ -187,8 +190,8 @@ def aggregate_text(folder):
         s = stats(good, key)
         body.append([label] + (["-", "-", "-"] if s is None else [form.format(s[0]), num(s[1], form), num(s[2], form)]))
     lines += table(["", "mean", "min", "max"], body) + [""]
-    lines += table(["Run", "Final match", "PSNR (dB)", "Accepted", "Rejected", "Invalid", "Fix-ups", "Minutes", "Tokens"],
-                   [[r["name"], f"{r['final_match']:.3f}", num(r["psnr"], "{:.2f}"), r["accepted"], r["rejected"], r["invalid"],
+    lines += table(["Run", "Final match", "Final strict", "PSNR (dB)", "Accepted", "Rejected", "Invalid", "Fix-ups", "Minutes", "Tokens"],
+                   [[r["name"], f"{r['final_match']:.3f}", num(r["final_strict"], "{:.3f}"), num(r["psnr"], "{:.2f}"), r["accepted"], r["rejected"], r["invalid"],
                      r["fixups"], num(r["minutes"], "{:.2f}"), num(r["tokens"], "{:,}")] for r in good])
     failed = [r for r in runs if "failed" in r]
     if failed:
