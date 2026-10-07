@@ -49,8 +49,31 @@ def main(argv):
         sys.stdin.read()
     args = argv[argv.index("exec") + 1:]
     thread = args[1] if args[:1] == ["resume"] else str(uuid.uuid4())
-    images = [args[i + 1] for i, x in enumerate(args) if x == "-i"]
-    prompt = args[-1]
+    # parse like codex-cli 0.160.0 (clap): -i/--image takes several values and keeps taking arguments until the next
+    # option or "--", so a prompt written right after the images is read as one more image
+    images, positional, i = [], [], 2 if args[:1] == ["resume"] else 0
+    takes_value = {"-s", "-C", "-m", "-c", "-o", "-p", "--output-schema"}
+    while i < len(args):
+        x = args[i]
+        if x == "--":
+            positional += args[i + 1:]
+            break
+        if x in ("-i", "--image"):
+            i += 1
+            while i < len(args) and not args[i].startswith("-"):
+                images.append(args[i])
+                i += 1
+            continue
+        if x in takes_value:
+            i += 2
+            continue
+        if not x.startswith("-"):
+            positional.append(x)
+        i += 1
+    if not positional:
+        sys.stderr.write("Reading prompt from stdin...\nNo prompt provided via stdin.\n")
+        return 1
+    prompt = positional[-1]
     if os.environ.get("FAKE_CODEX_LOG"):
         with open(os.environ["FAKE_CODEX_LOG"], "a") as handle:
             handle.write(json.dumps({"args": args[:-1], "thread": thread, "images": images, "prompt": prompt}) + "\n")

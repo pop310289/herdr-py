@@ -6,7 +6,8 @@ conversation. Checked with codex-cli 0.160.0 on 2026-10-07:
 - events: thread.started {thread_id}, item.completed {item: {type: agent_message, text}}, turn.completed {usage},
   error / turn.failed on failures;
 - `exec resume` keeps the first turn's sandbox and folder (it has no -s or -C) and accepts --json, -i and -m;
-- stdin must be closed: otherwise exec waits with "Reading additional input from stdin...".
+- stdin must be closed: otherwise exec waits with "Reading additional input from stdin...";
+- -i/--image takes several values, so the prompt must come after "--" or it is read as an image path.
 Every member runs read-only in its own empty folder. agents.json (for view.py) holds each member's state, tokens and
 last words; events.jsonl keeps every event.
 """
@@ -57,7 +58,7 @@ class CodexAgents:
             out += ["-m", model or self.model]
         for path in files:
             out += ["-i", os.path.abspath(path)]
-        return out + [prompt]  # every prompt here starts with a letter, never with "-"
+        return out + ["--", prompt]  # -i takes several values: without "--" the prompt is read as one more image
 
     def run_turn(self, name, prompt, model=None, files=(), timeout=600):
         argv = self.args(name, prompt, model, files)
