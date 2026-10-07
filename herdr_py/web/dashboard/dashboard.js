@@ -172,7 +172,7 @@ function renderStatus() {
     } else if (run.progress) {
       const pr = run.progress;
       p.append(el("strong", "", "Running"), " · round " + pr.round + " · row " + pr.row + " · " + pr.member
-        + (pr.kind === "draft" ? " drafting" : " revising"));
+        + (pr.kind === "draft" ? " drafting" : pr.kind === "review" ? " reviewing" : " revising"));
     } else {
       p.append(el("strong", "", "Running"));
     }

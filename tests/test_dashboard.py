@@ -57,6 +57,25 @@ def points(rows):
 
 
 class ModelTest(unittest.TestCase):
+    def test_progress_names_the_art_director_while_it_reviews(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder)
+        os.makedirs(os.path.join(folder, "work"))
+        lines = [(1000.0, "manager", "drawA", "message", "round 3: row 2 draft from the checklist"),
+                 (1010.0, "drawA", "supervisor", "message", "22 components: r2.title"),
+                 (1011.0, "picture", "team", "check", "row 2: match 0.834, 0 labels missing: first version kept"),
+                 (1012.0, "render", "art", "check", "row 2: original and ours ready")]
+        with open(os.path.join(folder, "work", "chat.jsonl"), "w") as handle:
+            for t, who, to, kind, text in lines:
+                handle.write(json.dumps({"t": t, "from": who, "to": to, "kind": kind, "text": text}) + "\n")
+        run = D.RunFolder(folder)
+        run.refresh()
+        self.assertEqual(run.state()["run"]["progress"], {"round": 3, "row": 2, "kind": "review", "member": "art", "t": 1012.0})
+        with open(os.path.join(folder, "work", "chat.jsonl"), "a") as handle:  # the notes arrive: back to the drawer of the round
+            handle.write(json.dumps({"t": 1050.0, "from": "art", "to": "drawB", "kind": "message", "text": "DIFF: x"}) + "\n")
+        run.refresh()
+        self.assertEqual(run.state()["run"]["progress"]["member"], "drawA")
+
     def test_a_strict_run_shows_its_strict_score_and_what_decided(self):
         folder = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, folder)

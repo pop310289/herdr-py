@@ -486,10 +486,15 @@ class RunFolder:
                 final["strict"] = number(given.get("strict"))
                 final["score_mode"] = given.get("score_mode") if given.get("score_mode") in ("strict", "match") else None
         progress = None
-        for m in reversed(run):
+        for i in range(len(run) - 1, -1, -1):
+            m = run[i]
             found = ROUND.match(m["text"]) if m["from"] == "manager" else None
             if found:
                 progress = {"round": int(found.group(1)), "row": int(found.group(2)), "kind": found.group(3), "member": m["to"], "t": m["t"]}
+                later = run[i + 1:]
+                handed = [k for k, x in enumerate(later) if x["to"] == "art"]
+                if handed and not any(x["from"] == "art" for x in later[handed[-1] + 1:]):  # the art director has the row now
+                    progress.update(kind="review", member="art", t=later[handed[-1]]["t"])
                 break
         if self.client is not None:
             members, source = [dict(m) for m in self.daemon_members], "daemon"
