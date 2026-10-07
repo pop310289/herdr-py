@@ -42,6 +42,7 @@ stroke_width; width or height may be 0). Every element needs a unique id, type, 
 A minimal valid deck.json looks like this:
 {example}
 Use loops in make_deck.py for repeated token boxes. Keep NOTES.md short: what you drew and what is still missing.
+You must run both commands yourself with the bash tool: the work is not done until deck.json exists and validate passes.
 An art director will compare your slide with the original picture, and another drawer may continue your work."""
 REDRAW = """You are {name}, a slide drawer. {prev} made the current version: read make_deck.py, NOTES.md and SPEC.md first.
 Improve it; do not start over.
@@ -49,7 +50,8 @@ The art director compared our slide with the original picture (score {score}/10)
 {fixes}
 Layout checker (open_slide_py validate): {lint}
 Labels still missing from the slide: {missing}
-Edit make_deck.py, run python3 make_deck.py and python3 -m open_slide_py validate deck.json, then update NOTES.md."""
+Edit make_deck.py, then run python3 make_deck.py and python3 -m open_slide_py validate deck.json yourself with the bash tool,
+and update NOTES.md. The work is not done until deck.json is regenerated and validate passes."""
 ART = """You are the art director. Image 1 is the original infographic. Ignore the like, comment and share icons and the number 53
 on its right edge: they belong to the phone app, not to the diagram. Image 2 is our slide (round {round}).
 Compare them carefully: the three rows, the GPU and pool boxes, the token boxes, colours, labels, connector lines, alignment, spacing.
