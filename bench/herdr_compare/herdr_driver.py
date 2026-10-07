@@ -8,6 +8,7 @@ with agent.prompt and aborts with Esc Esc. Ground truth: every TUI's internal Op
 
 usage: herdr_driver.py OUT_DIR [--integration] [--deadline 600]
 writes OUT_DIR/{herdr_states.jsonl, ground_truth.jsonl, decisions.jsonl, resources.jsonl, summary.json}
+status: written but not run yet, so there are no results to report.
 """
 import argparse
 import itertools
