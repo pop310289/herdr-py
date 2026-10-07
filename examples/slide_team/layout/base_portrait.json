@@ -97,7 +97,8 @@
   "text": "Based on TheAiEdge.io",
   "size": 24,
   "color": "decode",
-  "anchor": "end"
+  "anchor": "end",
+  "italic": true
  },
  {
   "id": "h.sep0",
