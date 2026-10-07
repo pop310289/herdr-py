@@ -77,6 +77,22 @@ def frame(cols, rows, agents, chat, started):
     return "\x1b[H" + "".join(f"\x1b[{i + 1};1H{line}" for i, line in enumerate(lines[:rows]))
 
 
+def fetch_agents(client, agents_file=None):
+    """Agent states from the herdr-py daemon, or from agents.json (Codex members); {} when neither answers."""
+    if client:
+        try:
+            return {x["name"]: x for x in client.call("agent.list")["agents"]}
+        except (ClientError, OSError):  # the daemon is busy or gone (a socket timeout is an OSError): keep drawing the chat
+            return {}
+    if agents_file and os.path.exists(agents_file):
+        try:
+            with open(agents_file, encoding="utf-8") as handle:
+                return json.load(handle)
+        except ValueError:
+            return {}
+    return {}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--socket", help="herdr-py daemon socket (OpenCode members)")
@@ -94,18 +110,7 @@ def main():
                     if line.endswith("\n"):
                         chat.append(json.loads(line))
                         pos += len(line.encode("utf-8"))
-        agents = {}
-        if client:
-            try:
-                agents = {x["name"]: x for x in client.call("agent.list")["agents"]}
-            except ClientError:
-                agents = {}
-        elif a.agents_file and os.path.exists(a.agents_file):
-            try:
-                with open(a.agents_file, encoding="utf-8") as handle:
-                    agents = json.load(handle)
-            except ValueError:
-                agents = {}
+        agents = fetch_agents(client, a.agents_file)
         cols, rows = shutil.get_terminal_size((66, 34))
         sys.stdout.write(frame(cols, rows, agents, chat, started))
         sys.stdout.flush()

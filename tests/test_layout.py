@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 import components as C  # noqa: E402
 import imgcmp  # noqa: E402
 import layout_team as L  # noqa: E402
+import view  # noqa: E402
 
 SIZE = (1206, 1441)
 
@@ -144,6 +145,27 @@ class TeamRulesTest(unittest.TestCase):
     def test_art_notes(self):
         self.assertEqual(L.art_notes("ok\nDIFF: a - b\nDIFF: c - d\nDIFF: e\nDIFF: f"), (["DIFF: a - b", "DIFF: c - d", "DIFF: e"], False))
         self.assertEqual(L.art_notes("SAME"), ([], True))
+
+
+class ViewTest(unittest.TestCase):
+    def test_a_daemon_that_times_out_does_not_stop_the_viewer(self):  # it crashed once when a run was stopped
+        import socket
+
+        class Slow:
+            def call(self, method, **params):
+                raise socket.timeout("timed out")
+        self.assertEqual(view.fetch_agents(Slow()), {})
+
+    def test_agents_file_for_codex_members(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d)
+        path = os.path.join(d, "agents.json")
+        with open(path, "w") as handle:
+            handle.write('{"drawA": {"state": "idle"}}')
+        self.assertEqual(view.fetch_agents(None, path), {"drawA": {"state": "idle"}})
+        with open(path, "w") as handle:
+            handle.write('{"drawA": ')  # half written
+        self.assertEqual(view.fetch_agents(None, path), {})
 
 
 if __name__ == "__main__":

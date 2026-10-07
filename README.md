@@ -51,6 +51,7 @@ herdr-py start docs  "Write a README for this folder" --followup "Now add a usag
 herdr-py tui        # up/down select, a approve, A always, r reject, p prompt, x abort, q quit (agents keep running)
 herdr-py list | pending | read fixer | approve per_... | reject per_... --message "no network"
 herdr-py prompt fixer "Also handle empty lists" --wait --timeout 900
+herdr-py start fixer "Now add a test for it" --fresh   # same name, a new session once the last turn has finished
 ```
 
 ## Permission policy
@@ -80,6 +81,40 @@ executor's `NOTES.md` and its recent tool log. If the executor makes no progress
 a new session that receives a hand-off (that is how memory carries across sessions). `--condition S` (single agent) and
 `N` (generic "check your work" reminders) exist for comparison. Bench: [`bench/p23`](bench/p23).
 
+## Example: a slide team
+
+[`examples/slide_team`](examples/slide_team) rebuilds one infographic, TheAiEdge.io's "LLM Serving: When to Split Prefill
+and Decode" (bring your own copy of the picture; it is not in this repo). Two drawers take turns, an art director
+compares our picture with the original, and the supervisor program decides what is kept. Two architectures were tried:
+
+- **code** (`slide_team.py`): drawers write a Python program that builds the slide. With qwen3 8B drawers this never
+  produced a usable slide: syntax errors, misused helpers, finished work thrown away, and success reported anyway.
+- **layout** (`layout_team.py`): a drawer only turns a checklist ([`layout/SPEC_portrait.md`](examples/slide_team/layout/SPEC_portrait.md))
+  into a JSON list of components. `components.py` checks the list (errors say how to fix them) and draws it as SVG;
+  `imgcmp.py` compares the render with the original square by square (standard-library PNG reader; PSNR is reported
+  too); a revision is kept only when the score rises. Every mistake the program catches goes into a lessons list at the
+  top of every later prompt. `--backend codex` runs the members as Codex CLI sessions instead of OpenCode agents;
+  `--sessions fresh` (the default) starts every turn in a new session.
+
+One run of each (score: share of colour squares that match the original; 1 means identical):
+
+| Team | Whole slide | Rows: draft → kept |
+|---|---|---|
+| qwen3 8B drawers, Qwen3-VL 8B art director (OpenCode) | 0.667 | 0.763 → 0.763, 0.728 → 0.728, 0.513 → 0.513 |
+| Codex drawers and art director | 0.781 | 0.775 → 0.864, 0.834 → 0.853, 0.562 → 0.634 |
+| The same Codex run, drafts only | 0.720 | |
+| A layout made by hand from the checklist | 0.720 | |
+
+What it showed: the representation (JSON components drawn by tested code) made the difference between no slide and a
+usable one. Keep-best turned away every revision that made things worse (all four valid qwen revisions, three of six
+Codex ones). Revisions helped only when the art director's notes were specific and right; the local vision model mostly
+gave none (it spent its 4,096 output tokens on reasoning). One run per team is not enough to call this general, and
+the score has a blind spot: a box whose thin border turned the wrong colour still raised it.
+
+Run it with `python3 examples/slide_team/run_demo.py --reference original.png --open-slide /path/to/open-slide-py`
+(add `--backend codex` for Codex members). Renders use headless Chrome; the OpenCode team needs the image from
+`examples/slide_team/Dockerfile` and the two Ollama models named in `run_demo.py`.
+
 ## Programmatic use
 
 The daemon listens on a Unix socket (default `~/.local/state/herdr-py/herdr-py.sock`) speaking newline-delimited JSON:
@@ -89,11 +124,16 @@ The daemon listens on a Unix socket (default `~/.local/state/herdr-py/herdr-py.s
 {"id": "1", "result": {"name": "a", "state": "starting", ...}}
 ```
 
-Methods: `ping`, `agent.list`, `agent.get`, `agent.start` (`wait`), `agent.prompt` (`wait`, `timeout_s`), `agent.abort`,
+Methods: `ping`, `agent.list`, `agent.get`, `agent.start` (`wait`, `fresh`), `agent.prompt` (`wait`, `timeout_s`), `agent.abort`,
 `agent.wait`, `agent.read`, `permission.list`, `permission.reply`, `events.subscribe`, `server.stop`. `agent.prompt`
 with `wait` returns when the turn it started has finished; if OpenCode shows no activity within 5 s it fails with
 `prompt_stalled` (the prompt may still arrive: read before resending). `--max-agents` and `--max-prompts` stop a runaway
 manager agent. The HTTP API behind the web page needs the token from `<state dir>/token`.
+
+`agent.start` with `fresh: true` and a name that already exists gives that agent a new OpenCode session once its turn
+has finished. OpenCode compacts a long session at a moment nobody chooses (in one of our runs a drawer's reply after
+compaction was a summary instead of the JSON it was asked for), so a caller that puts everything a turn needs into the
+prompt can start every turn clean. Tokens, turns and decisions carry on; the old session's late events are ignored.
 
 ## RHEL 8 notes
 
@@ -107,13 +147,14 @@ manager agent. The HTTP API behind the web page needs the token from `<state dir
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 28 tests; uses a fake OpenCode server, no model needed
+python3 -m unittest discover -s tests        # 70 tests; fake OpenCode server and fake Codex CLI, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
 ## Limitations
 
-OpenCode only. Questions agents ask can only be dismissed, not answered. The dashboard and web page show the latest
+The daemon drives OpenCode only (the slide team example can also drive Codex CLI members itself). Questions agents ask
+can only be dismissed, not answered. The dashboard and web page show the latest
 activity, not full transcripts (`herdr-py read`). Team mode is an experiment: see the bench results before relying on it.
 
 MIT License.

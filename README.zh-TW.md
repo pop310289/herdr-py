@@ -45,7 +45,10 @@ herdr-py serve --opencode http://127.0.0.1:4096 --password-file ~/.config/openco
 herdr-py start fixer "修好 test_stats.py 裡失敗的測試" --budget 600
 herdr-py tui        # 上下鍵選擇，a 核准、A 永久核准、r 拒絕、p 送指令、x 中止、q 離開（agent 繼續跑）
 herdr-py prompt fixer "空清單也要處理" --wait --timeout 900
+herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，上一輪結束後換一個新的 session
 ```
+
+`agent.start` 加上 `fresh: true`（命令列 `--fresh`）時，若名字已存在、而且上一輪已結束，會換上新的 OpenCode session。OpenCode 會在無法預期的時候自動壓縮過長的 session（我們有一次實驗，壓縮後畫圖者回的是摘要，不是要它交的 JSON），所以每輪都把需要的資訊放進指令的呼叫者，可以讓每一輪都從乾淨的 session 開始。token、輪數與權限決定紀錄會累計；舊 session 之後才到的事件一律忽略。
 
 ## 權限策略
 
@@ -54,6 +57,26 @@ herdr-py prompt fixer "空清單也要處理" --wait --timeout 900
 ## 團隊模式（監工）
 
 `herdr-py team task.json --condition T --workdir 資料夾` 用三個角色做一題：執行者（可改檔）、唯讀的驗證者（解釋公開檢查為什麼沒過）、唯讀的確認者（對照原始需求）。監工是程式不是模型：執行者停下時跑公開檢查；除非檢查通過而且確認者接受，否則用「檢查輸出、角色的證據、執行者的 `NOTES.md`、最近的工具紀錄」組成「從哪裡繼續」的提示送回去。執行者連續 `--stall` 秒沒有進展，就換一個新的 session 並交接（這就是跨 session 的記憶）。`--condition S`（單一 agent）和 `N`（泛用的「檢查一下」提醒）是對照組。實驗程式：[`bench/p23`](bench/p23)。
+
+## 範例：投影片團隊
+
+[`examples/slide_team`](examples/slide_team) 讓團隊重畫一張資訊圖：TheAiEdge.io 的「LLM Serving: When to Split Prefill and Decode」（原圖請自備，repo 裡沒有）。兩位畫圖者輪流畫，美術比對我們的圖和原圖，最後由監工程式決定保留哪一版。試過兩種架構：
+
+- **寫程式**（`slide_team.py`）：畫圖者寫一支畫投影片的 Python 程式。qwen3 8B 畫圖者從來沒畫出可用的投影片：語法錯誤、用錯輔助函式、把做好的部分丟掉，而且照樣回報完成。
+- **元件清單**（`layout_team.py`）：畫圖者只把逐項清單（[`layout/SPEC_portrait.md`](examples/slide_team/layout/SPEC_portrait.md)）轉成 JSON 元件清單。`components.py` 檢查清單（錯誤訊息直接說怎麼改）並畫成 SVG；`imgcmp.py` 把畫出來的圖和原圖逐格比對（用標準函式庫讀 PNG，另外也算 PSNR）；修改後分數變好才保留。程式抓到的每個錯誤都寫進教訓清單，放在之後每一次指令的最前面。`--backend codex` 改用 Codex CLI 當成員；`--sessions fresh`（預設）每輪都開新 session。
+
+每個團隊各跑一次的結果（分數是和原圖顏色相符的格子比例，1 代表完全相同）：
+
+| 團隊 | 整張 | 各排：初稿 → 保留 |
+|---|---|---|
+| 畫圖 qwen3 8B、美術 Qwen3-VL 8B（OpenCode） | 0.667 | 0.763 → 0.763、0.728 → 0.728、0.513 → 0.513 |
+| 畫圖與美術都是 Codex | 0.781 | 0.775 → 0.864、0.834 → 0.853、0.562 → 0.634 |
+| 同一次 Codex，只用初稿 | 0.720 | |
+| 照清單手寫的版面 | 0.720 | |
+
+看到的事：讓結果從「沒有投影片」變成「可用」的，是表示方式（JSON 元件交給測過的程式來畫）。只保留較好的版本，擋下了每一次讓圖變差的修改（qwen 的 4 次有效修改全部、Codex 6 次中的 3 次）。修改要有幫助，前提是美術的意見具體又正確；本機視覺模型大多給不出意見（4096 個輸出 token 都用在思考）。每個團隊只跑一次，還不能當成普遍結論；分數也有盲點：細框線顏色錯了，分數仍可能上升。
+
+執行：`python3 examples/slide_team/run_demo.py --reference 原圖.png --open-slide open-slide-py 的路徑`（加 `--backend codex` 改用 Codex）。渲染用無頭 Chrome；OpenCode 團隊需要 `examples/slide_team/Dockerfile` 建的映像，以及 `run_demo.py` 裡寫的兩個 Ollama 模型。
 
 ## 部署到 RHEL 8
 
@@ -66,12 +89,12 @@ herdr-py prompt fixer "空清單也要處理" --wait --timeout 900
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 28 項，用假的 OpenCode 伺服器，不需要模型
+python3 -m unittest discover -s tests        # 70 項，用假的 OpenCode 伺服器和假的 Codex CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 
 ## 限制
 
-只支援 OpenCode。agent 提出的問題只能駁回、不能回答。介面只顯示最近的活動，完整對話用 `herdr-py read`。團隊模式還在實驗階段，請先看實驗結果再依賴它。
+常駐程式只支援 OpenCode（投影片團隊範例可以自己驅動 Codex CLI 成員）。agent 提出的問題只能駁回、不能回答。介面只顯示最近的活動，完整對話用 `herdr-py read`。團隊模式還在實驗階段，請先看實驗結果再依賴它。
 
 MIT 授權。
