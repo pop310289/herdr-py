@@ -30,6 +30,7 @@ sys.path.insert(0, HERE)
 import components as C  # noqa: E402
 from codex_agents import CodexAgents  # noqa: E402
 import imgcmp  # noqa: E402
+import scoring  # noqa: E402
 import slide_team  # noqa: E402
 
 SIZE = (1206, 1441)
@@ -155,6 +156,7 @@ class LayoutTeam(slide_team.Team):
         if self.original[:2] != SIZE:
             raise SystemExit(f"the original must be {SIZE[0]} x {SIZE[1]} pixels, got {self.original[0]} x {self.original[1]}")
         self.original_cells = imgcmp.cells(self.original, phone_icons)
+        self.prepared = scoring.prepare(self.original, phone_icons)  # the original's squares and edges, read once
         self.rows = {n: [] for n in ROWS}  # accepted components per row
         self.lessons = Lessons()
         self.history, self.turn_no, self.render_no = [], 0, 0
@@ -173,13 +175,18 @@ class LayoutTeam(slide_team.Team):
         others = [c for k, row in self.rows.items() if k != n for c in row]
         png = self.render(self.base + others + comps, tag)
         y0, y1 = ROWS[n]
-        result = imgcmp.compare(imgcmp.read_png(png), self.original, phone_icons, box=(0, y0, SIZE[0], y1),
-                                regions=[(f"row {n} {zone} (x {x0}-{x1})", x0, y0, x1, y1) for zone, x0, x1 in ZONES],
-                                original_cells=self.original_cells)
+        result = scoring.compare(imgcmp.read_png(png), self.original, phone_icons, box=(0, y0, SIZE[0], y1),
+                                 regions=[(f"row {n} {zone} (x {x0}-{x1})", x0, y0, x1, y1) for zone, x0, x1 in ZONES],
+                                 prepared=self.prepared, score_mode=self.a.score)
         missing = C.missing(comps, ROW_LABELS[n])
         return {"match": round(result["match"], 4), "psnr": round(result["psnr"], 2), "missing": missing, "png": png,
-                "score": round(score_of(result["match"], missing), 4), "notes": imgcmp.feedback(result, limit=4),
+                "strict": round(result["strict"], 4), "score": round(score_of(result["score"], missing), 4),
+                "notes": scoring.feedback(result, limit=4),
                 "comps": comps}
+
+    def strict_note(self, old, ev):
+        """In strict mode the decision follows the strict score (borders and text colour too), not match: say so."""
+        return f" (strict {old:.3f} -> {ev['strict']:.3f})" if self.a.score == "strict" else ""
 
     def program_notes(self, ev):
         notes = list(ev["notes"])
@@ -258,7 +265,8 @@ class LayoutTeam(slide_team.Team):
                 self.manifest.write(json.dumps({"t": round(time.time(), 2), "round": self.turn_no, "path": best["png"]}) + "\n")
                 self.chat("picture", "team", f"row {n}: match {best['match']:.3f}, {len(best['missing'])} labels missing: first version kept", "check")
             self.history.append({"turn": self.turn_no, "row": n, "drawer": drawer, "kind": "draft", "valid": comps is not None,
-                                 "match": best and best["match"], "missing": best and best["missing"], "accepted": comps is not None})
+                                 "match": best and best["match"], "strict": best and best["strict"], "score": best and best["score"],
+                                 "missing": best and best["missing"], "accepted": comps is not None})
             for _ in range(a.revisions):
                 drawer = drawers[k % 2]
                 k += 1
@@ -274,15 +282,16 @@ class LayoutTeam(slide_team.Team):
                 record = {"turn": self.turn_no, "row": n, "drawer": drawer, "kind": "revise", "valid": comps is not None, "accepted": False}
                 if comps is not None:
                     ev = self.evaluate(n, comps, f"row{n}-rev")
-                    record.update(match=ev["match"], missing=ev["missing"])
+                    record.update(match=ev["match"], strict=ev["strict"], score=ev["score"], missing=ev["missing"])
                     if better(ev, best):
-                        old = best["match"] if best else 0
+                        old, old_strict = (best["match"], best["strict"]) if best else (0, 0)
                         best, self.rows[n], record["accepted"] = ev, comps, True
                         self.manifest.write(json.dumps({"t": round(time.time(), 2), "round": self.turn_no, "path": ev["png"]}) + "\n")
-                        self.chat("picture", "team", f"row {n}: match {old:.3f} -> {ev['match']:.3f}, {len(ev['missing'])} labels missing: accepted", "check")
+                        self.chat("picture", "team", f"row {n}: match {old:.3f} -> {ev['match']:.3f}, {len(ev['missing'])} labels missing: accepted"
+                                                     + self.strict_note(old_strict, ev), "check")
                     else:
                         self.chat("picture", "team", f"row {n}: match {best['match']:.3f} -> {ev['match']:.3f}, {len(ev['missing'])} labels "
-                                                     f"missing: rejected, kept the better version", "check")
+                                                     f"missing: rejected, kept the better version" + self.strict_note(best["strict"], ev), "check")
                         if self.lessons.add("a revision that lowered the picture match was rejected: change only what the notes ask"):
                             self.chat("lessons", "team", "new lesson: a revision that lowered the picture match was rejected", "check")
                 self.history.append(record)
@@ -294,10 +303,12 @@ class LayoutTeam(slide_team.Team):
         with open(final + ".svg", "w", encoding="utf-8") as handle:
             handle.write(C.svg(comps, size=SIZE))
         slide_team.screenshot(self.a.chrome, final + ".svg", final + ".png", os.path.join(self.renders, ".chrome-profile"), size=SIZE)
-        result = imgcmp.compare(imgcmp.read_png(final + ".png"), self.original, phone_icons, original_cells=self.original_cells)
+        result = scoring.compare(imgcmp.read_png(final + ".png"), self.original, phone_icons, prepared=self.prepared,
+                                 score_mode=self.a.score)
         missing = C.missing(comps, slide_team.REQUIRED)
         self.make_deck(final + ".png")
-        json.dump({"turns": self.history, "final": {"match": round(result["match"], 4), "psnr": round(result["psnr"], 2), "missing": missing},
+        json.dump({"turns": self.history, "final": {"match": round(result["match"], 4), "strict": round(result["strict"], 4),
+                                                    "psnr": round(result["psnr"], 2), "missing": missing, "score_mode": self.a.score},
                    "lessons": self.lessons.items}, open(os.path.join(self.work, "summary.json"), "w"), indent=1)
         self.chat("supervisor", "team", f"finished: whole-slide match {result['match']:.3f}, PSNR {result['psnr']:.1f} dB, "
                                        f"{len(missing)} required labels missing", "control")
@@ -337,6 +348,9 @@ def main():
                     help="fresh: every turn in a new session, the prompt carries everything (a long session gets compacted "
                          "at an unknown moment); keep: one conversation per member")
     ap.add_argument("--fixes", type=int, default=2, help="times a drawer may fix a list the program cannot draw")
+    ap.add_argument("--score", choices=scoring.SCORE_MODES, default="strict",
+                    help="strict: keep a revision only when the score that also sees borders and text colour rises (scoring.py); "
+                         "match: the square-colour match alone, as before")
     ap.add_argument("--draw-model", default="ollama/qwen3-8b-32k:latest")
     ap.add_argument("--art-model", default="ollama/qwen3-vl-32k:latest")
     ap.add_argument("--turn-timeout", type=int, default=600)
