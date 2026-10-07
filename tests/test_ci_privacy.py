@@ -143,6 +143,7 @@ class RepoCase(unittest.TestCase):
         return self.check("--github", GITHUB_EVENT_NAME=name, GITHUB_EVENT_PATH=path)
 
 
+@unittest.skipUnless(shutil.which("git"), "needs git (RHEL 8 images may not have it; CI installs it)")
 class RangeChecks(RepoCase):
     def test_clean_range_passes(self):
         base = self.repo.commit({"a.txt": "hello\n"}, "start")
@@ -285,6 +286,7 @@ class RangeChecks(RepoCase):
         self.assertIn("unknown revision 'no-such-branch'", out)
 
 
+@unittest.skipUnless(shutil.which("git"), "needs git (RHEL 8 images may not have it; CI installs it)")
 class GitHubEvents(RepoCase):
     def history(self):
         """main: a (personal address) - b; feature from b: c - d. origin/main is main."""
