@@ -61,6 +61,41 @@ FIX: <row or area> - <one specific change>
 (at most 5 FIX lines, the most important first; 10 means as clear and polished as the original)"""
 
 
+def screenshot(chrome, svg, png, profile, timeout=90):
+    """Headless Chrome screenshot of an SVG file. Chrome with a fresh profile can write the PNG and then not exit, so
+    wait for the file to appear and stop changing, then end Chrome ourselves (it never touches the user's own profile)."""
+    if os.path.exists(png):
+        os.remove(png)
+    proc = subprocess.Popen([chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
+                             "--no-default-browser-check", "--disable-extensions", "--disable-component-update",
+                             "--disable-background-networking", "--disable-sync", "--window-size=1920,1080",
+                             "--user-data-dir=" + profile, "--screenshot=" + png, "file://" + svg],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline, last, steady = time.time() + timeout, -1, None
+    try:
+        while time.time() < deadline:
+            size = os.path.getsize(png) if os.path.exists(png) else -1
+            if size > 0 and (proc.poll() is not None or (size == last and steady and time.time() - steady > 1.0)):
+                break
+            if size > 0 and size == last:
+                steady = steady or time.time()
+            else:
+                steady = None
+            last = size
+            if proc.poll() is not None and size <= 0:
+                break
+            time.sleep(0.25)
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+    return os.path.exists(png) and os.path.getsize(png) > 0
+
+
 class Team:
     def __init__(self, a):
         self.a = a
@@ -119,11 +154,7 @@ class Team:
                            cwd=self.work, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=120)
         if p.returncode != 0:
             return None, p.stdout.strip()[-300:]
-        profile = os.path.join(self.renders, ".chrome-profile")  # never touch the user's own Chrome profile
-        subprocess.run([self.a.chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--window-size=1920,1080",
-                        "--user-data-dir=" + profile, f"--screenshot={png}", "file://" + svg],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120)
-        if not os.path.exists(png):
+        if not screenshot(self.a.chrome, svg, png, os.path.join(self.renders, ".chrome-profile")):
             return None, "Chrome did not write the screenshot"
         small = os.path.join(self.renders, f"round-{round_no}-small.png")
         subprocess.run(["sips", "-Z", "1000", png, "--out", small], stdout=subprocess.DEVNULL, check=True)
@@ -163,13 +194,19 @@ class Team:
             missing = self.content()
             self.chat("content", drawers[round_no % 2], ("all required labels present" if not missing else
                       f"{len(missing)} missing: " + ", ".join(missing))[:400], "check")
-            small, why = self.render(round_no) if ok or not errors else (None, "invalid deck")
+            try:
+                small, why = self.render(round_no) if ok or not errors else (None, "invalid deck")
+            except Exception as exc:  # a broken tool must show up in the conversation, not kill the supervisor
+                small, why = None, f"render failed: {type(exc).__name__}: {exc}"[:200]
             if small is None:
                 score, fixes = 0, [f"FIX: whole slide - the deck could not be rendered ({why})"]
                 self.chat("render", "art", f"no picture this round: {why}", "check")
             else:
                 self.chat("render", "art", f"round-{round_no}.png ready", "check")
-                art_reply, _ = self.run_turn("art", ART.format(round=round_no), a.art_model, files=[self.ref_small, small], timeout=600)
+                try:
+                    art_reply, _ = self.run_turn("art", ART.format(round=round_no), a.art_model, files=[self.ref_small, small], timeout=600)
+                except Exception as exc:
+                    art_reply = f"(art director failed: {type(exc).__name__}: {exc})"[:300]
                 found = re.search(r"SCORE:\s*(\d+(?:\.\d+)?)\s*/\s*10", art_reply)
                 score = float(found.group(1)) if found else 0
                 fixes = [l.strip() for l in art_reply.splitlines() if l.strip().upper().startswith("FIX")][:5]
