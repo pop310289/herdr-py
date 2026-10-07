@@ -1,0 +1,66 @@
+# The test suite on every push and pull request, on the Python 3.6 that RHEL 8 ships and on the newest
+# stable Python, plus a check that the pushed commits carry no personal data (the repository is public).
+# No secrets: the only credential is the token GitHub gives every run, limited here to reading the repository.
+# Third-party actions are pinned to full commit SHAs (tags can be moved); the comment names the release.
+name: tests
+
+on: [push, pull_request]
+
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  python36:
+    # RHEL 8's python3 is 3.6.8, always present as /usr/libexec/platform-python. The Red Hat Universal Base
+    # Image 8 carries that same build, with Red Hat's patches, and is free to pull. actions/setup-python has no
+    # 3.6 for current Ubuntu runners; the python:3.6 image on Docker Hub is upstream 3.6.15, last built in 2021.
+    name: Python 3.6 (RHEL 8 platform-python, UBI 8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    container:
+      image: registry.access.redhat.com/ubi8/ubi:8.10
+    steps:
+      # git before checkout: without it actions/checkout downloads a tarball instead of cloning, and the
+      # privacy-check tests make git repositories of their own.
+      - name: Install git
+        run: dnf install -y --setopt=install_weak_deps=False git-core
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Interpreter
+        run: /usr/libexec/platform-python --version
+      - name: Tests
+        run: /usr/libexec/platform-python -m unittest discover -s tests
+
+  python-latest:
+    name: Python, newest stable (ubuntu-latest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.x"  # the newest stable 3.x release; pre-releases are not picked
+          check-latest: true     # without it an older 3.x already on the runner would be used
+      - name: Interpreter
+        run: python --version
+      - name: Tests
+        run: python -m unittest discover -s tests
+
+  privacy:
+    name: Privacy check of the pushed commits
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0  # all history, so every commit of the push or pull request is there to read
+          persist-credentials: false
+      # The runner's own python3: the script is standard library only and its tests also run on 3.6 above.
+      - name: No co-author or session trailers, home-directory paths or personal e-mail addresses
+        run: python3 scripts/ci_privacy.py --github
