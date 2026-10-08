@@ -24,7 +24,8 @@ and anything else fails, for a pass/fail check you already have (then a crash lo
 CLI failed, not the answer) or the judge broke; summary.json says where and why, and the command exits 3. Timeouts
 and invalid or missing answers are the members' own problems and do not stop the run.
 The output folder holds kb/ (the knowledge base), run.jsonl (every turn: state, seconds, tokens, entry, verdict,
-problems), members/ (the backends' logs) and summary.json.
+problems), members/ (the backends' logs), summary.json and view.html: one page with every member's every turn
+(coopview.py), written again after every round, so it can be opened while the run goes on.
 """
 import argparse
 import collections
@@ -37,6 +38,7 @@ import sys
 import threading
 import time
 
+from . import coopview
 from .members import MemberError, Members, parse_member
 from .teamkb import TeamKB, one_line
 
@@ -187,6 +189,7 @@ class CoopRun:
                 t.join()
             done = [self.record(m, wave, prompts[m][1], *replies[m]) for m in members]  # in member order, whoever finished first
             self.progress.append({"round": wave, "turns": len(self.turns), "best": self.kb.stats()["best"]})
+            self.view()
             broken = [infra_problem(t) for t in done if infra_problem(t)]
             if broken and self.stop_on_infra_error:
                 self.stopped = {"round": wave, "of": len(self.waves()), "why": broken}
@@ -197,7 +200,15 @@ class CoopRun:
         with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(summary, handle, ensure_ascii=False, indent=1)
         os.replace(tmp, os.path.join(self.out, "summary.json"))
+        self.view()
         return summary
+
+    def view(self):
+        """Write view.html; a page that cannot be written is reported, it never ends the run."""
+        try:
+            coopview.save(self.out)
+        except Exception as exc:  # noqa: BLE001 - the page is for people; the run's records are what count
+            print(f"herdr-py coop: warning: view.html not written: {type(exc).__name__}: {exc}", file=sys.stderr)
 
     def record(self, member, wave, shown, text, state, seconds, tokens):
         turn = {"t": round(time.time(), 3), "round": wave, "member": member, "state": state, "seconds": seconds,
@@ -270,7 +281,8 @@ def report(summary, out):
                f"duplicates {rate(s['duplicate_rate'])}, parents dropped {s['parents_dropped']}",
              "best after each round: " + ", ".join("-" if p["best"] is None else f"{p['best']:.6g}" for p in s["progress"]),
              f"tokens: {s['tokens'] if s['tokens'] is not None else 'not reported'}; {s['seconds']} s",
-             f"entries: python3 -m herdr_py.teamkb {os.path.join(out, 'kb')}"]
+             f"entries: python3 -m herdr_py.teamkb {os.path.join(out, 'kb')}",
+             f"every turn on one page: {os.path.join(out, 'view.html')}"]
     if s.get("stopped"):
         lines.insert(0, f"STOPPED after round {s['stopped']['round']} of {s['stopped']['of']}: " + "; ".join(s["stopped"]["why"]))
     return "\n".join(lines)

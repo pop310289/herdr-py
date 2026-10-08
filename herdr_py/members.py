@@ -222,7 +222,9 @@ class Members:
         backend = self.backends[self.spec[name]["backend"]]
         if hasattr(backend, "tokens"):
             return backend.tokens(name)
-        return (backend.agents.get(name) or {}).get("tokens")
+        # Codex and Claude count tokens per member from the member's first turn on: none yet is 0, not unknown
+        # (otherwise the tokens of every member's first turn could not be worked out from before and after)
+        return (backend.agents.get(name) or {}).get("tokens", 0)
 
     def summary(self):
         return [dict(self.spec[name], turns=s["turns"], seconds=round(s["seconds"], 2), states=s["states"],

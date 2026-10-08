@@ -171,6 +171,8 @@ class MixedTeamTest(unittest.TestCase):
         team = Members(specs, os.path.join(self.dir, "work"))
         self.addCleanup(team.close)
         self.assertEqual(team.names(), ["cx", "cl", "pg"])
+        # before anyone ran: Codex and Claude have used 0 tokens (not "unknown"), so a first turn's tokens can be counted
+        self.assertEqual([team.tokens(n) for n in team.names()], [0, 0, None])
         replies = {name: team.run_turn(name, "the same task", timeout=60) for name in team.names()}
         self.assertEqual({n: r[1] for n, r in replies.items()}, {"cx": "idle", "cl": "idle", "pg": "idle"})
         self.assertTrue(replies["cx"][0].startswith("echo: the same task"))
@@ -180,6 +182,18 @@ class MixedTeamTest(unittest.TestCase):
         self.assertEqual({n: s["turns"] for n, s in summary.items()}, {"cx": 1, "cl": 1, "pg": 1})
         self.assertIsInstance(summary["cl"]["tokens"], int)
         self.assertIsNone(summary["pg"]["tokens"])
+
+    def test_a_coop_run_counts_the_tokens_of_every_turn_including_the_first(self):
+        from herdr_py.coop import CoopRun
+        team = Members([parse_member("cx=codex"), parse_member("cl=claude")], os.path.join(self.dir, "work"))
+        self.addCleanup(team.close)
+        out = os.path.join(self.dir, "run")
+        CoopRun("Give a number.", lambda path: ("valid", 1, ""), team, team.names(), out, mode="I", rounds=2).run()
+        with open(os.path.join(out, "run.jsonl")) as handle:
+            turns = [json.loads(line) for line in handle]
+        self.assertEqual(len(turns), 4)
+        self.assertTrue(all(isinstance(t["tokens"], int) and t["tokens"] > 0 for t in turns), turns)
+        self.assertEqual([t["tokens"] for t in turns if t["member"] == "cx"], [110, 110])  # the fake's usage, every turn
 
     def test_a_missing_program_fails_its_turn_and_says_why(self):
         team = Members([parse_member("pg=command:/no/such/program")], os.path.join(self.dir, "work"))
