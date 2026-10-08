@@ -487,3 +487,66 @@ class PageTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SavedPageTest(unittest.TestCase):
+    """--html: the page and the run as one file that opens from disk (no server, no token, no updates)."""
+
+    def save(self, run):
+        out = os.path.join(os.path.dirname(run), "saved.html")
+        result = D.save_html(run, out)
+        with open(out, encoding="utf-8") as handle:
+            return result, handle.read()
+
+    @staticmethod
+    def embedded(page):
+        found = re.search(r'<script type="application/json" id="run-data">(.*?)</script>', page, re.S)
+        return json.loads(found.group(1))
+
+    def test_everything_the_page_needs_is_inside(self):
+        _, run = copy_fixture(self)
+        result, page = self.save(run)
+        self.assertNotIn('href="dashboard.css"', page)
+        self.assertNotIn('src="dashboard.js"', page)
+        self.assertIn("function fileUrl", page)  # the script is inline
+        data = self.embedded(page)
+        self.assertEqual(data["state"]["chat_total"], 33)
+        wanted = D.saved_pictures(data["state"], set())
+        self.assertTrue(wanted)
+        self.assertEqual(set(data["files"]), wanted)
+        self.assertTrue(all(v.startswith("data:image/png;base64,") for v in data["files"].values()))
+        self.assertEqual(result["pictures"], len(wanted))
+
+    def test_model_text_cannot_end_the_data_or_reach_the_token(self):
+        _, run = copy_fixture(self)
+        os.makedirs(os.path.join(run, "state"))
+        with open(os.path.join(run, "state", "token"), "w") as handle:
+            handle.write("SECRET-TOKEN-123")
+        append(os.path.join(run, "work", "chat.jsonl"),
+               {"t": 1100.0, "from": "drawA", "to": "supervisor", "kind": "message", "text": "</script><script>alert(1)</script> <!-- & >"})
+        _, page = self.save(run)
+        self.assertEqual(page.count("</script>"), 2)  # the data's and the script's own, nothing from the chat
+        self.assertNotIn("<!--", page.split('id="run-data">', 1)[1].split("</script>", 1)[0])
+        self.assertNotIn("SECRET-TOKEN-123", page)
+        last = self.embedded(page)["state"]["chat"][-1]["text"]
+        self.assertEqual(last, "</script><script>alert(1)</script> <!-- & >")  # escaped in the file, intact once parsed
+
+    def test_the_command_saves_and_exits(self):
+        tmp, run = copy_fixture(self)
+        out = os.path.join(tmp, "run.html")
+        env = dict(os.environ, PYTHONPATH=ROOT, PYTHONDONTWRITEBYTECODE="1")
+        p = subprocess.run([sys.executable, "-m", "herdr_py.dashboard", run, "--html", out], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, env=env, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("saved: " + out, p.stdout)
+        self.assertTrue(os.path.getsize(out) > 0)
+        bad = subprocess.run([sys.executable, "-m", "herdr_py.dashboard", os.path.join(tmp, "missing"), "--html", out],
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True, env=env, timeout=60)
+        self.assertEqual(bad.returncode, 2)
+
+    def test_the_script_reads_a_saved_page_without_the_server(self):
+        with open(os.path.join(D.WEB_DIR, "dashboard.js"), encoding="utf-8") as handle:
+            script = handle.read()
+        self.assertIn('document.getElementById("run-data")', script)
+        self.assertIn("if (app.files) return app.files[path]", script)
+        self.assertIn('setConn("saved"', script)

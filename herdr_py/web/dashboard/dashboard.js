@@ -40,8 +40,11 @@ function readToken() {
   try { return sessionStorage.getItem(TOKEN_KEY) || ""; } catch (e) { return ""; }
 }
 
+const SAVED = document.getElementById("run-data");  // a page saved with `python3 -m herdr_py.dashboard RUN_DIR --html`
+
 const app = {
-  token: readToken(),
+  token: SAVED ? "" : readToken(),
+  files: null,          // a saved page: picture path -> data: URI, inside the file
   state: null,          // the latest state from the server
   chat: [],             // every conversation line so far
   offset: 0,            // the server's clock minus ours, in seconds
@@ -486,6 +489,7 @@ function renderScores(force) {
 
 // ------------------------------------------------------------------ pictures
 function fileUrl(path) {
+  if (app.files) return app.files[path] || "";
   return "/files/" + path.split("/").map(encodeURIComponent).join("/") + "?token=" + encodeURIComponent(app.token);
 }
 
@@ -610,5 +614,17 @@ if (window.ResizeObserver) {
   }).observe($("#charts"));
 }
 
-setInterval(tick, 1000);
-connect();
+if (SAVED) {  // everything is in the file: no server, no token, no updates (the "for 3m" times stay as saved)
+  let saved = null;
+  try { saved = JSON.parse(SAVED.textContent); } catch (e) { /* a damaged file */ }
+  if (saved && saved.state) {
+    app.files = saved.files || {};
+    apply(Object.assign({}, saved.state, { type: "snapshot" }));
+    setConn("saved", "saved " + fmtTime(saved.state.now) + " (does not update)");
+  } else {
+    setConn("bad", "this saved page is damaged: save it again with --html");
+  }
+} else {
+  setInterval(tick, 1000);
+  connect();
+}

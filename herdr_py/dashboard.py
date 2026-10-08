@@ -1,6 +1,7 @@
 """Live team dashboard: one read-only web page that shows a team run while it happens.
 
     python3 -m herdr_py.dashboard RUN_DIR [--port 8770] [--host 127.0.0.1] [--socket DAEMON_SOCKET]
+    python3 -m herdr_py.dashboard RUN_DIR --html run.html     # the same page saved as one file: open it in any browser
 
 RUN_DIR is a run folder made by examples/slide_team/run_demo.py (it holds work/) or the --workdir of layout_team.py.
 The dashboard only reads it:
@@ -18,6 +19,7 @@ inside RUN_DIR only, reached without following any symlink, so the run's state/t
 the folder. Nothing is ever written: there are no write endpoints.
 """
 import argparse
+import base64
 import errno
 import hmac
 import http.server
@@ -654,6 +656,65 @@ def make_handler(dash):
     return Handler
 
 
+def saved_pictures(value, found):
+    """Paths of every picture record ({path, size}) anywhere in the page state."""
+    if isinstance(value, dict):
+        if isinstance(value.get("path"), str) and "size" in value:
+            found.add(value["path"])
+        for item in value.values():
+            saved_pictures(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            saved_pictures(item, found)
+    return found
+
+
+def save_html(run_dir, out_path, socket_path=None):
+    """The page as one HTML file with the run as it is now: style, script, state and pictures (data: URIs) inside, so it
+    opens from disk with no server and no token; it does not update. Pictures are read as /files serves them: image files
+    inside RUN_DIR only, without following symlinks. Model text is escaped so it cannot end the data's <script> element."""
+    run = RunFolder(run_dir, socket_path=socket_path)
+    run.poll_daemon()
+    run.refresh()
+    state = run.state()
+    files = {}
+    for rel in sorted(saved_pictures(state, set())):
+        parts = split_rel(rel)
+        ctype = IMAGE_TYPES.get(os.path.splitext(parts[-1])[1].lower()) if parts else None
+        if ctype is None:
+            continue
+        try:
+            fd = open_inside(run.root, parts)
+        except OSError:
+            continue  # gone since: the page says the picture could not be loaded
+        with os.fdopen(fd, "rb") as handle:
+            files[rel] = f"data:{ctype};base64," + base64.b64encode(handle.read()).decode("ascii")
+    data = json.dumps({"state": state, "files": files}, ensure_ascii=False, allow_nan=False)
+    data = data.replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+
+    def asset(name):
+        with open(os.path.join(WEB_DIR, name), encoding="utf-8") as handle:
+            return handle.read()
+
+    script = asset("dashboard.js")
+    if "</script" in script.lower():
+        raise ValueError("dashboard.js contains </script>: it cannot be put inside the page")
+    icon = base64.b64encode(asset("icon.svg").encode("utf-8")).decode("ascii")
+    page = asset("index.html")
+    for old, new in (('<link rel="stylesheet" href="dashboard.css">', "<style>\n" + asset("dashboard.css") + "</style>"),
+                     ('<link rel="icon" href="icon.svg" type="image/svg+xml">', f'<link rel="icon" href="data:image/svg+xml;base64,{icon}">'),
+                     ('<script src="dashboard.js"></script>',
+                      f'<script type="application/json" id="run-data">{data}</script>\n<script>\n{script}</script>')):
+        if page.count(old) != 1:
+            raise ValueError(f"index.html changed: {old} is not there once")
+        page = page.replace(old, new)
+    tmp = out_path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(page)
+    os.replace(tmp, out_path)
+    return {"path": out_path, "pictures": len(files), "bytes": len(page.encode("utf-8"))}
+
+
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(prog="python3 -m herdr_py.dashboard", description=__doc__.split("\n\n")[0])
     ap.add_argument("run_dir", metavar="RUN_DIR", help="a run folder (with work/ inside) or a team's --workdir")
@@ -661,6 +722,8 @@ def parse_args(argv=None):
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1; reach it through an SSH tunnel)")
     ap.add_argument("--socket", help="herdr-py daemon socket: members' states from the daemon instead of codex/agents.json")
     ap.add_argument("--poll", type=float, default=1.0, help="seconds between looks at the run folder and the daemon")
+    ap.add_argument("--html", metavar="FILE", help="save the page with the run as it is now into one HTML file and exit "
+                                                  "(no server, no token; the file does not update)")
     return ap.parse_args(argv)
 
 
@@ -668,6 +731,14 @@ def main(argv=None):
     from .cli import utf8_stdout
     utf8_stdout()
     a = parse_args(argv)
+    if a.html:
+        try:
+            saved = save_html(a.run_dir, a.html, socket_path=a.socket)
+        except (ValueError, OSError, ClientError) as exc:
+            print(f"herdr-py dashboard: {exc}", file=sys.stderr)
+            return 2
+        print(f"saved: {saved['path']} ({saved['pictures']} pictures, {saved['bytes'] / 1e6:.1f} MB); open it in a browser")
+        return 0
     try:
         dash = Dashboard(a.run_dir, host=a.host, port=a.port, socket_path=a.socket, poll_s=a.poll)
     except (ValueError, OSError) as exc:

@@ -45,6 +45,7 @@ ul, ol { list-style: none; margin: 0; padding: 0; }
 .conn::before { content: "●"; margin-right: 6px; color: var(--muted); }
 .conn[data-state="ok"]::before { color: var(--ok); }
 .conn[data-state="bad"]::before { color: var(--bad); }
+.conn[data-state="saved"]::before { content: "■"; }
 button { min-height: var(--tap); padding: 0 14px; border-radius: 10px; border: 1px solid var(--line); background: transparent;
   color: var(--text); font: inherit; font-size: 15px; cursor: pointer; }
 button.small { min-height: 36px; padding: 0 12px; font-size: 14px; }
@@ -175,3 +176,10 @@ select { min-height: var(--tap); padding: 0 10px; border-radius: 10px; border: 1
   .members { grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); }
 }
 @media (min-width: 1100px) { .pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; } }
+/* desktop: conversation, scores and lessons, pictures side by side */
+@media (min-width: 1300px) {
+  .layout { grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr) minmax(0, 0.9fr); max-width: 1640px;
+    grid-template-areas: "status status status" "members members members" "talk scores pictures" "talk lessons pictures" "talk . pictures"; }
+  .pictures-sec { align-self: start; position: sticky; top: 64px; }
+  .pair { grid-template-columns: minmax(0, 1fr); }
+}

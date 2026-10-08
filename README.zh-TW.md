@@ -89,12 +89,16 @@ herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，�
 
 ## 團隊即時面板
 
-一頁唯讀網頁，在手機或電腦上即時看一次團隊執行：成員卡（狀態、token、輪數、用過幾個 session、最後說的話）、可依成員與種類篩選的對話時間軸、每一排的分數圖（初稿與每次修改、接受或退回、保留的版本）、我們的圖與原圖並排（滑桿切換每個保留的版本）、教訓清單與最後的數字。變化用 Server-Sent Events 推送。
+一頁唯讀的 HTML 網頁，即時看一次團隊執行：成員卡（狀態、token、輪數、用過幾個 session、最後說的話）、可依成員與種類篩選的對話時間軸、每一排的分數圖（初稿與每次修改、接受或退回、保留的版本）、我們的圖與原圖並排（滑桿切換每個保留的版本）、教訓清單與最後的數字。變化用 Server-Sent Events 推送。
 
 ```bash
 python3 -m herdr_py.dashboard ~/.cache/herdr-slides/<某次執行> [--port 8770] [--socket <常駐程式的 socket>]
 # 會印出  open: http://127.0.0.1:8770/#token=...
+python3 -m herdr_py.dashboard ~/.cache/herdr-slides/<某次執行> --html run.html
+# 同一頁存成一個檔案（執行當下的樣子）：用任何瀏覽器打開，不需要伺服器或 token，不會更新
 ```
+
+寬螢幕上，對話、分數圖和圖片三欄並排。存下來的頁面把圖片放在檔案裡（跑完、有六張圖的執行約 2 MB），只放圖片，不會帶到 `state/token`。
 
 RUN_DIR 是 `run_demo.py` 產生的執行資料夾（或 `layout_team.py --workdir`）。成員狀態來自 `work/codex/agents.json`（Codex 成員），加 `--socket` 則來自 herdr-py 常駐程式。`summary.json` 要到結束才寫，在那之前分數從對話讀出，所以圖會隨執行更新。和常駐程式的網頁一樣只聽 127.0.0.1，而且要用印出的連結裡的 token；只提供 RUN_DIR 裡的圖片檔、不跟隨任何符號連結（執行資料夾裡也有常駐程式的 `state/token`），沒有任何寫入的端點。
 
@@ -109,7 +113,7 @@ RUN_DIR 是 `run_demo.py` 產生的執行資料夾（或 `layout_team.py --workd
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 257 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 261 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

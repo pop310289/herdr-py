@@ -167,7 +167,7 @@ returns the findings as a list of dicts.
 
 ## Live team dashboard
 
-One read-only page that shows a team run while it happens, on a phone or a desktop: member cards (state, tokens, turns,
+One read-only HTML page that shows a team run while it happens: member cards (state, tokens, turns,
 sessions, last words), the conversation as a timeline you can filter by member and kind, a score chart per row (the
 draft and every revision, accepted or rejected, and the version kept), our picture next to the original with a slider
 over the kept versions, the lessons list and the final numbers. Changes arrive over Server-Sent Events.
@@ -175,7 +175,12 @@ over the kept versions, the lessons list and the final numbers. Changes arrive o
 ```bash
 python3 -m herdr_py.dashboard ~/.cache/herdr-slides/<run> [--port 8770] [--socket <daemon socket>]
 # prints  open: http://127.0.0.1:8770/#token=...
+python3 -m herdr_py.dashboard ~/.cache/herdr-slides/<run> --html run.html
+# the same page as one file, the run as it is now: open it in any browser, no server or token; it does not update
 ```
+
+On a wide screen the conversation, the score charts and the pictures sit side by side. A saved page carries its
+pictures inside (a finished run with six renders is about 2 MB) and only image files, never `state/token`.
 
 RUN_DIR is a run folder from `run_demo.py` (or a `layout_team.py --workdir`). Member states come from
 `work/codex/agents.json` (Codex members) or, with `--socket`, from the herdr-py daemon. Until `summary.json` is written
@@ -215,7 +220,7 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 257 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 261 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
