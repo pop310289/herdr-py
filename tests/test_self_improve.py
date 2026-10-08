@@ -101,6 +101,7 @@ def git(repo, *args):
     subprocess.run(["git", "-C", repo] + list(args), check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
+@unittest.skipUnless(shutil.which("git"), "the patch judge and these tests need git (the RHEL 8 test image has none)")
 class Base(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
