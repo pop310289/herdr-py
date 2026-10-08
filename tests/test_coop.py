@@ -208,6 +208,39 @@ class FaultTest(Base):
         self.assertEqual((len(calls), s["repeats"], s["valid"]), (1, 2, 1))
 
 
+class StopOnInfraErrorTest(Base):
+    """--stop-on-infra-error: a broken backend or judge ends the run after that round; members' own problems do not."""
+
+    def test_members_own_problems_do_not_stop_the_run(self):
+        members = Scripted(slow=lambda p: ("", "timeout"), wrong=lambda p: answer(500, "too high"),
+                           mute=lambda p: "no idea", quit=lambda p: "FAILED: gave up")
+        run, s = self.run_team(members, ["slow", "wrong", "mute", "quit"], rounds=2, stop_on_infra_error=True)
+        self.assertIsNone(s["stopped"])
+        self.assertEqual(s["turns"], 8)
+
+    def test_a_broken_backend_or_judge_ends_the_run_after_its_round(self):
+        for name, behaviour, judge, words in (
+                ("error", lambda p: ("(codex failed)", "error"), None, "backend ended error"),
+                ("aborted", lambda p: ("", "aborted"), None, "backend ended aborted"),
+                ("judge", lambda p: answer(7, "seven"), "crash", "the judge failed on entry k")):
+            with self.subTest(name):
+                shutil.rmtree(os.path.join(self.dir, "run"), True)
+                members = Scripted(ok=starter, bad=behaviour)
+                run, s = self.run_team(members, ["ok", "bad"], rounds=3, stop_on_infra_error=True,
+                                       judge=self.judge(judge, timeout=5) if judge else None)
+                self.assertEqual(s["stopped"]["round"], 1)
+                self.assertEqual(s["stopped"]["of"], 3)
+                self.assertTrue(any(words in why for why in s["stopped"]["why"]), s["stopped"])
+                self.assertEqual(s["turns"], 2)  # the round that broke is recorded in full, then nothing more runs
+                self.assertEqual(len(self.turns()), 2)
+                self.assertTrue(os.path.exists(os.path.join(self.dir, "run", "summary.json")))
+
+    def test_without_the_option_a_broken_backend_does_not_stop_the_run(self):
+        run, s = self.run_team(Scripted(bad=lambda p: ("", "error")), ["bad"], rounds=3)
+        self.assertIsNone(s["stopped"])
+        self.assertEqual(s["turns"], 3)
+
+
 class ExitJudgeTest(Base):
     def test_pass_fail_checks(self):
         path = os.path.join(self.dir, "check.py")
@@ -258,6 +291,13 @@ class CommandLineTest(Base):
         self.assertIn("1 repeats", stdout)
         for name in ("run.jsonl", "summary.json", os.path.join("kb", "events.jsonl")):
             self.assertTrue(os.path.exists(os.path.join(out, name)), name)
+        broken = os.path.join(self.dir, "broken.py")
+        with open(broken, "w") as handle:
+            handle.write("raise SystemExit(4)\n")
+        code, stdout, _ = self.cli(*(args[:4] + ["--out", os.path.join(self.dir, "cli-stop"), "--rounds", "2", "--stop-on-infra-error",
+                                                  "--member", f"a=command:{sys.executable} -B {broken}"]))
+        self.assertEqual(code, 3, stdout)
+        self.assertTrue(stdout.startswith("STOPPED after round 1 of 2: a round 1: the member's backend ended error"), stdout)
         code, _, err = self.cli(*args)  # the same folder again: refused, so two runs never mix
         self.assertEqual(code, 2)
         self.assertIn("already holds a run", err)

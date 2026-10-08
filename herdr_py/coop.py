@@ -20,6 +20,9 @@ The judge is a command that gets the answer file as its last argument. --judge-m
 JSON line {"status": "valid" | "invalid", "score": number, "detail": "..."} and exits 0; a judge that crashes, times
 out or prints anything else is a judge error, not an invalid answer. --judge-mode exit: exit code 0 passes (score 1)
 and anything else fails, for a pass/fail check you already have (then a crash looks like a fail).
+--stop-on-infra-error ends the run after the round in which a member's backend broke (state error or aborted: the
+CLI failed, not the answer) or the judge broke; summary.json says where and why, and the command exits 3. Timeouts
+and invalid or missing answers are the members' own problems and do not stop the run.
 The output folder holds kb/ (the knowledge base), run.jsonl (every turn: state, seconds, tokens, entry, verdict,
 problems), members/ (the backends' logs) and summary.json.
 """
@@ -127,7 +130,7 @@ class CoopRun:
     optionally, tokens(name) (members.Members, or anything shaped like it)."""
 
     def __init__(self, task, judge, members, names, out, mode="C", rounds=3, results=3, failures=3, answer_bytes=6000,
-                 answer_name="answer.txt", turn_timeout=900, judge_name="judge"):
+                 answer_name="answer.txt", turn_timeout=900, judge_name="judge", stop_on_infra_error=False):
         if mode not in MODES:
             raise ValueError(f"mode: one of {', '.join(MODES)}")
         if not names:
@@ -137,6 +140,7 @@ class CoopRun:
         self.task, self.judge, self.members, self.names, self.mode, self.rounds = task, judge, members, list(names), mode, rounds
         self.results, self.failures, self.answer_bytes, self.answer_name = results, failures, answer_bytes, answer_name
         self.turn_timeout, self.judge_name, self.out = turn_timeout, judge_name, out
+        self.stop_on_infra_error, self.stopped = stop_on_infra_error, None
         os.makedirs(out, exist_ok=True)
         self.kb = TeamKB(os.path.join(out, "kb"))
         self.scope = "team" if mode == "C" else "private"
@@ -181,9 +185,12 @@ class CoopRun:
                 t.start()
             for t in threads:
                 t.join()
-            for m in members:  # recorded in member order, so the log does not depend on who finished first
-                self.record(m, wave, prompts[m][1], *replies[m])
+            done = [self.record(m, wave, prompts[m][1], *replies[m]) for m in members]  # in member order, whoever finished first
             self.progress.append({"round": wave, "turns": len(self.turns), "best": self.kb.stats()["best"]})
+            broken = [infra_problem(t) for t in done if infra_problem(t)]
+            if broken and self.stop_on_infra_error:
+                self.stopped = {"round": wave, "of": len(self.waves()), "why": broken}
+                break
         self.log.close()
         summary = self.summary(time.time() - started)
         tmp = os.path.join(self.out, "summary.json.tmp")
@@ -235,11 +242,20 @@ class CoopRun:
                    "adoption_rate": s["adoption_rate"], "improved_after_adoption": s["improved_after_adoption"],
                    "duplicate_rate": s["duplicate_rate"],
                    "parents_dropped": sum(len(t.get("parents_dropped", [])) for t in self.turns),
-                   "progress": self.progress, "seconds": round(seconds, 1),
+                   "progress": self.progress, "stopped": self.stopped, "seconds": round(seconds, 1),
                    "tokens": sum(known) if known else None, "tokens_known_for_turns": len(known)}
         if hasattr(self.members, "summary"):
             summary["member_stats"] = self.members.summary()
         return summary
+
+
+def infra_problem(turn):
+    """Why this turn shows that the setup broke (a member's backend or the judge), or None."""
+    if turn["state"] in ("error", "aborted"):
+        return f"{turn['member']} round {turn['round']}: the member's backend ended {turn['state']}"
+    if turn.get("status") == "infra_error":
+        return f"{turn['member']} round {turn['round']}: the judge failed on entry {turn['entry']}"
+    return None
 
 
 def report(summary, out):
@@ -255,6 +271,8 @@ def report(summary, out):
              "best after each round: " + ", ".join("-" if p["best"] is None else f"{p['best']:.6g}" for p in s["progress"]),
              f"tokens: {s['tokens'] if s['tokens'] is not None else 'not reported'}; {s['seconds']} s",
              f"entries: python3 -m herdr_py.teamkb {os.path.join(out, 'kb')}"]
+    if s.get("stopped"):
+        lines.insert(0, f"STOPPED after round {s['stopped']['round']} of {s['stopped']['of']}: " + "; ".join(s["stopped"]["why"]))
     return "\n".join(lines)
 
 
@@ -276,6 +294,8 @@ def main(argv=None):
     ap.add_argument("--show-results", type=int, default=3, metavar="N", help="verified answers in each brief")
     ap.add_argument("--show-failures", type=int, default=3, metavar="N", help="failures in each brief")
     ap.add_argument("--answer-bytes", type=int, default=6000, metavar="N", help="show answers up to this size (0: never)")
+    ap.add_argument("--stop-on-infra-error", action="store_true",
+                    help="end the run after a round in which a member's backend or the judge broke (exit code 3)")
     ap.add_argument("--answer-name", default="answer.txt", help="the answer file's name (its extension matters to some judges)")
     a = ap.parse_args(argv)
     problems = []
@@ -307,13 +327,13 @@ def main(argv=None):
         print(f"mode S: {names[0]} gets all {len(names) * a.rounds} turns; {', '.join(names[1:])} do not run")
     run = CoopRun(task, judge, members, names, a.out, mode=a.mode, rounds=a.rounds, results=a.show_results,
                   failures=a.show_failures, answer_bytes=a.answer_bytes, answer_name=a.answer_name,
-                  turn_timeout=a.turn_timeout, judge_name=a.judge)
+                  turn_timeout=a.turn_timeout, judge_name=a.judge, stop_on_infra_error=a.stop_on_infra_error)
     try:
         summary = run.run()
     finally:
         members.close()
     print(report(summary, a.out))
-    return 0
+    return 3 if summary["stopped"] else 0
 
 
 if __name__ == "__main__":

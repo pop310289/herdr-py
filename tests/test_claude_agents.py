@@ -118,7 +118,9 @@ class ClaudeAgentsTest(unittest.TestCase):
         os.environ["FAKE_CLAUDE_MODE"] = "sleep-child"
         start = time.time()
         reply, state = self.team.run_turn("drawA", "You are drawA", timeout=1)
-        self.assertEqual((reply, state), ("", "aborted"))
+        self.assertEqual((reply, state), ("", "timeout"))
+        with open(os.path.join(self.root, "team", "events.jsonl")) as handle:
+            self.assertEqual(json.loads(handle.read().splitlines()[-1]).get("timeout"), 1)
         self.assertLess(time.time() - start, 10)  # a child holding the pipe would keep us reading for 30 s
 
     def test_an_api_error_is_an_error_and_its_text_is_not_the_reply(self):

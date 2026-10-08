@@ -156,7 +156,9 @@ class ClaudeAgents:
             err.close()
         if result is not None:
             used = tokens_of(result.get("usage")) or used
-        if timed_out or proc.returncode < 0:
+        if timed_out:
+            state = "timeout"  # told apart from a member that was killed
+        elif proc.returncode < 0:
             state = "aborted"
         elif result is None or result.get("is_error") or proc.returncode:
             state = "error"
@@ -169,8 +171,11 @@ class ClaudeAgents:
         if state != "idle":
             with open(err_path, encoding="utf-8") as handle:
                 tail = handle.read()[-500:]
-            self.events.write(json.dumps({"t": round(time.time(), 2), "agent": name, "exit": proc.returncode, "stderr": tail,
-                                          "result": (result or {}).get("result")}) + "\n")
+            row = {"t": round(time.time(), 2), "agent": name, "exit": proc.returncode, "stderr": tail,
+                   "result": (result or {}).get("result")}
+            if timed_out:
+                row["timeout"] = timeout
+            self.events.write(json.dumps(row) + "\n")
         with self.lock:
             tokens = self.agents.get(name, {}).get("tokens", 0) + used
             turns = self.agents.get(name, {}).get("turns", 0) + 1

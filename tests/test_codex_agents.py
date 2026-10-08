@@ -102,7 +102,9 @@ class CodexAgentsTest(unittest.TestCase):
     def test_a_turn_over_the_time_limit_is_stopped(self):
         os.environ["FAKE_CODEX_MODE"] = "sleep"
         reply, state = self.team.run_turn("drawA", "You are drawA", timeout=1)
-        self.assertEqual((reply, state), ("", "aborted"))
+        self.assertEqual((reply, state), ("", "timeout"))
+        with open(os.path.join(self.root, "team", "events.jsonl")) as handle:
+            self.assertEqual(json.loads(handle.read().splitlines()[-1]).get("timeout"), 1)
 
     def test_an_error_event_is_reported(self):
         os.environ["FAKE_CODEX_MODE"] = "error"
