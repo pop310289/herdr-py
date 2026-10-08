@@ -219,8 +219,9 @@ def build(team, plan, folder):
 
 
 class Organizer:
-    def __init__(self, team, members, name, out, tries=3, timeout=900):
+    def __init__(self, team, members, name, out, tries=3, timeout=900, backend=None):
         self.team, self.members, self.name, self.out, self.tries, self.timeout = team, members, name, out, tries, timeout
+        self.backend = backend  # recorded in organize.jsonl, so a reader knows what kind of agent organized
         os.makedirs(os.path.join(out, "replies"), exist_ok=True)
         self.log_path = os.path.join(out, "organize.jsonl")
         if os.path.exists(self.log_path):
@@ -233,8 +234,8 @@ class Organizer:
     def run(self):
         """Ask until a proposal passes or the tries run out; returns (accepted, problems of the last proposal)."""
         problems = None
-        self.emit("organize.start", organizer=self.name, members=list(self.team["members"]), judges=list(self.team["judges"]),
-                  limits=self.team["limits"])
+        self.emit("organize.start", organizer=self.name, backend=self.backend, members=list(self.team["members"]),
+                  judges=list(self.team["judges"]), limits=self.team["limits"])
         for attempt in range(1, self.tries + 1):
             text = prompt(self.team, problems)
             began = time.time()
@@ -292,7 +293,8 @@ def main(argv=None):
         spec = parse_member(a.organizer)
         members = Members([spec], os.path.join(os.path.abspath(a.out), "members"), socket=a.socket, sessions="fresh",
                           cwd=team["folder"])
-        organizer = Organizer(team, members, spec["name"], os.path.abspath(a.out), tries=a.tries, timeout=a.timeout)
+        organizer = Organizer(team, members, spec["name"], os.path.abspath(a.out), tries=a.tries, timeout=a.timeout,
+                              backend=spec["backend"])
     except (TeamError, MemberError) as exc:
         print(f"herdr-py organize: {exc}", file=sys.stderr)
         return 2
