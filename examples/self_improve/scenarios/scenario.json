@@ -1,0 +1,17 @@
+{
+ "note": "Candidates only: every scenario here is pending the user's review (definitions §19.1). Do not run real members on them until a person has read each test and changed its status to frozen.",
+ "scenarios": [
+  {"name": "validator-must-finish", "file": "test_validator_must_finish.py", "status": "pending-review",
+   "from": "Codex controller research 2026-10-08, finding 1",
+   "why": "A team run is accepted only when the validator finished its turn and said VERDICT: ACCEPT.",
+   "sources": ["herdr_py/team.py", "tests/test_team.py"]},
+  {"name": "unknown-usage-is-not-zero", "file": "test_unknown_usage_is_not_zero.py", "status": "pending-review",
+   "from": "Codex controller research, localA PAIN_POINTS, P26 pilot (2026-10-08)",
+   "why": "A turn whose backend never reported usage has unknown tokens (None), not 0.",
+   "sources": ["herdr_py/coop.py", "herdr_py/members.py", "herdr_py/codex_agents.py", "tests/fake_codex.py"]},
+  {"name": "two-teams-one-daemon", "file": "test_two_teams_one_daemon.py", "status": "pending-review",
+   "from": "Codex controller research, list of gaps (2026-10-08)",
+   "why": "Two runs on one daemon with a member of the same name must each drive their own agent.",
+   "sources": ["herdr_py/members.py", "tests/test_team.py"]}
+ ]
+}
