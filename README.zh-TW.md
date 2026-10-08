@@ -58,6 +58,25 @@ herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，�
 
 `herdr-py team task.json --condition T --workdir 資料夾` 用三個角色做一題：執行者（可改檔）、唯讀的驗證者（解釋公開檢查為什麼沒過）、唯讀的確認者（對照原始需求）。監工是程式不是模型：執行者停下時跑公開檢查；除非檢查通過而且確認者接受，否則用「檢查輸出、角色的證據、執行者的 `NOTES.md`、最近的工具紀錄」組成「從哪裡繼續」的提示送回去。執行者連續 `--stall` 秒沒有進展，就換一個新的 session 並交接（這就是跨 session 的記憶）。`--condition S`（單一 agent）和 `N`（泛用的「檢查一下」提醒）是對照組。實驗程式：[`bench/p23`](bench/p23)。
 
+## 協作迴圈與團隊知識庫
+
+`python3 -m herdr_py.coop` 把「照規則跑的迴圈」（一個 agent、固定規則、每步檢查）變成團隊：規則變成**評分程式**，替每個答案打分；每個成員下一輪的指令裡，還會附上隊友找到、而且評分程式驗證過的成果。成員可以混用 OpenCode（透過 daemon）、Codex CLI、Claude Code CLI，或**任何程式**：從 stdin 讀指令、從 stdout 回答，你既有的迴圈腳本也可以。
+
+```sh
+# 正方形裡放 26 個圓（examples/coop）：兩個程式成員，不需要模型
+python3 -m herdr_py.coop --task examples/coop/packing_task.md --judge "python3 examples/coop/packing_judge.py" \
+    --mode C --rounds 3 --out runs/c1 \
+    --member 'a=command:python3 examples/coop/packing_member.py --seed 1' \
+    --member 'b=command:python3 examples/coop/packing_member.py --seed 2'
+# 換成 agent：--member x=codex  --member y=claude:haiku  --member z=opencode:ollama/qwen3-8b-32k:latest --socket SOCK
+python3 -m herdr_py.teamkb runs/c1/kb     # 每一筆：分數、誰接了誰的成果、哪些是重送
+```
+
+- **三種模式的成員回合數相同**，分享有沒有幫助是量出來的，不是假設的：`S` 一個成員拿全部回合；`I` 各做各的，只看得到自己的答案；`C` 看得到全隊驗證過的答案和失敗。每輪是一波：簡報在這輪開始前組好，成員同時跑。
+- **評分程式**的最後一個參數是答案檔，印出 `{"status": "valid"|"invalid", "score": ...}`；`--judge-mode exit` 改用通過／不通過檢查的結束碼。評分程式自己崩潰或卡住，記成「評分錯誤」，不算答案不合法；成員自己宣稱的分數一律不用。
+- **知識庫**（`herdr_py/teamkb.py`：只能新增的事件紀錄，答案依內容 hash 存放）保存每個答案、失敗和判定。同一個答案重送只記一次、不重評；成員只能把「簡報裡給它看過的條目」列為父條目；提交後被換掉的答案檔不會被當成原檔評分；多個程序可以同時寫入。指標：採用率、採用後進步率、重複率。
+- 每一輪記在 `run.jsonl`（狀態、秒數、token、條目、判定，以及沒交出東西的原因）；逾時或出錯的回合不會貢獻答案。`summary.json` 有總計和每輪結束時的最佳分數。
+
 ## 範例：投影片團隊
 
 [`examples/slide_team`](examples/slide_team) 讓團隊重畫一張資訊圖：TheAiEdge.io 的「LLM Serving: When to Split Prefill and Decode」（原圖請自備，repo 裡沒有）。兩位畫圖者輪流畫，美術比對我們的圖和原圖，最後由監工程式決定保留哪一版。試過兩種架構：
@@ -113,7 +132,7 @@ RUN_DIR 是 `run_demo.py` 產生的執行資料夾（或 `layout_team.py --workd
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 261 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 311 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

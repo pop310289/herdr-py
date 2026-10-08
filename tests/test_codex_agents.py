@@ -1,4 +1,4 @@
-"""codex_agents.CodexAgents against tests/fake_codex.py: sessions, resume, images, tokens, stdin, timeouts and errors."""
+"""herdr_py/codex_agents.CodexAgents against tests/fake_codex.py: sessions, resume, images, tokens, stdin, timeouts and errors."""
 import json
 import os
 import shutil
@@ -9,7 +9,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "examples", "slide_team"))
-from codex_agents import CodexAgents  # noqa: E402
+from herdr_py.codex_agents import CodexAgents  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake_codex.py")
 

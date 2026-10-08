@@ -1,4 +1,4 @@
-"""claude_agents.ClaudeAgents against tests/fake_claude.py: sessions, resume, images, tokens, stdin, time limits, errors
+"""herdr_py/claude_agents.ClaudeAgents against tests/fake_claude.py: sessions, resume, images, tokens, stdin, time limits, errors
 and the environment a member starts with."""
 import json
 import os
@@ -11,7 +11,7 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "examples", "slide_team"))
-from claude_agents import ClaudeAgents  # noqa: E402
+from herdr_py.claude_agents import ClaudeAgents  # noqa: E402
 
 FAKE = os.path.join(HERE, "fake_claude.py")
 ENV = ("FAKE_CLAUDE_LOG", "FAKE_CLAUDE_STATE", "FAKE_CLAUDE_MODE")

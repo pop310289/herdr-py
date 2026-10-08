@@ -81,6 +81,36 @@ executor's `NOTES.md` and its recent tool log. If the executor makes no progress
 a new session that receives a hand-off (that is how memory carries across sessions). `--condition S` (single agent) and
 `N` (generic "check your work" reminders) exist for comparison. Bench: [`bench/p23`](bench/p23).
 
+## Cooperative loops and the team knowledge base
+
+`python3 -m herdr_py.coop` turns a rule-guided loop (one agent, fixed rules, a check after every step) into a team:
+the rules become the **judge**, a program that scores every answer, and each member's next prompt also carries what
+its teammates found and the judge verified. Members can be any mix of OpenCode agents (through the daemon), Codex CLI,
+Claude Code CLI, or **any program** that reads the prompt on stdin and prints its reply, such as a loop you already have.
+
+```sh
+# 26 circles in a square (examples/coop): two program members, no model needed
+python3 -m herdr_py.coop --task examples/coop/packing_task.md --judge "python3 examples/coop/packing_judge.py" \
+    --mode C --rounds 3 --out runs/c1 \
+    --member 'a=command:python3 examples/coop/packing_member.py --seed 1' \
+    --member 'b=command:python3 examples/coop/packing_member.py --seed 2'
+# the same with agents: --member x=codex  --member y=claude:haiku  --member z=opencode:ollama/qwen3-8b-32k:latest --socket SOCK
+python3 -m herdr_py.teamkb runs/c1/kb     # every entry: score, who built on whom, repeats
+```
+
+- **Modes** with the same number of member turns, so whether sharing helps is measured, not assumed: `S` one member
+  gets every turn, `I` members work independently (each sees only its own answers), `C` members see the team's verified
+  answers and failures. Rounds are waves: briefs are built before the round starts, members run at the same time.
+- **The judge** gets the answer file as its last argument and prints `{"status": "valid"|"invalid", "score": ...}`;
+  `--judge-mode exit` takes a pass/fail check's exit code instead. A judge that crashes or hangs is recorded as a judge
+  error, never as an invalid answer, and a member's claimed score is never used.
+- **The knowledge base** (`herdr_py/teamkb.py`, an append-only log plus artifacts stored by hash) keeps every answer,
+  failure and verdict. The same answer sent twice is recorded once and not judged again; a member can only name as a
+  parent an entry it was shown; an artifact changed after it was proposed is not judged as the same one; several
+  processes can write at once. Numbers: adoption rate, improvement after adoption, duplicate rate.
+- Every turn is in `run.jsonl` (state, seconds, tokens, entry, verdict, and why a turn produced nothing); a turn that
+  timed out or failed never contributes an answer. `summary.json` has the totals and the best score after each round.
+
 ## Example: a slide team
 
 [`examples/slide_team`](examples/slide_team) rebuilds one infographic, TheAiEdge.io's "LLM Serving: When to Split Prefill
@@ -220,7 +250,7 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 261 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 311 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
