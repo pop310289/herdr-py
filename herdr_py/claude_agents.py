@@ -20,8 +20,15 @@ Messages API (no model was called):
   model and the prompt, not on how this machine's Claude Code is set up. Login and models work as usual;
 - a session that cannot be resumed ends with "No conversation found" and num_turns 0: it is forgotten, so the member
   starts a new conversation next time instead of failing every turn.
-Every member runs in its own empty folder with no tools (Read only on a turn with images). agents.json (for view.py)
-holds each member's state, tokens and last words; events.jsonl keeps every event.
+Every member runs in its own empty folder with no tools (Read only on a turn with images), unless a turn names a
+workdir (a DAG step's workspace, dag.py): then it runs there with file tools and nothing else (WORKSPACE). Checked with
+Claude Code 2.1.294 on 2026-10-09 against a local stand-in that played fixed tool calls (no model was called):
+- write: --permission-mode acceptEdits with Read, Edit, Write, Glob, Grep: inside the folder they work; Write, Read,
+  Glob and Grep outside it, and a Write through "../", are refused; there is no Bash;
+- read: --permission-mode dontAsk with Read, Glob, Grep: inside works, outside is refused;
+- do not use --allowedTools for this: dontAsk with --allowedTools Read,Edit,Write let the member write and read
+  anywhere on the machine, and dontAsk without it refused Write and Edit even inside the folder.
+agents.json (for view.py) holds each member's state, tokens and last words; events.jsonl keeps every event.
 """
 import json
 import os
@@ -31,6 +38,7 @@ import threading
 import time
 
 ISOLATION = ["--safe-mode", "--permission-mode", "dontAsk"]
+WORKSPACE = {"write": ("acceptEdits", "Read,Edit,Write,Glob,Grep"), "read": ("dontAsk", "Read,Glob,Grep")}
 # set by a Claude Code session for the commands it runs (seen in 2.1.283): a member started from inside such a session
 # (an agent running the experiment) must not look like a part of that session
 PARENT_SESSION = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
@@ -88,15 +96,27 @@ class ClaudeAgents:
             agent.update(fields)
             self._publish()
 
-    def args(self, name, prompt, model=None, files=()):
-        session = None if self.fresh else self.sessions.get(name)
-        out = [self.claude, "-p", "--output-format", "stream-json", "--verbose"] + self.isolation
+    def args(self, name, prompt, model=None, files=(), access=None):
+        """access "write" or "read": a turn in a workspace (see WORKSPACE); None: no tools, as everywhere else."""
+        session = None if (self.fresh or access) else self.sessions.get(name)  # a workspace turn is always a new conversation
+        isolation = self.isolation
+        if access:
+            mode, tools = WORKSPACE[access]
+            kept = [f for i, f in enumerate(isolation) if f != "--permission-mode" and (i == 0 or isolation[i - 1] != "--permission-mode")]
+            isolation = kept + ["--permission-mode", mode]
+        out = [self.claude, "-p", "--output-format", "stream-json", "--verbose"] + isolation
         if session:
             out += ["--resume", session]
         if model or self.model:
             out += ["--model", model or self.model]
         paths = [os.path.abspath(path) for path in files]
-        if paths:
+        if access:
+            out += ["--tools", tools]
+            if paths:
+                out += ["--add-dir"] + sorted({os.path.dirname(path) for path in paths})
+                prompt += "\n\nOpen each image with the Read tool before you answer:\n" + "\n".join(
+                    f"Image {i}: {path}" for i, path in enumerate(paths, 1))
+        elif paths:
             out += ["--tools", "Read", "--add-dir"] + sorted({os.path.dirname(path) for path in paths})
             prompt += "\n\nOpen each image with the Read tool before you answer:\n" + "\n".join(
                 f"Image {i}: {path}" for i, path in enumerate(paths, 1))
@@ -104,9 +124,12 @@ class ClaudeAgents:
             out += ["--tools", ""]  # no tools at all: the member only writes its answer
         return out + ["--", prompt]  # --tools and --add-dir take several values: without "--" they eat the prompt
 
-    def run_turn(self, name, prompt, model=None, files=(), timeout=600):
-        argv = self.args(name, prompt, model, files)
-        folder = os.path.join(self.root, name)
+    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None):
+        """workdir: run this turn in that folder with file tools (access "write", the default there, or "read")."""
+        if access not in (None, "write", "read"):
+            raise ValueError("access: write or read")
+        argv = self.args(name, prompt, model, files, access=(access or "write") if workdir else None)
+        folder = workdir or os.path.join(self.root, name)
         os.makedirs(folder, exist_ok=True)
         self._set(name, state="working")
         self.events.write(json.dumps({"t": round(time.time(), 2), "agent": name, "argv": argv[:-1] + ["<prompt>"]}) + "\n")
@@ -164,7 +187,9 @@ class ClaudeAgents:
             state = "error"
         else:
             state = "idle"
-        if session and not (state == "error" and result is not None and result.get("num_turns") == 0):
+        if workdir:
+            pass  # a workspace conversation is never resumed: a later turn elsewhere must not land in that folder
+        elif session and not (state == "error" and result is not None and result.get("num_turns") == 0):
             self.sessions[name] = session
         else:
             self.forget(name)  # the conversation never started (e.g. "No conversation found"): do not resume it again

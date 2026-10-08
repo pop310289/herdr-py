@@ -83,15 +83,16 @@ def parse_reply(text):
 
 
 def command_judge(command, timeout=120):
-    """A judge command that prints a JSON verdict (see the module notes)."""
+    """A judge command that prints a JSON verdict (see the module notes). check(path, cwd=None, env=None): the DAG
+    runner (dag.py) runs it in a step's workspace with the step's environment."""
     argv = shlex.split(command) if isinstance(command, str) else list(command)
 
-    def check(path):
+    def check(path, cwd=None, env=None):
         if path is None:
             return "invalid", None, "no answer"
         try:
             p = subprocess.run(argv + [path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, universal_newlines=True,
-                               timeout=timeout)
+                               timeout=timeout, cwd=cwd, env=env)
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"the judge did not finish within {timeout}s")
         if p.returncode != 0:
@@ -110,12 +111,12 @@ def exit_judge(command, timeout=120):
     """A pass/fail judge: exit code 0 is valid with score 1, anything else invalid; its output is the detail."""
     argv = shlex.split(command) if isinstance(command, str) else list(command)
 
-    def check(path):
+    def check(path, cwd=None, env=None):
         if path is None:
             return "invalid", None, "no answer"
         try:
             p = subprocess.run(argv + [path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True,
-                               timeout=timeout)
+                               timeout=timeout, cwd=cwd, env=env)
         except subprocess.TimeoutExpired:
             raise RuntimeError(f"the judge did not finish within {timeout}s")
         tail = "\n".join(p.stdout.strip().splitlines()[-8:])

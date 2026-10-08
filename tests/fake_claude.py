@@ -98,7 +98,7 @@ def main(argv):
     if len(positional) != 1 or not positional[0].strip():
         return fail("Error: Input must be provided either through stdin or as a prompt argument when using --print")
     prompt = positional[0]
-    tools = [t for t in opts.get("--tools", DEFAULT_TOOLS) if t]
+    tools = [t for value in opts.get("--tools", DEFAULT_TOOLS) for t in value.split(",") if t]  # "Read,Edit" as the real CLI
     state_path = os.environ.get("FAKE_CLAUDE_STATE")
     saved = {}
     if state_path and os.path.exists(state_path):

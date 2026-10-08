@@ -9,8 +9,10 @@ conversation. Checked with codex-cli 0.160.0 on 2026-10-07:
 - stdin must be closed: otherwise exec waits with "Reading additional input from stdin...";
 - -i/--image takes several values, so the prompt must come after "--" or it is read as an image path.
 A turn over its time limit is stopped with everything Codex started (its own process group) and ends "timeout", not
-"aborted", so a slow member is told apart from one that was killed. Every member runs read-only in its own empty folder. agents.json (for view.py) holds each member's state, tokens and
-last words; events.jsonl keeps every event.
+"aborted", so a slow member is told apart from one that was killed. Every member runs read-only in its own empty folder,
+unless a turn names a workdir (a DAG step's workspace, dag.py): then it runs there, in Codex's workspace-write sandbox
+(access "write": writes only inside the folder; reads are not limited) or read-only. agents.json (for view.py) holds
+each member's state, tokens and last words; events.jsonl keeps every event.
 """
 import json
 import os
@@ -62,21 +64,25 @@ class CodexAgents:
             agent.update(fields)
             self._publish()
 
-    def args(self, name, prompt, model=None, files=()):
-        thread = None if self.fresh else self.threads.get(name)
+    def args(self, name, prompt, model=None, files=(), workdir=None, access=None):
+        thread = None if (self.fresh or workdir) else self.threads.get(name)  # a workspace turn is always a new thread
         out = [self.codex, "exec"] + (["resume", thread] if thread else []) + ["--json", "--skip-git-repo-check"]
         if not thread:
-            folder = os.path.join(self.root, name)
+            folder = workdir or os.path.join(self.root, name)
             os.makedirs(folder, exist_ok=True)
-            out += ["-s", self.sandbox, "-C", folder]
+            sandbox = {"write": "workspace-write", "read": "read-only"}[access or "write"] if workdir else self.sandbox
+            out += ["-s", sandbox, "-C", folder]
         if model or self.model:
             out += ["-m", model or self.model]
         for path in files:
             out += ["-i", os.path.abspath(path)]
         return out + ["--", prompt]  # -i takes several values: without "--" the prompt is read as one more image
 
-    def run_turn(self, name, prompt, model=None, files=(), timeout=600):
-        argv = self.args(name, prompt, model, files)
+    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None):
+        """workdir: run this turn in that folder (access "write", the default there, or "read")."""
+        if access not in (None, "write", "read"):
+            raise ValueError("access: write or read")
+        argv = self.args(name, prompt, model, files, workdir=workdir, access=access)
         self._set(name, state="working")
         self.events.write(json.dumps({"t": round(time.time(), 2), "agent": name, "argv": argv[:-1] + ["<prompt>"]}) + "\n")
         err_path = os.path.join(self.root, name + ".stderr.log")  # a file, not a pipe: a full stderr pipe would stall Codex
@@ -95,7 +101,7 @@ class CodexAgents:
                     continue
                 self.events.write(json.dumps({"t": round(time.time(), 2), "agent": name, "event": event}) + "\n")
                 kind = event.get("type")
-                if kind == "thread.started" and event.get("thread_id"):
+                if kind == "thread.started" and event.get("thread_id") and not workdir:  # never resume into a workspace
                     self.threads[name] = event["thread_id"]
                 elif kind == "item.completed" and (event.get("item") or {}).get("type") == "agent_message":
                     texts.append(event["item"].get("text", ""))

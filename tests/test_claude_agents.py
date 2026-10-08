@@ -56,6 +56,29 @@ class ClaudeAgentsTest(unittest.TestCase):
         self.team.run_turn("drawB", "You are drawB")
         self.assertNotEqual(self.calls()[2]["session"], a["session"])  # every member has its own conversation
 
+    def test_a_workspace_turn_runs_there_with_file_tools_only(self):  # flags checked against the real CLI (module notes)
+        ws = os.path.join(self.root, "ws")
+        os.makedirs(ws)
+        self.team.run_turn("w1", "plain first")  # a conversation the member keeps outside any workspace
+        reply, state = self.team.run_turn("w1", "edit things", workdir=ws)
+        self.team.run_turn("w1", "look only", workdir=ws, access="read")
+        self.team.run_turn("w1", "plain again")
+        plain, write, read, again = self.calls()
+        self.assertEqual(state, "idle")
+        self.assertEqual(write["cwd"], os.path.realpath(ws))
+        self.assertEqual(write["args"].count("--permission-mode"), 1)  # replaced, not given twice
+        self.assertEqual(write["args"][write["args"].index("--permission-mode") + 1], "acceptEdits")
+        self.assertEqual(write["tools"], ["Read", "Edit", "Write", "Glob", "Grep"])
+        self.assertNotIn("--allowedTools", write["args"])  # with it the real CLI let the member write anywhere
+        self.assertIn("--safe-mode", write["args"])
+        self.assertEqual(read["args"][read["args"].index("--permission-mode") + 1], "dontAsk")
+        self.assertEqual(read["tools"], ["Read", "Glob", "Grep"])
+        self.assertFalse(write["resumed"] or read["resumed"])  # a workspace turn is always a new conversation
+        self.assertEqual(again["session"], plain["session"])  # and it never becomes the one resumed elsewhere
+        self.assertEqual((again["tools"], again["cwd"]), ([], os.path.realpath(os.path.join(self.root, "team", "w1"))))
+        with self.assertRaises(ValueError):
+            self.team.run_turn("w1", "x", workdir=ws, access="admin")
+
     def test_fresh_members_and_forget_start_a_new_conversation(self):
         team = ClaudeAgents(os.path.join(self.root, "team3"), claude=self.claude, fresh=True)
         self.addCleanup(team.close)

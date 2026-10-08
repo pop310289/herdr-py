@@ -52,6 +52,19 @@ class CommandTest(unittest.TestCase):
             self.assertIn("to stderr", handle.read())
         self.assertIsNone(members.tokens("a"))
 
+    def test_a_workdir_turn_runs_the_program_there(self):
+        where = script(self.dir, "where.py", """
+            import os, sys
+            sys.stdin.read()
+            print(os.getcwd(), os.environ.get("HERDR_ACCESS"))
+            """)
+        ws = os.path.join(self.dir, "ws")
+        os.makedirs(ws)
+        members = Members([{"name": "a", "backend": "command", "model": None, "command": f"{sys.executable} -B {where}"}],
+                          os.path.join(self.dir, "work"), cwd=self.dir)
+        self.assertEqual(members.run_turn("a", "x", workdir=ws, access="read"), (f"{os.path.realpath(ws)} read", "idle"))
+        self.assertEqual(members.run_turn("a", "x"), (f"{os.path.realpath(self.dir)} None", "idle"))
+
     def test_a_failing_program_is_an_error_and_its_words_are_kept(self):
         members = CommandMembers(os.path.join(self.dir, "logs"), cwd=self.dir)
         members.add("a", [sys.executable, "-c", "print('half an answer'); raise SystemExit(3)"])

@@ -48,6 +48,21 @@ class CodexAgentsTest(unittest.TestCase):
         self.team.run_turn("drawB", "You are drawB")
         self.assertNotEqual(self.calls()[2]["thread"], a["thread"])  # every member has its own conversation
 
+    def test_a_workspace_turn_runs_there_in_the_matching_sandbox(self):
+        ws = os.path.join(self.root, "ws")
+        self.team.run_turn("w1", "plain first")
+        self.team.run_turn("w1", "edit things", workdir=ws)
+        self.team.run_turn("w1", "look only", workdir=ws, access="read")
+        self.team.run_turn("w1", "plain again")
+        plain, write, read, again = self.calls()
+        self.assertEqual((write["args"][write["args"].index("-s") + 1], write["args"][write["args"].index("-C") + 1]),
+                         ("workspace-write", ws))
+        self.assertEqual(read["args"][read["args"].index("-s") + 1], "read-only")
+        self.assertNotIn("resume", write["args"] + read["args"])  # always a new thread in a workspace
+        self.assertEqual(again["args"][:2], ["resume", plain["thread"]])  # the member's own thread, not a workspace's
+        with self.assertRaises(ValueError):
+            self.team.run_turn("w1", "x", workdir=ws, access="admin")
+
     def test_fresh_members_start_a_new_conversation_every_turn(self):
         team = CodexAgents(os.path.join(self.root, "team3"), codex=self.codex, fresh=True)
         self.addCleanup(team.close)

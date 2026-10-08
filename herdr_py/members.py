@@ -1,8 +1,10 @@
 """Team members behind one contract, whatever runs them.
 
-    run_turn(name, prompt, files=(), timeout=600) -> (reply text, state)
+    run_turn(name, prompt, files=(), timeout=600, workdir=None, access=None) -> (reply text, state)
         state is "idle" when the turn ended normally; "error", "aborted" or "timeout" otherwise (then the reply is not
-        an answer, whatever it says);
+        an answer, whatever it says); workdir: the folder this turn works in (a DAG step's workspace), with access
+        "write" (default) or "read" (codex and claude limit their tools to match; a command member is a program you
+        trust, it just runs there; opencode members cannot work in a given folder yet);
     tokens(name) -> tokens used so far, or None when the backend does not count them.
 
 Backends (one member can use any of them; one team can mix them):
@@ -92,14 +94,16 @@ class CommandMembers:
     def close(self):
         pass
 
-    def run_turn(self, name, prompt, model=None, files=(), timeout=600):
+    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None):
         env = dict(os.environ, HERDR_MEMBER=name)
         if model:
             env["HERDR_MODEL"] = model
         if files:
             env["HERDR_FILES"] = os.pathsep.join(os.path.abspath(path) for path in files)
+        if workdir:
+            env["HERDR_ACCESS"] = access or "write"
         with open(os.path.join(self.root, name + ".stderr.log"), "a", encoding="utf-8") as err:
-            proc = subprocess.Popen(self.commands[name], cwd=self.cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            proc = subprocess.Popen(self.commands[name], cwd=workdir or self.cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=err, universal_newlines=True, encoding="utf-8", errors="replace",
                                     start_new_session=True)
             try:
@@ -131,7 +135,9 @@ class DaemonMembers:
     def close(self):
         pass
 
-    def run_turn(self, name, prompt, model=None, files=(), timeout=600):
+    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None):
+        if workdir:
+            raise MemberError("opencode members cannot work in a given folder yet: the daemon starts agents in its own")
         names = {a["name"] for a in self.client.call("agent.list")["agents"]}
         fresh = name in self.fresh
         self.fresh.discard(name)
@@ -200,14 +206,15 @@ class Members:
     def names(self):
         return list(self.spec)
 
-    def run_turn(self, name, prompt, files=(), timeout=600):
+    def run_turn(self, name, prompt, files=(), timeout=600, workdir=None, access=None):
         member = self.spec[name]
         backend = self.backends[member["backend"]]
         if self.sessions == "fresh":
             backend.forget(name)
         start, state, text = time.time(), "error", ""
+        place = {"workdir": workdir, "access": access} if workdir else {}
         try:
-            text, state = backend.run_turn(name, prompt, member["model"], files=files, timeout=timeout)
+            text, state = backend.run_turn(name, prompt, member["model"], files=files, timeout=timeout, **place)
         except (OSError, ClientError) as exc:  # the program is missing, the daemon is gone: this turn failed, say why
             text, state = f"(the turn could not run: {type(exc).__name__}: {exc})", "error"
         finally:
