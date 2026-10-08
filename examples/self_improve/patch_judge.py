@@ -177,7 +177,9 @@ def judge(a):
     scenarios = load_scenarios(folder, a.allow_pending)
     rel = os.path.relpath(folder, repo)
     scenario_rel = None if rel.startswith("..") else rel.replace(os.sep, "/")
-    work = tempfile.mkdtemp(prefix="patch-judge-")
+    if a.work_root:
+        os.makedirs(a.work_root, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="patch-judge-", dir=a.work_root)
     try:
         if not a.no_preflight:
             clean = os.path.join(work, "base")
@@ -236,6 +238,9 @@ def main(argv=None):
                     help="an existing test suite that must still pass (repeat for each platform); run with sh -c in the copy")
     ap.add_argument("--python", default=sys.executable, help="the Python that runs the scenarios")
     ap.add_argument("--timeout", type=int, default=900, metavar="S", help="for each test command and each scenario")
+    ap.add_argument("--work-root", metavar="DIR", help="where the clean copies are made (default: the system's temporary "
+                    "folder). A --test that runs docker through colima needs a folder under your home: colima shares "
+                    "only that with its VM, so a copy under /var/folders looks empty inside the container")
     ap.add_argument("--allow-pending", action="store_true", help="also use scenarios still waiting for the user's review")
     ap.add_argument("--no-preflight", action="store_true", help="skip checking the base (faster; a broken environment "
                                                                 "then looks like a patch that broke the tests)")

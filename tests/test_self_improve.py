@@ -214,6 +214,17 @@ class JudgeTest(Base):
         code, v, err = self.judge(FIX_HIGH, "--no-preflight")  # without the preflight, nothing checks the scenarios
         self.assertEqual((code, v["score"]), (0, 2))
 
+    def test_copies_are_made_under_the_work_root_and_removed(self):
+        root = os.path.join(self.dir, "copies")
+        seen = os.path.join(self.dir, "seen.txt")
+        code, v, _ = self.judge(FIX_HIGH, "--work-root", root, "--test", f"pwd >> {seen} && {self.test_cmd}")
+        self.assertEqual((code, v["score"]), (0, 1))
+        with open(seen) as handle:
+            places = handle.read().split()
+        self.assertEqual(len(places), 2)  # the preflight's copy and the patched one
+        self.assertTrue(all(os.path.realpath(p).startswith(os.path.realpath(root) + os.sep) for p in places), places)
+        self.assertEqual(os.listdir(root), [])  # nothing left behind
+
     def test_check_and_missing_scenarios(self):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
