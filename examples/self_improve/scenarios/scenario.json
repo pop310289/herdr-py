@@ -1,17 +1,42 @@
 {
- "note": "Candidates only: every scenario here is pending the user's review (definitions §19.1). Do not run real members on them until a person has read each test and changed its status to frozen.",
+ "note": "Candidates only: every scenario here is pending the user's review (definitions §19.1). Do not run real members on them until a person has read each test and changed its status to frozen. Scenarios that start agents on the daemon (validator-must-finish, two-teams-one-daemon) are flaky on this base because of two known races in core.py (Hub.save renaming state.json.tmp; a stale resync snapshot setting a working agent idle), fixed on the unmerged branch integrate/core. Merge that first, then judge with --repeat 3 or more.",
  "scenarios": [
-  {"name": "validator-must-finish", "file": "test_validator_must_finish.py", "status": "pending-review",
+  {
+   "name": "validator-must-finish",
+   "file": "test_validator_must_finish.py",
+   "status": "pending-review",
    "from": "Codex controller research 2026-10-08, finding 1",
    "why": "A team run is accepted only when the validator finished its turn and said VERDICT: ACCEPT.",
-   "sources": ["herdr_py/team.py", "tests/test_team.py"]},
-  {"name": "unknown-usage-is-not-zero", "file": "test_unknown_usage_is_not_zero.py", "status": "pending-review",
+   "sources": [
+    "herdr_py/team.py",
+    "tests/test_team.py"
+   ],
+   "review": "With a reference fix it passed 7 of 8 runs on 313d1f2 (the 8th: the Hub.save race); 8 of 8 with the lock."
+  },
+  {
+   "name": "unknown-usage-is-not-zero",
+   "file": "test_unknown_usage_is_not_zero.py",
+   "status": "pending-review",
    "from": "Codex controller research, localA PAIN_POINTS, P26 pilot (2026-10-08)",
    "why": "A turn whose backend never reported usage has unknown tokens (None), not 0.",
-   "sources": ["herdr_py/coop.py", "herdr_py/members.py", "herdr_py/codex_agents.py", "tests/fake_codex.py"]},
-  {"name": "two-teams-one-daemon", "file": "test_two_teams_one_daemon.py", "status": "pending-review",
+   "sources": [
+    "herdr_py/coop.py",
+    "herdr_py/members.py",
+    "herdr_py/codex_agents.py",
+    "tests/fake_codex.py"
+   ]
+  },
+  {
+   "name": "two-teams-one-daemon",
+   "file": "test_two_teams_one_daemon.py",
+   "status": "pending-review",
    "from": "Codex controller research, list of gaps (2026-10-08)",
    "why": "Two runs on one daemon with a member of the same name must each drive their own agent.",
-   "sources": ["herdr_py/members.py", "tests/test_team.py"]}
+   "sources": [
+    "herdr_py/members.py",
+    "tests/test_team.py"
+   ],
+   "review": "With a reference fix it passed 0 of 8 runs on 313d1f2 (FileNotFoundError on state.json.tmp); with the Hub.save lock added as well, 6 of 8 (the other 2: an empty reply, the resync race). Not a reliable task until core.py's races are fixed."
+  }
  ]
 }

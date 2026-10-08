@@ -157,8 +157,9 @@ def why_failed(output):
     return " | ".join((errors or lines)[-3:])
 
 
-def run_scenarios(scenarios, folder, copy, python, timeout):
-    """{name: (passed, tail)}: each scenario file on its own, with the copy importable."""
+def run_scenarios(scenarios, folder, copy, python, timeout, repeat=1):
+    """{name: (passed, tail)}: each scenario file on its own, with the copy importable, `repeat` times; it passes only
+    when every run passes (a scenario that passes sometimes is flaky, and a flaky pass earns nothing)."""
     place = os.path.join(copy, "_scenarios")
     os.makedirs(place, exist_ok=True)
     env = dict(os.environ, PYTHONPATH=copy, PYTHONDONTWRITEBYTECODE="1")
@@ -166,8 +167,19 @@ def run_scenarios(scenarios, folder, copy, python, timeout):
     for s in scenarios:
         shutil.copy(os.path.join(folder, s["file"]), os.path.join(place, os.path.basename(s["file"])))
         module = os.path.splitext(os.path.basename(s["file"]))[0]
-        code, out = run([python, "-B", "-m", "unittest", "-q", module], place, timeout, env)
-        results[s["name"]] = (code == 0, "did not finish" if code is None else why_failed(out))
+        passes, why = 0, ""
+        for _ in range(repeat):
+            code, out = run([python, "-B", "-m", "unittest", "-q", module], place, timeout, env)
+            if code == 0:
+                passes += 1
+            elif not why:
+                why = "did not finish" if code is None else why_failed(out)
+        if passes == repeat:
+            results[s["name"]] = (True, "")
+        elif passes:
+            results[s["name"]] = (False, f"flaky: passed {passes} of {repeat} runs; {why}")
+        else:
+            results[s["name"]] = (False, why)
     return results
 
 
@@ -187,9 +199,11 @@ def judge(a):
             broken = run_tests(a.test, clean, a.timeout)
             if broken:
                 raise JudgeError(f"the base itself does not pass its tests, so the environment is broken: {broken}")
-            already = [n for n, (ok, _) in run_scenarios(scenarios, folder, clean, a.python, a.timeout).items() if ok]
+            already = [n for n, (ok, why) in run_scenarios(scenarios, folder, clean, a.python, a.timeout, a.repeat).items()
+                       if ok or why.startswith("flaky")]
             if already:
-                raise JudgeError(f"scenarios that already pass on the base test nothing: {', '.join(already)}")
+                raise JudgeError(f"scenarios that pass on the base, every time or sometimes, test nothing reliably: "
+                                 f"{', '.join(already)}")
         if a.check:
             return {"status": "valid", "score": 0,
                     "detail": f"{len(scenarios)} scenario(s) fail on {a.base} and its tests pass: good tasks"}
@@ -217,7 +231,7 @@ def judge(a):
         broken = run_tests(a.test, copy, a.timeout)
         if broken:
             return {"status": "invalid", "score": None, "detail": f"breaks the existing tests: {broken}"}
-        results = run_scenarios(scenarios, folder, copy, a.python, a.timeout)
+        results = run_scenarios(scenarios, folder, copy, a.python, a.timeout, a.repeat)
         passed = [n for n, (ok, _) in results.items() if ok]
         failed = [f"{n} ({why})" for n, (ok, why) in results.items() if not ok]
         detail = f"{len(passed)} of {len(results)} scenario(s) pass" + (f": {', '.join(passed)}" if passed else "")
@@ -241,6 +255,9 @@ def main(argv=None):
     ap.add_argument("--work-root", metavar="DIR", help="where the clean copies are made (default: the system's temporary "
                     "folder). A --test that runs docker through colima needs a folder under your home: colima shares "
                     "only that with its VM, so a copy under /var/folders looks empty inside the container")
+    ap.add_argument("--repeat", type=int, default=1, metavar="N",
+                    help="run every scenario N times; it passes only when all N pass (use 3 or more when a scenario "
+                         "involves threads or a daemon)")
     ap.add_argument("--allow-pending", action="store_true", help="also use scenarios still waiting for the user's review")
     ap.add_argument("--no-preflight", action="store_true", help="skip checking the base (faster; a broken environment "
                                                                 "then looks like a patch that broke the tests)")
@@ -250,6 +267,8 @@ def main(argv=None):
         ap.error("give the patch file (or --check)")
     if a.check and a.no_preflight:
         ap.error("--check is the preflight; do not combine it with --no-preflight")
+    if a.repeat < 1:
+        ap.error("--repeat: 1 or more")
     if not a.test:
         a.test = ["python3 -B -m unittest discover -s tests -q"]
     try:

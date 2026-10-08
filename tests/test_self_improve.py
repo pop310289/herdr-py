@@ -211,7 +211,7 @@ class JudgeTest(Base):
         git(self.repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "weak")
         code, v, err = self.judge(FIX_HIGH)
         self.assertEqual(code, 2)
-        self.assertIn("already pass on the base test nothing: order", err)
+        self.assertIn("every time or sometimes, test nothing reliably: order", err)
         code, v, err = self.judge(FIX_HIGH, "--no-preflight")  # without the preflight, nothing checks the scenarios
         self.assertEqual((code, v["score"]), (0, 2))
 
@@ -225,6 +225,32 @@ class JudgeTest(Base):
         self.assertEqual(len(places), 2)  # the preflight's copy and the patched one
         self.assertTrue(all(os.path.realpath(p).startswith(os.path.realpath(root) + os.sep) for p in places), places)
         self.assertEqual(os.listdir(root), [])  # nothing left behind
+
+    def test_a_scenario_that_passes_only_sometimes_earns_nothing(self):
+        flip = os.path.join(self.dir, "flip")
+        with open(os.path.join(self.repo, "scen", "test_flaky.py"), "w") as handle:  # passes on every other run
+            handle.write(SCENARIO_ORDER.replace("    def test_swapped_limits_are_refused(self):\n",
+                         "    def test_swapped_limits_are_refused(self):\n"
+                         f"        import os\n        f = {flip!r}\n        n = int(open(f).read()) if os.path.exists(f) else 0\n"
+                         "        open(f, 'w').write(str(n + 1))\n        if n % 2:\n            return\n"))
+        spec = os.path.join(self.repo, "scen", "scenario.json")
+        with open(spec) as handle:
+            data = json.load(handle)
+        data["scenarios"].append({"name": "flaky", "file": "test_flaky.py", "status": "frozen", "sources": ["calc.py"]})
+        with open(spec, "w") as handle:
+            json.dump(data, handle)
+        git(self.repo, "add", "scen")
+        git(self.repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "-m", "flaky")
+        code, v, err = self.judge(NOTHING, "--repeat", "2")  # on the base it passes once in two runs: not a task
+        self.assertEqual(code, 2)
+        self.assertIn("every time or sometimes, test nothing reliably: flaky", err)
+        code, v, _ = self.judge(FIX_HIGH, "--no-preflight", "--repeat", "2")
+        self.assertEqual(v["score"], 1)  # high passes both runs; flaky (unfixed) passes one of two: no credit
+        self.assertIn("flaky (flaky: passed 1 of 2 runs;", v["detail"])
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):  # 0 runs would let every scenario pass
+            patch_judge.main(self.args("--repeat", "0") + [self.patch(NOTHING)])
+        code, v, _ = self.judge(FIX_HIGH, "--no-preflight", "--repeat", "1")
+        self.assertIn(v["score"], (1, 2))  # one run: a flaky scenario can look fixed
 
     def test_check_and_missing_scenarios(self):
         out = io.StringIO()
