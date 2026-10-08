@@ -21,6 +21,8 @@ import json
 import os
 import sys
 
+SCORE_DIGITS = 13  # scores that differ in the 10th digit must not look equal
+
 STYLE = """
 :root { color-scheme: dark;
   --bg: #121418; --panel: #1b1e24; --line: #2c313a; --text: #e3e6eb; --muted: #9aa3ae;
@@ -67,6 +69,7 @@ code { font-size: 12px; }
 ul.plain { margin: 0; padding-left: 18px; }
 ul.plain li { margin: 2px 0; overflow-wrap: anywhere; }
 table.list { border-spacing: 0; width: 100%; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
+table.list td.nw { white-space: nowrap; }
 table.list td.id { white-space: nowrap; font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
 table.list th, table.list td { padding: 5px 8px; border-bottom: 1px solid var(--line); font-size: 13px; text-align: left;
   vertical-align: top; overflow-wrap: anywhere; }
@@ -177,7 +180,7 @@ def cell(turn, entries, backend, best_id, unit="round"):
     classes = ["cell", css] + (["best"] if best_id and turn.get("entry") == best_id else [])
     head = f'<span class="badge">{esc(badge)}</span>'
     if turn.get("score") is not None:
-        head += f'<span class="score">{esc(fmt_num(turn["score"], 8))}</span>'
+        head += f'<span class="score">{esc(fmt_num(turn["score"], SCORE_DIGITS))}</span>'
     if turn.get("repeat"):
         head += ' <span class="meta" title="the same entry again: recorded once, not judged again">resent</span>'
     meta = [f"{turn.get('seconds', 0):.0f} s", fmt_tokens(turn.get("tokens"))]
@@ -190,7 +193,7 @@ def cell(turn, entries, backend, best_id, unit="round"):
         p = entries.get(parent, {})
         mine = p.get("member") == turn.get("member")
         parts.append(f'<div class="from">{"↳ own" if mine else "↳ built on"} <code>{esc(parent)}</code> by {esc(p.get("member"))} '
-                     f'({unit} {esc(p.get("round"))}, {esc(fmt_num(p.get("score"), 8))})</div>')
+                     f'({unit} {esc(p.get("round"))}, {esc(fmt_num(p.get("score"), SCORE_DIGITS))})</div>')
     if turn.get("parents_dropped"):
         parts.append(f'<div class="why">named entries it was never shown (ignored): {esc(", ".join(turn["parents_dropped"]))}</div>')
     if why:
@@ -225,10 +228,14 @@ def progress_svg(progress):
     line = " ".join(f"{x(i):.1f},{y(v):.1f}" for i, v in points)
     dots = "".join(f'<circle cx="{x(i):.1f}" cy="{y(v):.1f}" r="3.5" fill="var(--accent)"><title>round {i}: {v:.10g}</title></circle>'
                    for i, v in points)
+    top, bottom = max(p for _, p in points), min(p for _, p in points)
     labels = (f'<text x="{pad}" y="{h - 8}">round 1</text><text x="{w - pad}" y="{h - 8}" text-anchor="end">round {len(progress)}</text>'
-              f'<text x="4" y="{y(points[-1][1]) - 6:.1f}">{points[-1][1]:.8g}</text>')
+              f'<text x="4" y="{y(top) - 6:.1f}">{top:.{SCORE_DIGITS}g}</text>'
+              + (f'<text x="4" y="{y(bottom) + 16:.1f}">{bottom:.{SCORE_DIGITS}g}</text>' if bottom != top else ""))
+    scale = (f'<p class="legend">The axis does not start at 0: from the first to the best point is {top - bottom:+.3g}.</p>'
+             if bottom != top else "")
     return (f'<svg viewBox="0 0 {w} {h}" width="{w}" height="{h}" role="img" aria-label="best verified score after each round">'
-            f'<polyline points="{line}" fill="none" stroke="var(--accent)" stroke-width="2"/>{dots}{labels}</svg>')
+            f'<polyline points="{line}" fill="none" stroke="var(--accent)" stroke-width="2"/>{dots}{labels}</svg>' + scale)
 
 
 def build(run_dir):
@@ -255,7 +262,7 @@ def build(run_dir):
     mode = (summary or {}).get("mode", "?")
     counts = collections.Counter(outcome(t, entries)[0] for t in turns)
     tokens = [t["tokens"] for t in turns if t.get("tokens") is not None]
-    tiles = [("best verified score", fmt_num(best["score"], 8) if best else "-", ""),
+    tiles = [("best verified score", fmt_num(best["score"], SCORE_DIGITS) if best else "-", ""),
              ("turns", len(turns), ""), ("valid answers", counts["valid"], ""),
              ("invalid", counts["invalid"], "bad" if counts["invalid"] else ""),
              ("no answer / FAILED", counts["noanswer"] + counts["failure"], "bad" if counts["noanswer"] + counts["failure"] else ""),
@@ -323,11 +330,11 @@ def build(run_dir):
     out.append('<div class="wrap"><table class="list"><tr><th>id</th><th>member</th><th>round</th><th>kind</th><th>verdict</th>'
                "<th>parents</th><th>used by</th><th>repeats</th><th>summary / judge</th></tr>")
     for e in entries.values():
-        verdict = e["status"] + (f" {fmt_num(e['score'], 8)}" if e.get("score") is not None else "")
+        verdict = e["status"] + (f" {fmt_num(e['score'], SCORE_DIGITS)}" if e.get("score") is not None else "")
         text = e.get("summary", "") + (f" — {e['detail']}" if e.get("detail") and e["status"] != "valid" else "")
         ids = lambda values: "<br>".join(esc(v) for v in values)  # noqa: E731
-        out.append(f'<tr><td class="id">{esc(e["id"])}</td><td>{esc(e.get("member"))}</td><td>{esc(e.get("round"))}</td>'
-                   f'<td>{esc(e.get("kind"))}</td><td>{esc(verdict)}</td><td class="id">{ids(e.get("parents") or [])}</td>'
+        out.append(f'<tr><td class="id">{esc(e["id"])}</td><td class="nw">{esc(e.get("member"))}</td><td class="nw">{esc(e.get("round"))}</td>'
+                   f'<td class="nw">{esc(e.get("kind"))}</td><td>{esc(verdict)}</td><td class="id">{ids(e.get("parents") or [])}</td>'
                    f'<td class="id">{ids(e["adopted_by"])}</td><td class="id">{esc(e["duplicate_of"] or "")}</td>'
                    f"<td>{esc(text[:300])}</td></tr>")
     out.append("</table></div>")

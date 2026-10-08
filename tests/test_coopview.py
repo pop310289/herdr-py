@@ -162,6 +162,16 @@ class ViewTest(unittest.TestCase):
         self.assertIn('<text x="4"', page)
         self.assertEqual(re.findall(r"<title>round (\d): (\d+)</title>", page), [("1", "9"), ("2", "9")])  # best so far
 
+    def test_close_scores_stay_apart_and_the_chart_says_its_scale(self):
+        def judge_fine(path):  # answers 1 and 3 score 2.6359830847 and 2.6359830849: apart only in the 10th digit
+            return "valid", 2.6359830846 + int(open(path).read()) * 1e-10, "ok"
+        CoopRun("x", judge_fine, Scripted(a=lambda p: answer(1 if "Nothing" in p else 3, "go")), ["a"], self.out,
+                mode="I", rounds=2).run()
+        page = self.page()
+        self.assertIn('<span class="score">2.6359830847</span>', page)
+        self.assertIn('<span class="score">2.6359830849</span>', page)
+        self.assertIn("The axis does not start at 0: from the first to the best point is +2e-10.", page)
+
     def test_command_line(self):
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
