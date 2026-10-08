@@ -77,6 +77,31 @@ python3 -m herdr_py.teamkb runs/c1/kb     # 每一筆：分數、誰接了誰的
 - **知識庫**（`herdr_py/teamkb.py`：只能新增的事件紀錄，答案依內容 hash 存放）保存每個答案、失敗和判定。同一個答案重送只記一次、不重評；成員只能把「簡報裡給它看過的條目」列為父條目；提交後被換掉的答案檔不會被當成原檔評分；多個程序可以同時寫入。指標：採用率、採用後進步率、重複率。
 - 每一輪記在 `run.jsonl`（狀態、秒數、token、條目、判定，以及沒交出東西的原因）；逾時或出錯的回合不會貢獻答案。`summary.json` 有總計和每輪結束時的最佳分數。
 
+## DAG 分派：會互相等待的步驟
+
+`python3 -m herdr_py.dag` 執行一份**計畫**：每個步驟由一個成員在**自己的 git clone** 裡做，由**評分程式**判定過不過。一個步驟要等它需要的步驟全部通過才開始，而且只看得到那些步驟的成果。計畫是一個 JSON 檔，所以團隊怎麼組織（誰做什麼、誰等誰、誰看得到誰的成果）是可以修改、可以拿來比較的資料。
+
+```
+mul ─┐                     每個方塊是一個步驟，由一個成員在自己的 clone 裡做；
+sub ─┴─> together ─┐       箭頭：那個步驟通過之後才開始，並拿到它的 commit
+div ───────────────┴─> docs
+```
+
+```sh
+python3 examples/dag/make_demo.py /tmp/dag-demo          # 一個小 repo 和它的計畫（程式成員，不需要模型）
+python3 -m herdr_py.dag /tmp/dag-demo/plan.json --check  # 一層一層列出步驟
+python3 -m herdr_py.dag /tmp/dag-demo/plan.json --out /tmp/dag-demo/run1 --parallel 3
+open /tmp/dag-demo/run1/view.html                         # 計畫畫成圖，加上每一次嘗試
+python3 -m herdr_py.dag --recheck /tmp/dag-demo/run1      # 在全新的 clone 把每個通過的步驟重新評分
+```
+
+- **隔離由程式負責**：每次嘗試都有自己的 `git clone --shared`，不留遠端；步驟的 clone 只會拿到它需要的步驟的輸出 commit（`refs/dag/<id>`），沒有任何其他步驟的東西，指令裡也只有那些步驟的摘要與 diff。Codex 成員在 `workspace-write` 沙盒裡工作；Claude 成員用 `--permission-mode acceptEdits` 加上檔案工具（唯讀步驟用 `dontAsk` 加讀檔工具）。用真的 Claude Code 實測過：在 clone 之外寫、讀、Glob、Grep 都會被擋；不能用 `--allowedTools`，它會讓成員讀寫整台機器。Codex 的沙盒不限制讀取，所以每次執行都會數成員的工具紀錄裡，指向別的步驟 clone 的次數（`summary.json` 的 `out_of_bounds`）。
+- **步驟的檔案從哪裡開始**：不需要別的步驟 → 基準 commit；需要一個 → 接著那個步驟的輸出；需要好幾個 → 基準（兩種做法通常改同一批檔，由成員比較、整合），或指定 `"start": "merge"`（由程式先合併，衝突時這一步失敗並列出檔案）、或指定其中一個。重試會接著上一次的 commit，指令裡附上評分程式的說明。
+- **輸出是程式做的 commit**，不是成員做的：回合結束時把 clone 裡的變更全部 commit，評分程式檢查這個 commit（和 `coop` 同一套約定：回覆檔是最後一個參數；印 JSON 判定，或用 `"judge_mode": "exit"` 看結束碼）。評分程式的檔案以計畫檔所在的資料夾為準、在所有 clone 之外，開始時記下 hash：執行中被改就是評分錯誤。
+- **失敗**：一個步驟失敗，需要它的步驟都會被擋下，不相干的步驟照常進行。成員的後端壞掉、評分程式壞掉或 clone 建不起來，就不再開始新步驟（結束碼 3；`--keep-going` 只讓那一步失敗）；逾時或答案不合格是成員自己的失敗。
+- **收據與接續**：每次派工、交回、commit、判定都先寫進 `events.jsonl` 才往下走；`--resume` 從它重建狀態，已通過的步驟絕不重跑，因環境壞掉而失敗的步驟會重跑，計畫、題目或評分程式變了就拒絕接續。`summary.json` 只從事件算出「上游還沒通過就開始的次數」和「通過後又被派工的次數」（兩者都必須是 0），以及平行度。
+- 不會合併進你的 repo，也不會推送：輸出是執行資料夾裡的 commit，要不要合併由你決定。OpenCode 成員可以參加沒有 repo 的計畫（daemon 還不能在指定的資料夾工作）。
+
 ## 範例：投影片團隊
 
 [`examples/slide_team`](examples/slide_team) 讓團隊重畫一張資訊圖：TheAiEdge.io 的「LLM Serving: When to Split Prefill and Decode」（原圖請自備，repo 裡沒有）。兩位畫圖者輪流畫，美術比對我們的圖和原圖，最後由監工程式決定保留哪一版。試過兩種架構：
@@ -132,7 +157,7 @@ RUN_DIR 是 `run_demo.py` 產生的執行資料夾（或 `layout_team.py --workd
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 311 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 365 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

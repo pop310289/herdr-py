@@ -133,6 +133,52 @@ python3 examples/self_improve/patch_judge.py --repo . --base HEAD --scenarios ex
 python3 examples/self_improve/make_task.py --repo . --base HEAD --scenarios examples/self_improve/scenarios --allow-pending > /tmp/task.md
 ```
 
+## DAG dispatch: steps that wait for each other
+
+`python3 -m herdr_py.dag` runs a **plan**: steps, each done by one member in **its own git clone** and passed or
+failed by a **judge** program. A step starts only when every step it needs has passed, and it sees only what those
+steps produced. The plan is a JSON file, so how a team is organised (who does what, who waits for whom, who sees whose
+work) is data you can change and compare.
+
+```
+mul ─┐                     a box is a step, done by one member in its own clone;
+sub ─┴─> together ─┐       an arrow: start after that step passed, with its commit
+div ───────────────┴─> docs
+```
+
+```sh
+python3 examples/dag/make_demo.py /tmp/dag-demo          # a small repository and a plan for it (program members, no model)
+python3 -m herdr_py.dag /tmp/dag-demo/plan.json --check  # the steps, level by level
+python3 -m herdr_py.dag /tmp/dag-demo/plan.json --out /tmp/dag-demo/run1 --parallel 3
+open /tmp/dag-demo/run1/view.html                         # the plan drawn as a graph, and every attempt
+python3 -m herdr_py.dag --recheck /tmp/dag-demo/run1      # judge every passed step again in a fresh clone
+```
+
+- **Isolation is the program's job**: every attempt gets its own `git clone --shared`, with no remote; a step's clone
+  gets the output commit of each step it needs (`refs/dag/<id>`) and nothing from any other step, and its prompt shows
+  only those steps' summaries and diffs. Codex members work there in the `workspace-write` sandbox; Claude members get
+  `--permission-mode acceptEdits` with file tools only (a read step: `dontAsk` with read tools). Checked against the
+  real Claude Code: writes, reads, Glob and Grep outside the clone are refused; `--allowedTools` must not be used, as it
+  let the member read and write anywhere. Codex's sandbox does not limit reads, so a run counts the member tool events
+  that name another step's clone (`out_of_bounds` in `summary.json`).
+- **Where a step's files start**: a step that needs nothing starts at the base commit; one need: that step's output;
+  several: the base (two ways of doing one thing usually touch the same files, so the member compares and combines),
+  or `"start": "merge"` (merged by the program; a conflict fails the step and names the files) or one of the needs. A
+  retry continues from the failed attempt's commit, with the judge's words in the prompt.
+- **The output is a commit made by the program**, not by the member: everything in the clone is committed when the turn
+  ends, and the judge checks that commit (the contract of `coop`: the reply file is the last argument; a JSON verdict,
+  or the exit code with `"judge_mode": "exit"`). Judge files resolve against the plan's folder, outside every clone, and
+  are hashed when the run starts: a judge changed during the run is a judge error.
+- **Failures**: a failed step blocks every step that needs it, and independent steps go on. A broken backend, a broken
+  judge or a clone that cannot be made stops new steps (exit code 3; `--keep-going` fails only that step); a timeout or
+  an invalid answer is the member's own failure.
+- **Receipts and resume**: every dispatch, return, commit and verdict is in `events.jsonl` before the run goes on;
+  `--resume` rebuilds the state from it, never runs a passed step again, runs again a step whose setup broke, and
+  refuses if the plan, a task or a judge changed. `summary.json` counts, from the events alone, steps started before
+  their needs passed and passed steps dispatched again (both must be 0), and the parallelism of the run.
+- Nothing is merged into your repository or pushed: outputs are commits in the run folder, and merging is up to you.
+  OpenCode members can take part in plans without a repository (the daemon cannot work in a given folder yet).
+
 ## Example: a slide team
 
 [`examples/slide_team`](examples/slide_team) rebuilds one infographic, TheAiEdge.io's "LLM Serving: When to Split Prefill
@@ -272,7 +318,7 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 337 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 365 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
