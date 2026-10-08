@@ -110,6 +110,28 @@ python3 -m herdr_py.teamkb runs/c1/kb     # every entry: score, who built on who
   processes can write at once. Numbers: adoption rate, improvement after adoption, duplicate rate.
 - Every turn is in `run.jsonl` (state, seconds, tokens, entry, verdict, and why a turn produced nothing); a turn that
   timed out or failed never contributes an answer. `summary.json` has the totals and the best score after each round.
+- **One page per run**: `view.html` in the run folder, rewritten after every round (reload it while the run goes on;
+  `python3 -m herdr_py.coopview RUN_DIR` writes it again). A cell per round and member shows how the turn ended
+  (valid, invalid with the judge's reason, FAILED, no answer, timeout, backend error), seconds, tokens, how many
+  commands a Codex member ran, whose entry it built on, and, folded, the end of the reply and the backend's stderr.
+- `--stop-on-infra-error` ends a run after the round in which a member's backend or the judge broke (exit code 3);
+  timeouts and invalid answers are the members' own problems and do not stop it.
+
+### Improving herdr-py with its own loop
+
+[`examples/self_improve`](examples/self_improve) points the same loop at herdr-py. A **scenario** is a test that fails
+today and says what should happen; members hand in a unified diff; `patch_judge.py` applies it to a clean export of
+a commit, refuses patches that touch the scenarios, the judge or an existing test, runs the existing suites (one
+`--test` per platform) and scores the patch by how many scenarios pass. Before judging, it checks the base: its tests
+must pass and every scenario must fail, or the judge reports itself broken instead of blaming the patch.
+`make_task.py` builds the task text with the scenarios and the source files they name, for members without tools.
+The scenarios in the folder are candidates (`pending-review`): a person reads and freezes a scenario before members
+are run on it, and a person reviews the best patch before it is merged.
+
+```sh
+python3 examples/self_improve/patch_judge.py --repo . --base HEAD --scenarios examples/self_improve/scenarios --allow-pending --check
+python3 examples/self_improve/make_task.py --repo . --base HEAD --scenarios examples/self_improve/scenarios --allow-pending > /tmp/task.md
+```
 
 ## Example: a slide team
 
@@ -250,7 +272,7 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 311 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 337 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
