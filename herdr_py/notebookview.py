@@ -307,7 +307,8 @@ iframe.replay { width:100%; height:78vh; min-height:520px; border:1px solid var(
 .form textarea { min-height:5em; resize:vertical; }
 .bring { border:1px solid var(--line); border-radius:var(--r2); padding:8px 12px; margin:0; min-width:0; }
 .bring legend { font-size:var(--fs-2); color:var(--muted); padding:0 6px; }
-.bring li { gap:6px 14px; } .bring label { display:inline-flex; flex-direction:row; align-items:center; gap:4px; }
+.bring li { gap:4px 18px; align-items:center; } .bring li b { flex-basis:100%; }
+.bring label { display:inline-flex; flex-direction:row; align-items:center; gap:6px; min-height:32px; }
 .bring input[type=checkbox] { width:auto; accent-color:var(--ice); }
 .dag svg { width:100% !important; max-width:100% !important; height:auto !important; }
 .dag .box { fill:none; stroke:none; } .dag .box rect { fill:var(--inset); stroke:var(--wire); stroke-width:1; }
