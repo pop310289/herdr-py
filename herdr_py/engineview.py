@@ -720,7 +720,7 @@ h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:up
 .state, .muted {{ color:var(--muted); font-size:.85rem; overflow-wrap:anywhere; }}
 .chips {{ display:flex; flex-wrap:wrap; gap:6px; }}
 .chip {{ font-size:.76rem; color:var(--muted); background:var(--inset); border:1px solid var(--line); border-radius:999px;
-  padding:1px 9px; white-space:nowrap; font-variant-numeric:tabular-nums; }}
+  padding:1px 9px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }}  /* a long stop reason wraps inside its chip */
 .chip.bad {{ color:#F3A6A6; border-color:rgba(239,68,68,.35); }} .chip.good {{ color:#7FD8B6; border-color:rgba(16,185,129,.35); }}
 .led {{ display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--faint); margin-right:7px; vertical-align:2px; }}
 .led.ok {{ background:var(--ok); }} .led.bad {{ background:var(--bad); }}
