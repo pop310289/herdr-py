@@ -32,8 +32,10 @@ cd herdr-py && ./scripts/install.sh          # 在 ~/.local/bin 放一個 herdr-
 ## 快速開始
 
 ```bash
-# 1. 啟動 OpenCode 伺服器（在你要 agent 工作的資料夾）
-OPENCODE_SERVER_PASSWORD=change-me opencode serve --port 4096 &
+# 1. 啟動 OpenCode 伺服器（在你要 agent 工作的資料夾），設成 bash、編輯等動作之前先詢問：
+#    用 OpenCode 的預設值時這些動作不會詢問，herdr-py 的權限策略根本看不到
+OPENCODE_SERVER_PASSWORD=change-me OPENCODE_CONFIG_CONTENT='{"permission": {"edit": "ask", "bash": "ask", "webfetch": "ask", "external_directory": "ask", "doom_loop": "ask"}}' \
+    opencode serve --port 4096 &
 echo change-me > ~/.config/opencode-password && chmod 600 ~/.config/opencode-password
 
 # 2. 啟動 herdr-py 常駐程式
@@ -51,6 +53,8 @@ herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，�
 `agent.start` 加上 `fresh: true`（命令列 `--fresh`）時，若名字已存在、而且上一輪已結束，會換上新的 OpenCode session。OpenCode 會在無法預期的時候自動壓縮過長的 session（我們有一次實驗，壓縮後畫圖者回的是摘要，不是要它交的 JSON），所以每輪都把需要的資訊放進指令的呼叫者，可以讓每一輪都從乾淨的 session 開始。token、輪數與權限決定紀錄會累計；舊 session 之後才到的事件一律忽略。
 
 ## 權限策略
+
+OpenCode 只會為它自己設定成 "ask" 的動作送權限請求給 herdr-py。用 OpenCode 的預設值時（OpenCode 1.18.32 實測），bash 指令和編輯直接執行：策略拒絕的 curl 照樣跑了。啟動 OpenCode 時要設 `"permission": {"edit": "ask", "bash": "ask", "webfetch": "ask", "external_directory": "ask", "doom_loop": "ask"}`（見快速開始）。`herdr-py serve` 會讀 OpenCode 的設定，有任何一項不是 "ask" 就警告；`herdr-py status` 的 `opencode_does_not_ask` 也列得出來。
 
 規則依序比對，第一條符合的生效。`match` 是正規表示式，必須比對整個目標（`bash` 是指令本身，其他是請求的路徑）；`agent` 是名稱萬用字元。動作：`allow`（放行一次）、`always`、`deny`（agent 會讀到理由）、`ask`（等人決定）。JSON 在任何 Python 版本都能用；TOML 要 Python 3.11 以上。允許的指令不要包含 `; | & $` 這類 shell 運算子。
 
@@ -154,10 +158,19 @@ RUN_DIR 是 `run_demo.py` 產生的執行資料夾（或 `layout_team.py --workd
 - systemd 使用者服務範例：[`examples/herdr-py.service`](examples/herdr-py.service)。網頁介面預設只聽 127.0.0.1，要遠端看請用 SSH 通道，不要開放連接埠。
 - `LANG=C` 之下 Python 3.6 輸出中文會出錯：herdr-py 會自動改用 UTF-8 輸出（已在 RHEL 8 的 C 語系下測試）。
 
+## 拿真的 OpenCode 伺服器驗證
+
+測試用的是假的 OpenCode。`scripts/check_opencode.py` 透過執行中的 daemon，對真的伺服器跑 8 個情境（連線、跑完、續問、策略允許、策略拒絕、要人核准、中止、開新 session），而且把 herdr-py 的判定和模型有沒有照做分開記（模型不照指示做，不算 herdr-py 的錯）。OpenCode 1.18.32 加免費模型 opencode/big-pickle：8 項全過（2026-10-09）。
+
+```sh
+python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096 --password-file PASSFILE \
+    --workdir OPENCODE_的工作資料夾 --model opencode/big-pickle      # daemon 的策略用 scripts/check_opencode_policy.json
+```
+
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 365 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 374 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

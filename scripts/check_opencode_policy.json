@@ -1,0 +1,30 @@
+{
+ "default": "ask",
+ "rule": [
+  {
+   "permission": "edit",
+   "action": "allow"
+  },
+  {
+   "permission": "bash",
+   "action": "allow",
+   "match": "(python3 [\\w./-]+\\.py( [\\w./-]+)*|python3 -m (unittest|pytest)( [\\w./:-]+)*|ls( -\\w+)*( [\\w./-]+)*|cat [\\w./-]+|git (status|diff|log)( [\\w./-]+)*)"
+  },
+  {
+   "permission": "bash",
+   "action": "deny",
+   "match": ".*(rm -rf|curl|wget|sudo|ssh|scp).*",
+   "message": "Not allowed here."
+  },
+  {
+   "permission": "external_directory",
+   "action": "deny",
+   "message": "Stay inside the project folder."
+  },
+  {
+   "permission": "doom_loop",
+   "action": "deny",
+   "message": "You are repeating the same call. Try a different approach."
+  }
+ ]
+}

@@ -50,6 +50,7 @@ class Daemon:
         self.token = self.load_token()
         self.unix = self.web = None
         self.started = time.time()
+        self.unasked = None  # set by `serve`: the permission kinds OpenCode runs without asking (opencode.unasked)
 
     def load_token(self):
         path = os.path.join(self.state_dir, "token")
@@ -66,7 +67,8 @@ class Daemon:
         p = params or {}
         if method == "ping":
             return {"pong": True, "version": __version__, "opencode": self.client.url, "connected": hub.connected,
-                    "agents": len(hub.agents), "uptime_s": round(time.time() - self.started, 1)}
+                    "agents": len(hub.agents), "uptime_s": round(time.time() - self.started, 1),
+                    "opencode_does_not_ask": self.unasked}
         if method == "agent.list":
             return {"agents": hub.list()}
         if method == "agent.get":

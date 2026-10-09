@@ -36,8 +36,10 @@ Or run it in place: `python3 -m herdr_py ...` from the repository folder.
 ## Quick start
 
 ```bash
-# 1. an OpenCode server (any folder you want the agents to work in)
-OPENCODE_SERVER_PASSWORD=change-me opencode serve --port 4096 &
+# 1. an OpenCode server (any folder you want the agents to work in), set to ask before bash, edits and the rest:
+#    with OpenCode's defaults those calls run without asking, and herdr-py's policy never sees them
+OPENCODE_SERVER_PASSWORD=change-me OPENCODE_CONFIG_CONTENT='{"permission": {"edit": "ask", "bash": "ask", "webfetch": "ask", "external_directory": "ask", "doom_loop": "ask"}}' \
+    opencode serve --port 4096 &
 echo change-me > ~/.config/opencode-password && chmod 600 ~/.config/opencode-password
 
 # 2. the herdr-py daemon
@@ -55,6 +57,12 @@ herdr-py start fixer "Now add a test for it" --fresh   # same name, a new sessio
 ```
 
 ## Permission policy
+
+OpenCode sends herdr-py a permission request only for the kinds its own config sets to "ask". With OpenCode's defaults
+(checked with OpenCode 1.18.32) bash commands and edits just run: a curl the policy denies runs anyway. Start OpenCode
+with `"permission": {"edit": "ask", "bash": "ask", "webfetch": "ask", "external_directory": "ask", "doom_loop": "ask"}`
+(Quick start). `herdr-py serve` reads OpenCode's config and warns when any of these is not "ask"; `herdr-py status` shows
+them as `opencode_does_not_ask`.
 
 Rules are checked in order; the first match wins. `match` is a regular expression that must match the whole target
 (the shell command for `bash`, otherwise the requested paths). `agent` is a shell-style glob.
@@ -315,10 +323,22 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 - A systemd user unit example is in [`examples/herdr-py.service`](examples/herdr-py.service). The web UI binds to
   127.0.0.1 by default; reach it through an SSH tunnel rather than opening a port.
 
+## Checking a real OpenCode server
+
+The tests use a fake OpenCode server. `scripts/check_opencode.py` runs eight scenarios against a real one through a
+running daemon (connect, finish, follow-up, a command the policy allows, one it denies, one that asks a person, abort, a
+fresh session) and keeps herdr-py's verdict apart from the model's (a model that ignores the prompt is not a herdr-py
+fault). OpenCode 1.18.32 with the free model opencode/big-pickle: 8 of 8 (2026-10-09).
+
+```sh
+python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096 --password-file PASSFILE \
+    --workdir THE_OPENCODE_FOLDER --model opencode/big-pickle      # daemon policy: scripts/check_opencode_policy.json
+```
+
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 365 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 374 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

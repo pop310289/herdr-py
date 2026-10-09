@@ -47,7 +47,7 @@ def out(obj, as_json):
 
 
 def cmd_serve(a):
-    from .opencode import OpenCode, OpenCodeError, wait_healthy
+    from .opencode import ASK_CONFIG, OpenCode, OpenCodeError, unasked, wait_healthy
     from .policy import Policy, PolicyError
     from .server import Daemon
 
@@ -78,6 +78,14 @@ def cmd_serve(a):
     reattached = daemon.start()
     print(f"herdr-py {__version__}: OpenCode {health.get('version')} at {url}", flush=True)
     print(f"socket: {socket_path}   state: {a.state_dir}" + (f"   re-attached {reattached} agent(s)" if reattached else ""), flush=True)
+    daemon.unasked = unasked(client)
+    if daemon.unasked is None:
+        print("herdr-py: warning: could not read OpenCode's config (GET /config): whether it asks before bash and edits "
+              "is not known", file=sys.stderr, flush=True)
+    elif daemon.unasked:
+        print(f"herdr-py: WARNING: OpenCode does not ask before {', '.join(daemon.unasked)}: those calls run without "
+              f"reaching the policy. Start OpenCode with OPENCODE_CONFIG_CONTENT='{ASK_CONFIG}' (README: Permission policy).",
+              file=sys.stderr, flush=True)
     if a.http:
         print(f"web UI: http://{a.http}/#token={daemon.token}", flush=True)
     for sig in (signal.SIGINT, signal.SIGTERM):

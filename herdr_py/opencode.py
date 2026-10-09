@@ -19,6 +19,29 @@ class OpenCodeError(Exception):
     pass
 
 
+# The permission kinds a herdr-py policy answers. OpenCode sends a request only for a kind its own config sets to "ask";
+# with its defaults (checked with OpenCode 1.18.32) bash and edits just run, and the policy never sees them.
+ASKED = ("edit", "bash", "webfetch", "external_directory", "doom_loop")
+ASK_CONFIG = '{"permission": {"edit": "ask", "bash": "ask", "webfetch": "ask", "external_directory": "ask", "doom_loop": "ask"}}'
+
+
+def unasked(client):
+    """The kinds OpenCode does not ask about, as "kind=value" (value "unset" when its config leaves it out), from its
+    GET /config; None when the config cannot be read. A bash table with any action that is not "ask" counts."""
+    try:
+        config = client.call("GET", "/config") or {}
+    except OpenCodeError:
+        return None
+    permission = config.get("permission") if isinstance(config.get("permission"), dict) else {}
+    out = []
+    for kind in ASKED:
+        value = permission.get(kind)
+        values = list(value.values()) if isinstance(value, dict) else [value]
+        if not values or any(v != "ask" for v in values):
+            out.append(f"{kind}={json.dumps(value) if value is not None else 'unset'}")
+    return out
+
+
 class OpenCode:
     def __init__(self, url, username=None, password=None, timeout=30):
         self.url = url.rstrip("/")
