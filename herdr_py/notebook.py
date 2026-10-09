@@ -20,7 +20,7 @@ notebook's own for its pages ("style"); NOTEBOOK/requests.jsonl the
 requests for new tasks (append-only). Each page is a folder NOTEBOOK/pages/<id>/: page.json (its definition),
 history.jsonl (append-only: every draft, approval, run, note, pick, exclusion and hold, with who and when) and
 runs/<n>/ (the engine's run folders; an attached run stays where it is and is only read). The rules:
-- a draft never runs: run refuses a page whose definition or task differs from what was last approved;
+- a draft never runs: run refuses a page whose definition, task or judge program differs from what was last approved;
 - a person's decisions are only appended (--by names who decided; --at writes an earlier time for a record made
   before the notebook existed, and marks the event imported);
 - a run goes on from an earlier run of the page (the latest, unless --from or --fresh): the engine starts its
@@ -390,7 +390,8 @@ class Page:
         return task if os.path.isabs(task) else os.path.join(self.cwd(), task)
 
     def digest(self):
-        """What a person approves: the definition and the task the team will read, together."""
+        """What a person approves: the definition, the task the team will read and the judge's own program (a script
+        the judge command names, found from cwd), together: a judge changed after an approval changes what passes."""
         h = hashlib.sha256(self.raw)
         if self.d.get("task"):
             try:
@@ -398,6 +399,16 @@ class Page:
                     h.update(b"\0task\0" + handle.read())
             except OSError:
                 h.update(b"\0no task file")
+        for word in self.d.get("judge") or []:
+            if not isinstance(word, str) or not word.endswith((".py", ".sh", ".js", ".rb", ".pl")):
+                continue
+            path = os.path.expanduser(word)
+            path = path if os.path.isabs(path) else os.path.join(self.cwd(), path)
+            try:
+                with open(path, "rb") as handle:
+                    h.update(b"\0judge\0" + word.encode("utf-8") + b"\0" + handle.read())
+            except OSError:
+                h.update(b"\0no judge file " + word.encode("utf-8"))
         return h.hexdigest()[:12]
 
     def approval(self):

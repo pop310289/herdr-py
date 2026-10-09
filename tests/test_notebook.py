@@ -146,6 +146,12 @@ class PageTest(Base):
         with self.assertRaisesRegex(NotebookError, "draft"):
             self.run_page(dry=True)
         notebook.approve(self.page(), "person")
+        with open(os.path.join(self.dir, "judge.py"), "a") as handle:  # the judge's program changed: what passes may change
+            handle.write("\n# stricter now\n")
+        self.assertIsNone(self.page().approval())
+        with self.assertRaisesRegex(NotebookError, "draft"):
+            self.run_page(dry=True)
+        notebook.approve(self.page(), "person")
         self.draft(budget={"turns": 2, "planner_wakes": 2})  # a new version of the definition
         self.assertEqual(self.page().state()[0], "draft")
         with self.assertRaisesRegex(NotebookError, "already the page's"):
