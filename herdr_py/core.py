@@ -71,6 +71,7 @@ class Agent:
         self.turns = 0                    # prompts sent
         self.idles = 0                    # turns finished (busy -> idle)
         self.awaiting_busy = False        # a prompt was sent and OpenCode has not reported busy yet
+        self.ending = False               # we aborted a turn OpenCode was working on, and its end has not arrived yet
         self.working_since = None         # start of the current busy period (for the time budget)
         self.decisions = []               # [(t, request id, description, action, by)]
         self.seq = 0                      # +1 on every state change (waits compare against a baseline, as in herdr)
@@ -103,10 +104,11 @@ class Agent:
 
 class Hub:
     def __init__(self, client, policy, log_path=None, state_path=None, model=None, questions="ask",
-                 clock=time.time, run=None, max_queue=2000, max_agents=None, max_prompts=None):
+                 clock=time.time, run=None, max_queue=2000, max_agents=None, max_prompts=None, settle_s=5.0):
         self.max_agents, self.max_prompts = max_agents, max_prompts  # guards against a runaway manager agent
         self.client, self.policy, self.model = client, policy, model
         self.questions = questions        # "ask" or "reject"
+        self.settle_s = settle_s          # how long a prompt after an abort waits for the aborted turn's end (settle)
         self.clock = clock
         self.run = run or (lambda fn: threading.Thread(target=fn, daemon=True).start())
         self.lock = threading.RLock()
@@ -247,12 +249,25 @@ class Hub:
         self.prompt(name, prompt, source="start", files=files)
         return self.get(name)
 
+    def settle(self, agent):
+        """Called with the lock held: after an abort of a turn OpenCode was working on, wait (up to settle_s) for that
+        turn's end. OpenCode reports it (MessageAbortedError, then idle) on its own time; arriving after the next prompt
+        it was read as that turn's end, so a supervisor checked work that had not been done yet."""
+        deadline = time.time() + self.settle_s
+        while agent.ending and time.time() < deadline:
+            self.changed.wait(min(0.5, max(0.0, deadline - time.time())))
+        if agent.ending:
+            agent.ending = False
+            self.note(agent, f"unsettled-{self.clock()}", f"the aborted turn's end did not come in {self.settle_s:g} s", "warn")
+            self.record({"hub": "unsettled", "agent": agent.name, "waited_s": self.settle_s})
+
     def prompt(self, name, text, source="user", files=()):
         parts = file_parts(files)  # read before changing any state, so a bad path leaves the agent as it was
         with self.lock:
             agent = self.agent(name)
             if self.max_prompts is not None and agent.turns >= self.max_prompts:
                 raise HubError(f"max_prompts ({self.max_prompts}) reached for {name}")
+            self.settle(agent)
             agent.sticky = None
             agent.awaiting_busy = True
             agent.last_heard = self.clock()  # silence from here on is either the model working or the provider stalling
@@ -280,7 +295,13 @@ class Hub:
         with self.lock:
             agent = self.agent(name)
             session_id, directory = agent.session_id, agent.directory
-        self.client.abort(session_id, directory=directory)
+            agent.ending = agent.base in ("working", "retry") and not agent.awaiting_busy  # OpenCode will report its end
+        try:
+            self.client.abort(session_id, directory=directory)
+        except Exception:
+            with self.lock:
+                agent.ending = False  # nothing was aborted, so no end is coming
+            raise
         with self.lock:
             agent.sticky = "aborted"
             agent.followups = []
@@ -555,6 +576,7 @@ class Hub:
         agent.base = "idle"
         agent.idles += 1
         agent.working_since = None
+        agent.ending = False
         self.refresh(agent, reason)
         self.save()
 

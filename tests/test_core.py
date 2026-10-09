@@ -2,6 +2,7 @@
 import json
 import os
 import tempfile
+import threading
 import time
 import unittest
 
@@ -302,6 +303,57 @@ class HubTest(unittest.TestCase):
             with self.assertRaises(HubError):
                 self.hub.start("x", "go", tools=bad)
         self.assertNotIn("x", [a["name"] for a in self.hub.list()])
+
+
+    def test_a_prompt_after_an_abort_waits_for_the_aborted_turns_end(self):
+        # OpenCode reports an aborted turn's end (MessageAbortedError, then idle) on its own time; read after the next
+        # prompt it was that turn's end, and the late error marked the new turn "error" (seen on RHEL 8 in test_team)
+        for name, statuses, state in (("a", ["busy"], "working"), ("r", ["busy", "retry"], "retry")):  # or retrying
+            sid = self.hub.start(name, "work")["session_id"]
+            for status in statuses:  # as OpenCode reports them: busy first, retry when the provider failed
+                self.fake.emit("session.status", sessionID=sid, status={"type": status})
+            wait_for(lambda: self.state(name) == state, what=state)
+            self.hub.abort(name)
+            late = threading.Timer(0.3, lambda sid=sid: (self.fake.emit("session.error", sessionID=sid, error={"name": "MessageAbortedError"}),
+                                                         self.fake.emit("session.idle", sessionID=sid)))
+            late.start()
+            self.addCleanup(late.cancel)
+            started = time.time()
+            self.hub.prompt(name, "again")
+            self.assertTrue(0.25 <= time.time() - started < 2, time.time() - started)  # it waited for that end, no longer
+            time.sleep(0.2)
+            self.assertEqual(self.state(name), "starting")  # the new turn, waiting for OpenCode to start it: not "error"
+
+    def test_a_prompt_after_an_abort_goes_on_when_the_end_never_comes(self):
+        self.hub.settle_s = 0.3
+        sid = self.hub.start("a", "work")["session_id"]
+        self.fake.emit("session.status", sessionID=sid, status={"type": "busy"})
+        wait_for(lambda: self.state() == "working", what="busy")
+        self.hub.abort("a")
+        started = time.time()
+        self.hub.prompt("a", "again")
+        self.assertLess(abs(time.time() - started - 0.3), 0.25)
+        self.assertIn("the aborted turn's end did not come in 0.3 s", [a["text"] for a in self.hub.get("a")["activity"]])
+        idle = self.hub.start("b", "work")["session_id"]
+        self.fake.turn(idle, "done")
+        wait_for(lambda: self.state("b") == "idle", what="b idle")
+        self.hub.abort("b")  # nothing to end: the next prompt does not wait
+        started = time.time()
+        self.hub.prompt("b", "again")
+        self.assertLess(time.time() - started, 0.2)
+        busy = self.hub.start("c", "work")["session_id"]
+        self.fake.emit("session.status", sessionID=busy, status={"type": "busy"})
+        wait_for(lambda: self.state("c") == "working", what="c busy")
+        real = self.client.abort
+        self.client.abort = lambda *a, **k: (_ for _ in ()).throw(OSError("connection refused"))
+        try:
+            with self.assertRaises(OSError):
+                self.hub.abort("c")  # nothing was aborted, so no end is coming: the next prompt does not wait
+        finally:
+            self.client.abort = real
+        started = time.time()
+        self.hub.prompt("c", "again")
+        self.assertLess(time.time() - started, 0.2)
 
 
 class PolicyTest(unittest.TestCase):

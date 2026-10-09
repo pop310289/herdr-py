@@ -385,11 +385,14 @@ The daemon listens on a Unix socket (default `~/.local/state/herdr-py/herdr-py.s
 {"id": "1", "result": {"name": "a", "state": "starting", ...}}
 ```
 
-Methods: `ping`, `agent.list`, `agent.get`, `agent.start` (`wait`, `fresh`, `directory`, `deny`), `agent.prompt` (`wait`,
-`timeout_s`), `agent.abort`, `agent.wait`, `agent.read`, `permission.list`, `permission.reply`, `folder.list`,
-`events.subscribe`, `server.stop`. `agent.prompt`
+Methods: `ping`, `agent.list`, `agent.get`, `agent.start` (`wait`, `fresh`, `directory`, `deny`, `tools`), `agent.prompt`
+(`wait`, `timeout_s`), `agent.abort`, `agent.wait`, `agent.read`, `permission.list`, `permission.reply`, `folder.list`,
+`events.subscribe`, `server.stop`. `tools` (OpenCode's tool switches, `{"*": false}` for none) goes with every prompt
+to that agent. `agent.prompt`
 with `wait` returns when the turn it started has finished; if OpenCode shows no activity within 5 s it fails with
-`prompt_stalled` (the prompt may still arrive: read before resending). `--max-agents` and `--max-prompts` stop a runaway
+`prompt_stalled` (the prompt may still arrive: read before resending). A prompt to an agent whose working turn was just
+aborted first waits (up to 5 s) for OpenCode to report that turn's end, which can come late: read after the prompt, it
+was taken for the end of the new turn. `--max-agents` and `--max-prompts` stop a runaway
 manager agent. The HTTP API behind the web page needs the token from `<state dir>/token`.
 
 `agent.start` with `fresh: true` and a name that already exists gives that agent a new OpenCode session once its turn
@@ -426,7 +429,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 435 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 438 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

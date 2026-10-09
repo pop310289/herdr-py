@@ -131,6 +131,36 @@ class TeamTest(Base):
         self.assertIn("taking over", handoff)
         self.assertEqual(len([e for e in s["interventions"] if e["kind"] == "stall"]), 1)
 
+    def test_the_late_end_of_an_aborted_turn_is_not_the_end_of_the_next(self):
+        def on_prompt(sid, text):
+            name = self.fake.name_of(sid)
+            self.prompts.append((name, text))
+            if name == "exec" and "Supervisor:" not in text:
+                self.write("NO", notes="Done: tried\nNext: fix ok.txt")
+                for _ in range(400):
+                    if sid in self.fake.aborts:
+                        time.sleep(0.4)  # OpenCode reports the aborted turn's end late, after the executor's next prompt
+                        self.fake.emit("session.error", sessionID=sid, error={"name": "MessageAbortedError"})
+                        self.fake.emit("session.idle", sessionID=sid)
+                        return
+                    self.fake.emit("session.status", sessionID=sid, status={"type": "busy"})
+                    time.sleep(0.05)
+            elif name == "exec":
+                time.sleep(0.6)
+                self.write("OK")
+                self.fake.turn(sid, "fixed")
+            elif name == "ver":
+                self.fake.turn(sid, "PROBLEM: ok.txt says NO | EVIDENCE: cat ok.txt")
+            elif name == "val":
+                self.fake.turn(sid, "VERDICT: ACCEPT")
+        self.fake.on_prompt = on_prompt
+        s = self.run_team("T", checkpoint_s=1.0, stall_s=30)
+        self.assertEqual((s["outcome"], s["final_check"]), ("accepted", True))
+        # without waiting for that end, it closed the fixed turn before OK was written: a failed check, another round
+        self.assertEqual([c["ok"] for c in s["checks"] if c["round"] != "final"], [False, True])
+        self.assertEqual([e["kind"] for e in s["interventions"]], ["checkpoint", "feedback"])
+
+
     def test_a_spinning_executor_is_interrupted_at_the_checkpoint(self):
         def on_prompt(sid, text):
             name = self.fake.name_of(sid)
