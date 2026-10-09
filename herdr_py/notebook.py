@@ -684,10 +684,29 @@ def read_text(path):
         return handle.read()
 
 
+def from_bring(bring):
+    """A request's checkboxes as a page's "from": skills brings the page's skills, knowledge every verified entry of
+    it (skills too), current its current versions."""
+    out = []
+    for b in bring or ():
+        ref = {"page": b["page"]}
+        if "knowledge" in b["bring"]:
+            ref["kinds"] = ["*"]
+        elif "skills" in b["bring"]:
+            ref["kinds"] = ["skill"]
+        if "current" in b["bring"]:
+            ref["current"] = True
+        out.append(ref)
+    return out
+
+
 def draft(nb, source, by, at=None, request=None):
     """Install a page definition (a new page, or a new version of one): it is a draft until approved. request: the
-    request (r1, r2, ...) this page answers, which is then marked drafted."""
-    if request is not None and not any(r["id"] == request and r["state"] == "open" for r in nb.requests()):
+    request (r1, r2, ...) this page answers, which is then marked drafted; what it asked to bring from other pages
+    becomes the page's "from" when the definition has none, and a "from" that leaves one of those pages out is
+    refused."""
+    asked = next((r for r in nb.requests() if r["id"] == request and r["state"] == "open"), None)
+    if request is not None and asked is None:
         raise NotebookError(f"no open request {request}")
     try:
         with open(source, "rb") as handle:
@@ -695,6 +714,16 @@ def draft(nb, source, by, at=None, request=None):
         d = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError) as exc:
         raise NotebookError(f"{source}: {exc}")
+    bring = (asked or {}).get("bring") or []
+    if bring and "from" not in d:
+        d["from"] = from_bring(bring)
+        raw = (json.dumps(d, ensure_ascii=False, indent=1) + "\n").encode("utf-8")
+    elif bring:
+        named = {r.get("page") for r in d["from"] if isinstance(r, dict)} if isinstance(d["from"], list) else set()
+        left = [f"{b['page']} ({', '.join(b['bring'])})" for b in bring if b["page"] not in named]
+        if left:
+            raise NotebookError(f"request {request} asked to bring from {'; '.join(left)}: name them in \"from\", "
+                                "or leave \"from\" out to take what the request asked for")
     problems = check_definition(d)
     if problems:
         raise NotebookError("; ".join(problems))
@@ -770,13 +799,14 @@ def references(page):
             raise NotebookError(f"from: {ref['page']} has no run" + (f" {ref['run']}" if ref.get("run") else ""))
         f = src.facts(run["n"])
         kinds, ids = {k.lower() for k in ref.get("kinds") or []}, set(ref.get("entries") or [])
+        every = "*" in kinds  # every verified entry of that run
         if ref.get("current"):
             ids |= {p.get("entry") for p in src.picks().values()}
         pool = [dict(e, folder=run["folder"], run=run["n"]) for e in (f.get("carried") or []) + (f.get("made") or [])]
         pool += [e for eid, e in src.entries().items() if eid in ids]  # a picked or named entry may be from any run
         chosen, seen, excluded = [], set(), src.excluded()
         for e in pool:
-            if e["id"] in seen or e["id"] in excluded or e["status"] != "valid" or not (e["kind"] in kinds or e["id"] in ids):
+            if e["id"] in seen or e["id"] in excluded or e["status"] != "valid" or not (every or e["kind"] in kinds or e["id"] in ids):
                 continue
             chosen.append(e)
             seen.add(e["id"])

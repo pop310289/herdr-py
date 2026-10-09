@@ -60,6 +60,7 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "ag_turn_line": ("run {r}, turn {k}: {what}", "第 {r} 次 · 回合 {k}：{what}"),
     "close": ("close", "關閉"),
     "refs": ("Reference material from other tasks", "參考資料（來自其他 task）"),
+    "kinds_all": ("every verified entry", "全部通過的條目"),
     "refs_note": ("Not this task's verified results; their old scores do not apply here.", "不算這個 task 已驗證的成果，舊分數不適用。"),
     "refs_line": ("reference material: {items}", "參考資料：{items}"),
     "refs_item": ("{title}, run {n}: {k}", "{title} 第 {n} 次 {k} 條"),
@@ -67,8 +68,11 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "from_run": ("from {title}, run {n}", "來自 {title} 第 {n} 次"),
     "bring_h": ("Bring from earlier tasks (optional)", "從舊 task 帶過來（可不選）"),
     "bring_skills": ("skills", "skill"), "bring_knowledge": ("knowledge", "知識"), "bring_current": ("current versions", "現行版"),
-    "bring_note": ("They come as reference material: the members can read them, but they do not count as the new task's results.",
-                   "帶過去的只當參考資料：成員讀得到，但不算新 task 的成果。"),
+    "bring_note": ("skills: that task's skills; knowledge: every verified entry of it (skills too); current versions: the ones "
+                   "picked there. They come as reference material: the members can read them, but they are not the new task's results "
+                   "and keep no score.",
+                   "skill：那個 task 的 skill；知識：它全部通過的條目（含 skill）；現行版：那裡選定的版本。帶過去的只當參考資料："
+                   "成員讀得到，但不算新 task 的成果，也不沿用舊分數。"),
     "kb_search": ("search the knowledge…", "搜尋知識庫…"), "kb_all": ("all", "全部"), "kb_graph": ("Knowledge graph", "知識圖"),
     "config": ("Run settings and the raw commands", "執行設定與原始指令"),
     "outputs_now": ("Outputs", "成果"), "details": ("Every agent's details", "每個 Agent 的詳情"),
@@ -1339,7 +1343,8 @@ def definition_html(page, lang):
     if d.get("outputs"):
         kv.append((say(lang, "outputs"), ", ".join(d["outputs"])))
     for ref in d.get("from") or []:
-        what = ", ".join(x for x in [", ".join(ref.get("kinds") or []), ", ".join(ref.get("entries") or []),
+        what = ", ".join(x for x in [", ".join(t(lang, "kinds_all") if k == "*" else k for k in ref.get("kinds") or []),
+                                      ", ".join(ref.get("entries") or []),
                                       t(lang, "bring_current") if ref.get("current") else ""] if x)
         kv.append((t(lang, "refs"), f"{ref_title(page, ref.get('page'))}" + (f" ({say(lang, 'run_n', n=ref['run'])})" if ref.get("run") else "") + f": {what}"))
     task = ""

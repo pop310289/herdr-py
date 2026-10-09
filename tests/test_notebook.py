@@ -91,11 +91,11 @@ class Base(unittest.TestCase):
         d.update(over)
         return d
 
-    def draft(self, **over):
+    def draft(self, request=None, **over):
         path = os.path.join(self.dir, "draft.json")
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(self.definition(**over), handle, ensure_ascii=False)
-        return notebook.draft(self.nb, path, "claude")
+        return notebook.draft(self.nb, path, "claude", request=request)
 
     def page(self, pid="p1"):
         return self.nb.page(pid)  # read again: what another process wrote is seen
@@ -278,6 +278,31 @@ class PageTest(Base):
         dry = self.dry("p2")
         self.assertNotIn(made["skill"], dry)  # what its own page excluded is not brought
         self.assertIn(made["result"], dry)
+
+    def test_what_a_request_asked_to_bring_becomes_the_pages_from(self):
+        self.draft()
+        self.draft(id="p2", title="Second")
+        self.nb.ask("a third report", "person", bring=[{"page": "p1", "bring": ["skills", "current"]}, {"page": "p2", "bring": ["knowledge"]}])
+        page = self.draft(id="p3", title="Third", request="r1")  # Claude wrote no "from": the request's choices are it
+        self.assertEqual(page.d["from"], [{"page": "p1", "kinds": ["skill"], "current": True}, {"page": "p2", "kinds": ["*"]}])
+        self.assertEqual(json.loads(read(os.path.join(page.dir, "page.json")))["from"], page.d["from"])  # what is approved
+        self.nb.ask("a fourth", "person", bring=[{"page": "p1", "bring": ["skills"]}, {"page": "p2", "bring": ["current"]}])
+        with self.assertRaisesRegex(NotebookError, r"asked to bring from p2 \(current\)"):  # a "from" that drops one is refused
+            self.draft(id="p4", title="Fourth", request="r2", **{"from": [{"page": "p1", "kinds": ["skill"]}]})
+        page = self.draft(id="p4", title="Fourth", request="r2", **{"from": [{"page": "p1", "entries": ["k1"]}, {"page": "p2", "current": True}]})
+        self.assertEqual(page.d["from"], [{"page": "p1", "entries": ["k1"]}, {"page": "p2", "current": True}])  # written out: kept
+
+    def test_every_verified_entry_of_a_page_can_be_brought(self):
+        self.draft()
+        notebook.attach(self.page(), self.engine_run("outside", answers=("ARTIFACT: skill\n---\nname: count-up\n---\n1. one", "5", "oops")), "claude")
+        made = self.page().facts(1)["made"]
+        self.assertEqual([e["status"] for e in made], ["valid", "valid", "invalid"])
+        self.draft(id="p2", title="Second", **{"from": [{"page": "p1", "kinds": ["*"]}]})
+        notebook.approve(self.page("p2"), "person")
+        dry = self.dry("p2")
+        for e in made[:2]:
+            self.assertIn(f"reference/p1/{e['id']}.txt", dry)
+        self.assertNotIn(made[2]["id"], dry)  # what failed its judge is not brought
 
     def dry(self, pid):
         out = io.StringIO()
