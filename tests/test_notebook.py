@@ -6,6 +6,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -24,12 +25,14 @@ from herdr_py.notebook import Notebook, NotebookError  # noqa: E402
 from test_engine import JUDGE, MEMBER, PLANNER, add  # noqa: E402
 
 
-# A judge for pages: an answer with a paragraph in it is valid with score 100; otherwise as JUDGE (a number is its score).
+# A judge for pages: an answer with a paragraph in it is valid with score 100, a skill 10; otherwise as JUDGE (a number is its score).
 PAGE_JUDGE = r'''
 import json, sys
 text = open(sys.argv[-1]).read().strip()
 if "<p>" in text:
     print(json.dumps({"status": "valid", "score": 100, "detail": "a page"}))
+elif text.startswith("ARTIFACT: skill"):
+    print(json.dumps({"status": "valid", "score": 10, "detail": "a skill"}))
 else:
     try:
         print(json.dumps({"status": "valid", "score": float(text), "detail": "a number"}))
@@ -105,12 +108,13 @@ class Base(unittest.TestCase):
 
     def engine_run(self, name, answers=("5",)):
         """A run made outside the notebook (as engine.main would make it), to attach."""
-        self.script([add(*[{"text": f"answer {i}", "for": "a", "parents": []} for i in range(len(answers))]), add(done=True)],
+        self.script([add(*[{"text": f"answer {i}", "for": "a", "parents": []} for i in range(len(answers))])]
+                    + [add() for _ in answers] + [add(done=True)],  # done only when every answer is in
                     {"a": [{"answer": x, "summary": f"answer {i}"} for i, x in enumerate(answers)]})
         out = os.path.join(self.dir, name)
         argv = ["--task", os.path.join(self.dir, "task.md"), "--judge", f"{sys.executable} -B page_judge.py",
                 "--planner", f"plan=command:{sys.executable} -B planner.py", "--member", f"a=command:{sys.executable} -B member.py",
-                "--turns", str(len(answers)), "--out", out]
+                "--turns", str(len(answers)), "--max-open", str(max(2, len(answers))), "--out", out]
         cwd = os.getcwd()
         os.chdir(self.dir)
         try:
@@ -341,6 +345,8 @@ class RecordsTest(Base):
 
 
 class ViewTest(Base):
+    TABS = ("overview", "arch", "replay", "debug", "skills", "kb", "outputs", "notes")
+
     def test_the_view_shows_what_waits_every_version_and_is_complete_without_javascript(self):
         self.draft(title="Plans <script>alert(1)</script>", outputs=["page"])
         folder = self.engine_run("outside", answers=("ARTIFACT: page\n<!doctype html><p>v1</p>",))
@@ -350,7 +356,6 @@ class ViewTest(Base):
         code, printed, err = self.cli("view", "--out", out, "--runs", self.dir)
         self.assertEqual(code, 0, err)
         home = read(os.path.join(out, "index.html"))
-        self.assertNotIn("<script", home)  # the notebook's pages need no script
         self.assertNotIn("<script>alert", home)
         self.assertIn("Plans &lt;script&gt;", home)
         self.assertIn("review run 1", home)
@@ -358,6 +363,11 @@ class ViewTest(Base):
         self.assertIn("loose", home)
         page_html = read(os.path.join(out, "p", "p1", "index.html"))
         self.assertIn("no current version picked", page_html)
+        for tab in self.TABS:  # every tab is a section of the page: without JavaScript they all show, one after another
+            self.assertIn(f'<section class="panel tab" id="{tab}">', page_html)
+            self.assertIn(f'href="#{tab}"', page_html)
+        self.assertIn(".js .tab { display:none; }", page_html)  # only a page that runs its script hides a tab
+        self.assertIn('<iframe class="replay" src="runs/1.html"', page_html)
         self.assertTrue(os.path.isfile(os.path.join(out, "p", "p1", "runs", "1.html")))
         made = self.page().facts(1)["made"][0]["id"]
         with open(os.path.join(out, "p", "p1", "files", made + ".html"), encoding="utf-8") as handle:
@@ -369,6 +379,134 @@ class ViewTest(Base):
         self.assertIn("picked by person", page_html)
         home = read(os.path.join(out, "index.html"))
         self.assertIn("Nothing waits for you.", home)
+
+    def test_the_rail_lists_every_task_and_the_plus_opens_a_request(self):
+        self.draft(title="26 circles")
+        self.draft(id="p2", title="Weekly report", icon="R")
+        self.assertEqual(self.cli("request", "a reading list for a rainy weekend", "--title", "Reading", "--by", "person")[0], 0)
+        out = os.path.join(self.dir, "site")
+        self.cli("view", "--out", out)
+        home = read(os.path.join(out, "index.html"))
+        self.assertIn('href="p/p1/"', home)
+        self.assertIn('href="p/p2/"', home)
+        self.assertIn('<span class="av">C<i class="dot', home)  # digits are skipped for the letter
+        self.assertIn('<span class="av">R<i class="dot', home)  # a page's own icon, not the title's W
+        self.assertIn('href="new.html"', home)
+        new = read(os.path.join(out, "new.html"))
+        self.assertIn('data-act="new"', new)
+        self.assertIn("a reading list for a rainy weekend", new)  # waiting for Claude to draft it
+        self.assertIn("a reading list for a rainy weekend", home)
+        page = read(os.path.join(out, "p", "p2", "index.html"))
+        self.assertIn('class="ri on" href="../../p/p2/"', page)  # the open task is marked on the rail
+        definition = self.definition(id="p3", title="Reading")
+        path = os.path.join(self.dir, "p3.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(definition, handle)
+        self.assertEqual(self.cli("draft", path, "--request", "r9")[0], 2)  # no such request
+        self.assertEqual(self.cli("draft", path, "--request", "r1")[0], 0)
+        self.assertEqual([(r["id"], r["state"], r["page"]) for r in self.nb.requests()], [("r1", "drafted", "p3")])
+        self.assertEqual(self.cli("request", " ")[0], 2)
+
+    def test_debug_skills_and_the_knowledge_graph(self):
+        self.draft(outputs=["page"])
+        skill = "ARTIFACT: skill\n---\nname: count-up\n---\n1. one"
+        folder = self.engine_run("outside", answers=(skill, "not a number", "7"))
+        skill_id = next(e["id"] for e in notebook.run_facts(folder)["made"] if e["kind"] == "skill")
+        os.makedirs(os.path.join(folder, "members", "claude"))
+        with open(os.path.join(folder, "members", "claude", "events.jsonl"), "w") as handle:  # a member that opened the skill's file
+            handle.write(json.dumps({"agent": "z", "t": time.time(), "event": {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Read", "input": {"file_path": f"/x/board/artifacts/{skill_id}.txt"}}]}}}) + "\n")
+        notebook.attach(self.page(), folder, "claude")
+        out = os.path.join(self.dir, "site")
+        self.cli("view", "--out", out)
+        page_html = read(os.path.join(out, "p", "p1", "index.html"))
+        debug = page_html.split('id="debug"')[1].split("</section>")[0]
+        self.assertIn("1 answer did not pass the judge", debug)
+        self.assertIn("neither", debug)  # the judge's reason
+        skills = page_html.split('id="skills"')[1].split("</section>")[0]
+        self.assertIn("count-up", skills)
+        self.assertIn("written in run 1 by a", skills)
+        self.assertIn("used by z", skills)  # opening its file counts as using it
+        graph = page_html.split('id="kb"')[1].split('<section class="panel tab"')[0]
+        made = {e["id"]: e for e in self.page().facts(1)["made"]}
+        for eid in made:
+            self.assertIn(f'data-id="{eid}"', graph)
+        self.assertEqual(graph.count('<circle class="n pass"'), 2)
+        self.assertEqual(graph.count('<circle class="n fail"'), 1)
+
+    def test_agents_show_what_the_records_say_and_open_their_details(self):
+        self.draft(outputs=["page"], judge=[sys.executable, "-B", "page_judge.py", "--strict"])
+        folder = self.engine_run("outside", answers=("ARTIFACT: page\n<!doctype html><p>v1</p>", "not a number"))
+        notebook.attach(self.page(), folder, "claude")
+        out = os.path.join(self.dir, "site")
+        self.cli("view", "--out", out)
+        page_html = read(os.path.join(out, "p", "p1", "index.html"))
+        overview = page_html.split('id="overview"')[1].split('<section class="panel tab"')[0]
+        self.assertIn('data-agent="a"', overview)
+        self.assertIn('data-agent="plan"', overview)
+        self.assertIn("did not pass", overview)  # a's last turn: its answer did not pass the judge
+        self.assertIn("1/2 todos done", overview)  # the todos it took and the ones that passed, as recorded
+        self.assertIn('<section class="agent-detail" id="agent-a">', overview)  # its details: in the page without JavaScript
+        detail = overview.split('id="agent-a"')[1].split("</section>")[0]
+        self.assertIn("run 1, turn 1: 100", detail)
+        self.assertIn("Todos in run 1", detail)
+        arch = page_html.split('id="arch"')[1].split('<section class="panel tab"')[0]
+        self.assertIn('<a href="#agent-a" data-agent="a">', arch)  # every agent in the tree opens its panel
+        self.assertIn("judge · page_judge.py", arch)
+        self.assertNotIn("--strict", arch)  # the raw command is in Debug, not in the drawing
+        self.assertIn("--strict", page_html.split('id="debug"')[1].split('<section class="panel tab"')[0])
+        kb = page_html.split('id="kb"')[1].split('<section class="panel tab"')[0]
+        self.assertIn('class="kb-search"', kb)
+        self.assertIn('data-kind="page"', kb)
+
+    def test_the_team_is_drawn_sideways_unless_the_notebook_asks_otherwise(self):
+        self.draft(team={"planner": "plan=claude", "members": ["a=claude", "b=codex"]})
+        out = os.path.join(self.dir, "site")
+        shapes = {}
+        for tree in (None, "tall", "both"):
+            meta = {"title": "Test notebook", "lang": "en"}
+            if tree:
+                meta["tree"] = tree
+            with open(os.path.join(self.folder, "notebook.json"), "w") as handle:
+                json.dump(meta, handle)
+            self.cli("view", "--out", out)
+            arch = read(os.path.join(out, "p", "p1", "index.html")).split('id="arch"')[1].split('<section class="panel tab"')[0]
+            shapes[tree] = re.findall(r'<div class="fig (tree-\w+(?: alt)?)">', arch)
+        self.assertEqual(shapes, {None: ["tree-wide"], "tall": ["tree-tall"], "both": ["tree-wide", "tree-tall alt"]})
+
+    def test_an_agents_state_comes_from_its_last_turn(self):
+        from herdr_py.notebookview import agent_status
+
+        def run(state, *turns, working=()):
+            return {"state": state, "working": list(working), "turn_list": [dict(member="a", **x) for x in turns]}
+        cases = [(run("running", working=["a"]), ("run", "working")), (run("running"), ("", "waiting")),
+                 (run("ended"), ("", "no turn")), (run("ended", {"state": "error"}), ("bad", "broke")),
+                 (run("ended", {"state": "idle", "kind": "failure"}), ("warn", "could not")),
+                 (run("ended", {"state": "idle", "kind": "result", "status": "invalid"}), ("bad", "did not pass")),
+                 (run("ended", {"state": "idle", "kind": "result", "status": "invalid"}, {"state": "idle", "kind": "result", "status": "valid"}),
+                  ("ok", "passed")),  # the last turn decides
+                 (run("ended", {"state": "idle"}), ("", "no answer")), (None, ("", "no turn"))]
+        for facts, want in cases:
+            self.assertEqual(agent_status(facts, "a", "en"), want, facts)
+
+    def test_a_notebook_can_add_its_own_style_and_cannot_break_out_of_it(self):
+        self.draft()
+        with open(os.path.join(self.folder, "phone.css"), "w") as handle:
+            handle.write(".rail { display:none; }</style><script>alert(1)</script>")
+        with open(os.path.join(self.folder, "notebook.json"), "w") as handle:
+            json.dump({"title": "Test notebook", "lang": "en", "style": "phone.css"}, handle)
+        self.nb = Notebook(self.folder)
+        out = os.path.join(self.dir, "site")
+        self.cli("view", "--out", out)
+        for page in ("index.html", "new.html", os.path.join("p", "p1", "index.html")):
+            html_ = read(os.path.join(out, page))
+            start = html_.index(".rail { display:none; }")
+            self.assertIn(".rail { display:none; }<\\/style>", html_)  # its own style element, after the built-in one
+            self.assertLess(html_.index("grid-template-columns:252px"), start)
+            self.assertLess(html_.index("<script>alert", start), html_.index("</style>", start))  # still inside it: text, not a script
+        with open(os.path.join(self.folder, "notebook.json"), "w") as handle:
+            json.dump({"title": "Test notebook", "lang": "en", "style": "missing.css"}, handle)
+        self.assertEqual(self.cli("view", "--out", out)[0], 0)  # a style that cannot be read adds nothing
 
     def test_a_dag_run_cut_off_shows_where_it_stopped(self):
         self.draft(kind="dag")
@@ -390,9 +528,16 @@ class ViewTest(Base):
         self.cli("hold", "p1", "--why", "stopped it")
         out = os.path.join(self.dir, "site")
         self.assertEqual(self.cli("view", "--out", out)[0], 0)
-        home = read(os.path.join(out, "index.html"))
-        self.assertIn("words (cut off: the run has no end) → design (waiting)", home)
-        self.assertIn("no end recorded", home)
+        page_html = read(os.path.join(out, "p", "p1", "index.html"))
+        self.assertIn("words (cut off: the run has no end) → design (waiting)", page_html)
+        self.assertIn("words: cut off (the run has no end)", page_html.split('id="debug"')[1])
+        self.assertIn("no end recorded", read(os.path.join(out, "index.html")))
+
+    def test_words_for_time_and_counts(self):
+        self.assertEqual((notebook.span_text(0.4, "en"), notebook.span_text(0.4, "zh-TW")), ("<1s", "不到 1 秒"))
+        self.assertEqual((notebook.span_text(75, "en"), notebook.span_text(75, "zh-TW")), ("1m 15s", "1 分 15 秒"))
+        self.assertEqual([notebook.say("en", "n_runs", n=n) for n in (1, 2)], ["1 run", "2 runs"])
+        self.assertEqual(notebook.say("zh-TW", "n_runs", n=1), "1 次執行")
 
     def test_status_names_what_waits(self):
         self.draft()
@@ -400,6 +545,100 @@ class ViewTest(Base):
         self.assertEqual(code, 0)
         self.assertIn("! p1: approve it before it runs", out)
         self.assertIn("p1 [draft] A page", out)
+
+
+class ServeTest(Base):
+    def setUp(self):
+        super().setUp()
+        import threading
+        from herdr_py import notebookview
+        self.draft(outputs=["page"])
+        self.folder_run = self.engine_run("outside", answers=("ARTIFACT: page\n<!doctype html><p>v1</p>", "5"))
+        notebook.attach(self.page(), self.folder_run, "claude")
+        ready = threading.Event()
+        self.url = None
+
+        def up(url):
+            self.url = url
+            ready.set()
+        self.thread = threading.Thread(target=notebookview.serve, args=(self.folder,), kwargs={"port": 0, "token": "tok", "ready": up},
+                                       daemon=True)
+        self.thread.start()
+        self.assertTrue(ready.wait(10))
+        self.base = self.url.split("#")[0].rstrip("/")
+
+    def fetch(self, path, body=None, token=None):
+        import urllib.error
+        import urllib.request
+        data = json.dumps(body).encode() if body is not None else None
+        req = urllib.request.Request(self.base + path, data=data, method="POST" if data is not None else "GET")
+        if token:
+            req.add_header("Authorization", "Bearer " + token)
+        if data is not None:
+            req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=10) as r:
+                return r.status, r.read().decode("utf-8"), dict(r.headers)
+        except urllib.error.HTTPError as e:
+            with e:
+                return e.code, e.read().decode("utf-8"), dict(e.headers)
+
+    def test_pages_are_drawn_live_and_commands_need_the_token(self):
+        self.assertTrue(self.url.endswith("#token=tok"))
+        code, body, _ = self.fetch("/")
+        self.assertEqual(code, 200)
+        self.assertIn('"live": true', body)
+        page = self.page().facts(1)["made"][0]["id"]
+        self.assertEqual(self.fetch("/api/act", {"command": "pick", "page": "p1", "entry": page})[0], 403)
+        self.assertEqual(self.fetch("/api/act", {"command": "pick", "page": "p1", "entry": page}, token="nope")[0], 403)
+        self.assertEqual(self.page().picks(), {})  # refused commands record nothing
+        code, body, _ = self.fetch("/p/p1/api/act", {"command": "pick", "page": "p1", "entry": page}, token="tok")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(self.page().picks()["page"]["by"], "person (web)")
+        code, body, _ = self.fetch("/api/act", {"command": "approve", "page": "p1", "digest": "stale"}, token="tok")
+        self.assertEqual(code, 409)  # the definition changed after the page was drawn (or was never shown)
+        code, body, _ = self.fetch("/api/act", {"command": "approve", "page": "p1", "digest": self.page().digest()}, token="tok")
+        self.assertEqual(code, 200, body)
+        self.assertEqual(self.fetch("/api/act", {"command": "explode", "page": "p1"}, token="tok")[0], 409)
+        self.assertEqual(self.fetch("/api/new", {"goal": "a list of five books"}, token="tok")[0], 200)
+        self.assertEqual([r["goal"] for r in self.nb.requests()], ["a list of five books"])
+        self.assertIn("a list of five books", self.fetch("/new.html")[1])
+
+    def test_the_teams_files_run_in_a_sandbox_and_nothing_else_is_served(self):
+        page = self.page().facts(1)["made"][0]["id"]
+        code, body, headers = self.fetch(f"/p/p1/files/{page}.html")
+        self.assertEqual((code, body.strip()), (200, "<!doctype html><p>v1</p>"))
+        self.assertEqual(headers.get("Content-Security-Policy"), "sandbox allow-scripts")
+        self.assertEqual(self.fetch("/p/p1/runs/1.html")[0], 200)
+        for path in ("/p/p1/runs/2.html", "/p/../../etc/passwd", "/p/p1/files/k000000000000.html", f"/p/p1/files/{page}.txt",
+                     "/p/nope/", "/notebook.json", "/pages/p1/history.jsonl"):
+            self.assertEqual(self.fetch(path)[0], 404, path)
+
+
+@unittest.skipUnless(shutil.which("git"), "needs git for the DAG task (RHEL 8 images may not have it; CI installs it)")
+class DemoTest(unittest.TestCase):
+    def test_the_demo_notebook_builds_without_models(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        out = os.path.join(folder, "demo")
+        p = subprocess.run([sys.executable, "-B", os.path.join(ROOT, "examples", "notebook", "make_demo.py"), out],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=300)
+        self.assertEqual(p.returncode, 0, p.stdout[-2000:])
+        nb = Notebook(os.path.join(out, "notebook"))
+        states = {pg.id: pg.state() for pg in nb.pages()}
+        self.assertEqual(states, {"museum-report": ("review", [("review", 2)]), "circles": ("approved", []),
+                                  "calculator": ("hold", []), "circles-bigger-team": ("draft", [("approve", None)])})
+        museum = nb.page("museum-report")
+        second = museum.facts(2)
+        self.assertEqual(sorted(e["kind"] for e in second["carried"]), ["data", "data", "skill"])
+        self.assertEqual(max(e["score"] for e in second["made"] if e["kind"] == "page"), 100)
+        self.assertEqual(museum.runs()[1]["notes"], ["n1"])
+        circles = nb.page("circles")  # whether run 2 beats run 1 depends on the platform's floats (the search is seeded), so not asserted
+        first, second = circles.facts(1), circles.facts(2)
+        self.assertEqual(sorted(e["id"] for e in second["carried"]), sorted(e["id"] for e in first["made"] if e["status"] == "valid"))
+        self.assertGreaterEqual(len(second["used"]), 1)  # it built on what it carried
+        self.assertEqual(circles.picks()["result"]["run"], 2)
+        self.assertEqual([r["state"] for r in nb.requests()], ["open"])
 
 
 if __name__ == "__main__":

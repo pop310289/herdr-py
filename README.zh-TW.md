@@ -149,10 +149,33 @@ python3 -m herdr_py.notebook ~/notebook status
 python3 -m herdr_py.notebook ~/notebook view --out site/ --runs runs/   # --runs：列出不屬於任何一頁的執行
 ```
 
-`view` 寫出依日期排的首頁（最上面是待你處理，接著每天的頁、做出什麼、花多少）、每一頁自己的頁面（畫出團隊、畫出每次執行從前一次
-帶入什麼、每種成果的每一版並標出現行版、這頁的知識庫與下一次會帶入的條目、批註與歷史）、每次執行的頁面（engineview、dagview 或
-coopview），以及團隊做出的檔案。不需要 JavaScript 也完整。資料夾裡的 `notebook.json` 設定標題與頁面語言（`en` 或 `zh-TW`）。
-指令是給一台機器上的一個人用的；事後補記的決定（`--at`）會標成補記。
+`view` 把筆記本寫成給電腦螢幕看的 app，不需要 JavaScript 也完整：左邊一排是所有 task（標題第一個字或 page.json 的 `icon`，
+加上狀態點），最下面的「＋」開新 task；點開的 task 佔滿右邊，分成幾個分頁。總覽：由紀錄算出的數字（執行次數、成員回合、通過的條目、
+待你處理），每個 Agent 一張卡片，寫著紀錄裡的狀態（最後一個回合怎麼結束，執行中則是在做或在等）和它的待辦；點卡片從右側打開它的
+面板：角色、待辦、寫了和用了哪些 skill、產出、每個回合。架構：團隊樹狀圖（planner 分派待辦、成員回答、評分決定什麼通過；圖裡每個
+Agent 都能點開面板）。回放：每次執行的回放（engineview 的頁面，直接在分頁裡）。除錯：每次執行出了什麼錯（被退回的 planner 回覆和理由、
+沒交答案的回合、沒過的答案和評分的理由、成員回報做不到），最後是執行設定與原始指令。skill：誰寫的、誰用過、帶進第幾次。知識庫：所有
+通過的條目，可搜尋、依種類篩選，以及知識圖（每個種類一列、每條一個圓、從每條連到引用它的條目；點一個圓，它引用的和引用它的會亮起來）。
+接著是每種成果的每一版並標出現行版，以及批註與歷史。紀錄裡沒有的東西不顯示（不猜進度、不猜完成時間）。`notebook.json` 可以指定
+筆記本自己的樣式表（`"style"`，相對於筆記本資料夾的 CSS 檔），接在內建樣式後面套到每一頁，例如手機版版面；`"tree"` 決定團隊圖
+橫著畫（`wide`，預設）、直著畫（`tall`），或兩種都畫（`both`：直式先藏著，由這類樣式表決定何時顯示）。`serve` 在這台機器上
+即時提供同樣的頁面（預設 127.0.0.1），並加上按鈕：＋ 記下一個新 task 的請求；task 裡的按鈕可以選現行版、寫批註、驗收、擱置、
+重新打開、核准（只核准頁面上顯示的那一版）、排除條目。按鈕帶著連結 `#` 後面的 token 送出，沒有 token 就拒絕；團隊做的檔案在沙盒裡
+提供（`Content-Security-Policy: sandbox allow-scripts`），裡面的程式碰不到 token。用 `view` 寫成檔案時，按鈕改成複製要跟 Claude 說的話。
+
+```sh
+python3 -m herdr_py.notebook ~/notebook request "下雨週末的書單" --title "書單"
+python3 -m herdr_py.notebook ~/notebook draft reading.json --request r1   # Claude 起草的頁回應這個請求
+python3 -m herdr_py.notebook ~/notebook serve --runs runs/                # 會印出  open: http://127.0.0.1:8790/#token=...
+
+# 虛構的示意 task，成員都是程式（幾秒鐘）：第二次執行用第一次留下的資料與 skill 做出網頁的報表、跑兩次的圓形排列、
+# 有一步失敗的 DAG、一份草稿與一個請求；接著打開來看
+python3 examples/notebook/make_demo.py /tmp/notebook-demo
+python3 -m herdr_py.notebook /tmp/notebook-demo/notebook view --out /tmp/notebook-demo/site --runs /tmp/notebook-demo/runs
+open /tmp/notebook-demo/site/index.html
+```
+
+資料夾裡的 `notebook.json` 設定標題與頁面語言（`en` 或 `zh-TW`）。指令是給一台機器上的一個人用的；事後補記的決定（`--at`）會標成補記。
 
 ## DAG 分派：會互相等待的步驟
 
@@ -243,7 +266,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 466 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 475 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

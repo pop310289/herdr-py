@@ -271,12 +271,44 @@ python3 -m herdr_py.notebook ~/notebook status
 python3 -m herdr_py.notebook ~/notebook view --out site/ --runs runs/   # --runs: list the runs no page holds
 ```
 
-`view` writes a home page by day (what waits for you on top, then each day's pages with what they made and what they
-cost), a page for every page (its team drawn, its runs drawn with what each carried from the one before, every version
-of every output with the current one marked, its knowledge with what the next run would carry, notes and history),
-every run's own page (engineview, dagview or coopview) and the teams' files, ready to open. It is complete without
-JavaScript. `notebook.json` in the folder sets the title and the language of the pages (`en` or `zh-TW`). Commands
-are for one person on one machine; a decision written later than it happened (`--at`) is marked as recorded later.
+`view` writes the notebook as an app for a computer's screen, complete without JavaScript: a rail on the left with
+every task (the first letter of its title or its `icon`, and a dot for its state) and a + for a new one; the task you
+open fills the rest, in tabs. Overview: the numbers from the records (runs, member turns, entries passed, what waits
+for you) and a card per agent with its state as the records say (how its last turn ended, or working and waiting
+while a run goes on) and its todos; a card opens the agent's panel on the right: its role, its todos, the skills it
+wrote and used, what it made and every turn. Team: the team drawn as a tree (the planner hands out todos, the members
+answer, the judge decides what passes; every agent in it opens its panel). Replay: each run's replay (the engineview
+page, in the tab). Debug: what went wrong in each run (planner replies sent back and why, turns without an answer,
+answers that did not pass and the judge's reason, members that said they could not), then the run settings and the
+raw commands. Skills: who wrote each, who used it, which runs carried it. Knowledge: every verified entry, to search
+and filter by kind, and the knowledge as a graph (a row per kind, a circle per entry, a line from each entry to what
+built on it; tap a circle to light up what it came from and what built on it). Then every version of every output
+with the current one marked, and the notes and the history. Nothing is shown that the records do not hold (no
+progress or finishing time is guessed). `notebook.json` may name a style sheet of the notebook's own (`"style"`, a
+CSS file relative to the notebook's folder), added after the built-in one in every page: a layout for phones, for
+example; `"tree"` draws the team sideways (`wide`, the default), top down (`tall`), or both (`both`: the top-down
+drawing is hidden until such a style shows it). `serve` serves the same pages live on this machine (127.0.0.1 unless `--host` says otherwise) and adds
+buttons: + records a request for a new task, and a task's buttons pick the current version, write a note, accept,
+hold, reopen, approve (only the version the page showed) or exclude an entry; a button sends its command with the
+token printed after `#` in the link, and is refused without it. The teams' own files are served in a sandbox
+(`Content-Security-Policy: sandbox allow-scripts`), so their scripts cannot reach the token. As plain files
+(`view`), a button copies what to tell Claude instead.
+
+```sh
+python3 -m herdr_py.notebook ~/notebook request "a reading list for a rainy weekend" --title "Reading list"
+python3 -m herdr_py.notebook ~/notebook draft reading.json --request r1   # Claude's draft answers the request
+python3 -m herdr_py.notebook ~/notebook serve --runs runs/                # prints  open: http://127.0.0.1:8790/#token=...
+
+# made-up tasks, every member a program (a few seconds): a report whose second run builds the page from the
+# data and the skill the first run left, circles in a square over two runs, a DAG with a failing step, a draft and a
+# request; then look at it
+python3 examples/notebook/make_demo.py /tmp/notebook-demo
+python3 -m herdr_py.notebook /tmp/notebook-demo/notebook view --out /tmp/notebook-demo/site --runs /tmp/notebook-demo/runs
+open /tmp/notebook-demo/site/index.html
+```
+
+`notebook.json` in the folder sets the title and the language of the pages (`en` or `zh-TW`). Commands are for one
+person on one machine; a decision written later than it happened (`--at`) is marked as recorded later.
 
 ## DAG dispatch: steps that wait for each other
 
@@ -494,7 +526,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 466 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 475 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

@@ -113,6 +113,7 @@ class Base(unittest.TestCase):
         repo = os.path.join(self.dir, "repo")
         os.makedirs(repo)
         sh(repo, "git", "init", "-q")
+        sh(repo, "git", "symbolic-ref", "HEAD", "refs/heads/main")  # the same branch name whatever git's default is (CI's is master)
         with open(os.path.join(repo, "base.txt"), "w") as handle:
             handle.write("base\n")
         sh(repo, "git", "add", "-A")
