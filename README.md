@@ -182,7 +182,10 @@ run's numbers, a timeline with time running down the page (a column for the plan
 turn a bar, every result that woke the planner a dotted line), the best verified score over time, every todo from
 added to ended and every planner turn. It is complete without JavaScript; with JavaScript a player replays the run
 from the first event to the end: drag the time, and the loop lights up the stage that is working while its counts
-follow; tap a bar for its todo, verdict and score.
+follow; tap a bar for its todo, verdict and score. The page also shows the tools each turn used (a dot in its bar for
+every web search, page fetched and file read, from the Claude and OpenCode logs) and what the team made, entry by
+entry, with a line from every entry to each one it built on; an answer whose first line is `ARTIFACT: <kind>` is
+grouped by that kind.
 
 The run stops when the member turns are used up, the target score (`--target`) is reached, the planner says done,
 its wakes are used up with nothing left to do, or `--patience` judged answers in a row did not beat the best.
@@ -407,7 +410,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 417 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 418 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

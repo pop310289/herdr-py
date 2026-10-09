@@ -1,8 +1,11 @@
 """One HTML page for an event-driven team run (engine.py): the loop drawn with this run's numbers, a timeline from the
 first event to the end (the planner and every member in lanes, every turn a bar, every result that woke the planner
 a dashed line), every todo from added to ended, every planner wake, and the best score over time. Built from
-engine.jsonl, run.jsonl, kb/events.jsonl and summary.json only, so it can be opened while the run goes on (the
-engine rewrites it after every event).
+engine.jsonl, run.jsonl, kb/events.jsonl, the members' logs and summary.json only, so it can be opened while the run
+goes on (the engine rewrites it after every event). Two more parts show how the team works: the tools each member
+used in each turn (web searches, pages fetched, files read: Claude and OpenCode logs), drawn as dots in its bar, and
+what the team made, entry by entry, with a line from every entry to each one it built on. An answer whose first line
+is "ARTIFACT: <kind>" is grouped by that kind.
 
     python3 -m herdr_py.engineview runs/e1        # writes runs/e1/view.html
 
@@ -14,8 +17,18 @@ page reloads itself every few seconds. Data is escaped, never written into the p
 import html
 import json
 import os
+import re
 import sys
 import time
+
+
+TAG = re.compile(r"^\W*(artifact|kind)\s*:\s*([A-Za-z][\w-]*)", re.I)
+WEB, FETCH = ("websearch", "web_search", "search"), ("webfetch", "web_fetch", "fetch")
+
+
+def tool_class(name):
+    n = (name or "").lower()
+    return "web" if n in WEB else ("fetch" if n in FETCH else "read")
 
 
 def esc(text):
@@ -65,6 +78,42 @@ def load(out):
                             status=e.get("status"), score=e.get("score"), detail=e.get("detail"))
             elif op == "drop":
                 todo.update(state="dropped", ended=e.get("t"))
+    entries, verdicts = {}, {}
+    for e in read_jsonl(os.path.join(out, "kb", "events.jsonl")):
+        if e.get("type") == "propose" and e.get("id") not in entries:
+            entries[e["id"]] = e
+        elif e.get("type") == "verdict":
+            verdicts[e.get("id")] = e
+    made = []
+    for eid, p in entries.items():
+        v = verdicts.get(eid) or {}
+        kind = None
+        if p.get("artifact"):
+            try:
+                with open(os.path.join(out, "kb", p["artifact"]), encoding="utf-8", errors="replace") as handle:
+                    head = handle.readline()
+                m = TAG.match(head)
+                kind = m.group(2).lower() if m else None
+            except OSError:
+                pass
+        made.append({"id": eid, "t": p.get("t"), "member": p.get("member"), "summary": p.get("summary") or "",
+                     "parents": p.get("parents") or [], "kind": kind or p.get("kind"), "status": v.get("status", "unjudged"),
+                     "score": v.get("score"), "detail": v.get("detail") or ""})
+    tools = []
+    for backend in ("claude", "opencode"):
+        for row in read_jsonl(os.path.join(out, "members", backend, "events.jsonl")):
+            ev = row.get("event")
+            if not isinstance(ev, dict):
+                continue
+            calls = []
+            if ev.get("type") == "assistant":  # Claude's stream-json
+                calls = [(b.get("name"), b.get("input") or {}) for b in (ev.get("message") or {}).get("content") or []
+                         if isinstance(b, dict) and b.get("type") == "tool_use"]
+            elif ev.get("kind") == "tool":  # herdr-py's OpenCode member log
+                calls = [(ev.get("tool"), ev.get("input") or {})]
+            for name, inp in calls:
+                what = inp.get("query") or inp.get("url") or inp.get("file_path") or inp.get("filePath") or inp.get("pattern") or ""
+                tools.append({"t": row.get("t"), "agent": row.get("agent"), "tool": str(name), "what": str(what)[:160]})
     summary = None
     path = os.path.join(out, "summary.json")
     if os.path.isfile(path):
@@ -73,7 +122,7 @@ def load(out):
                 summary = json.load(handle)
         except ValueError:
             summary = None
-    return engine, turns, list(todos.values()), summary
+    return engine, turns, list(todos.values()), summary, made, tools
 
 
 def outcome(turn):
@@ -139,7 +188,7 @@ def loop_svg(start, wakes, turns, todos, summary, members, planner):
             f'a program judges, verdicts are the next events">{"".join(parts)}</svg>')
 
 
-def timeline_svg(t0, t1, wakes, turns, members, stop_why):
+def timeline_svg(t0, t1, wakes, turns, members, stop_why, tools=()):
     """A column for the planner and for every member, time running down the page (a phone is tall, not wide): every
     turn is a bar from its start to its end, and every result that woke the planner a dotted line to its column."""
     lanes = ["planner"] + list(members)
@@ -177,8 +226,15 @@ def timeline_svg(t0, t1, wakes, turns, members, stop_why):
                          (t.get("todo") or "")[:5]))
         if t.get("end"):  # this result is an event: it woke the planner
             ey = y(e)
-            parts.append(f'<line class="event" data-t="{e}" x1="{col_x[t["member"]] + 4:.1f}" y1="{ey:.1f}" '
+            parts.append(f'<line class="event timed" data-t="{e}" x1="{col_x[t["member"]] + 4:.1f}" y1="{ey:.1f}" '
                          f'x2="{col_x["planner"] + col_w - 4:.1f}" y2="{ey:.1f}"/>')
+    for c in tools:  # every tool call a dot in its member's bar: searches, pages fetched, files read
+        if c.get("agent") not in col_x or not isinstance(c.get("t"), (int, float)):
+            continue
+        kind = tool_class(c["tool"])
+        cx = col_x[c["agent"]] + col_w - {"web": 12, "fetch": 19, "read": 26}[kind]
+        parts.append(f'<circle class="tool {kind} timed" data-t="{c["t"]}" cx="{cx:.1f}" cy="{y(c["t"]):.1f}" r="2.6">'
+                     f'<title>{esc(c["tool"] + ": " + c["what"])}</title></circle>')
     for frac in (0, 0.25, 0.5, 0.75, 1):
         ty = y(t0 + frac * span)
         parts.append(f'<line class="tick" x1="{axis_w - 4}" y1="{ty:.1f}" x2="{axis_w}" y2="{ty:.1f}"/>'
@@ -190,6 +246,91 @@ def timeline_svg(t0, t1, wakes, turns, members, stop_why):
     parts.append(f'<line id="now" class="now" x1="{axis_w - 4}" y1="{top}" x2="{width - 4}" y2="{top}" style="opacity:0"/>')
     return (f'<svg id="timeline" data-top="{top}" data-h="{plot_h}" viewBox="0 0 {width} {height}" width="{width}" '
             f'height="{height}" role="img" aria-label="timeline from the first event to the end, time running down">{"".join(parts)}</svg>')
+
+
+def lineage_svg(made):
+    """Every entry the team made, a row each in time order, in a column by its kind; a line from each entry it built on."""
+    if not made:
+        return '<div class="muted">nothing made yet</div>'
+    rows = sorted(made, key=lambda e: e.get("t") or 0)[:150]
+    order = []
+    for e in rows:
+        if e["kind"] not in order:
+            order.append(e["kind"])
+    if len(order) > 6:
+        order = order[:5] + ["other"]
+    col = lambda e: order.index(e["kind"]) if e["kind"] in order else len(order) - 1  # noqa: E731
+    width, left, top, row_h = 340, 6, 34, 26
+    col_w = (width - 2 * left) / len(order)
+    height = top + len(rows) * row_h + 8
+    pos, parts = {}, []
+    counts = {k: sum(1 for e in rows if (e["kind"] if e["kind"] in order else "other") == k) for k in order}
+    for i, k in enumerate(order):
+        parts.append(f'<text x="{left + i * col_w + col_w / 2:.1f}" y="16" text-anchor="middle" class="kh">{esc(k or "?")}</text>'
+                     f'<text x="{left + i * col_w + col_w / 2:.1f}" y="28" text-anchor="middle" class="ax">{counts[k]}</text>')
+    for i, e in enumerate(rows):
+        pos[e["id"]] = (left + col(e) * col_w + col_w / 2, top + i * row_h + row_h / 2)
+    for e in rows:
+        for p in e["parents"]:
+            if p in pos:
+                (x1, y1), (x2, y2) = pos[p], pos[e["id"]]
+                parts.append(f'<path class="lin timed" data-t="{e.get("t") or 0}" d="M {x1:.1f} {y1 + 9:.1f} C {x1:.1f} {y2 - 12:.1f}, '
+                             f'{x2:.1f} {y1 + 12:.1f}, {x2:.1f} {y2 - 9:.1f}"/>')
+    for e in rows:
+        x, y = pos[e["id"]]
+        w = min(col_w - 6, 64)
+        state = "pass" if e["status"] == "valid" else ("fail" if e["status"] in ("invalid", "infra_error") else "wait")
+        score = f"{e['score']:.3g}" if isinstance(e.get("score"), (int, float)) and e["status"] == "valid" else (
+            "x" if state == "fail" else "…")
+        tip = f"{e['id']} by {e['member']} ({e['kind']}): {e['status']} {score}: {e['summary']}" + (
+            f" | builds on {', '.join(e['parents'])}" if e["parents"] else "") + (f" | {e['detail']}" if e["detail"] else "")
+        parts.append(f'<g class="kb {state} timed" data-t="{e.get("t") or 0}"><title>{esc(tip)}</title>'
+                     f'<rect x="{x - w / 2:.1f}" y="{y - 9:.1f}" width="{w:.1f}" height="18" rx="5"/>'
+                     f'<text x="{x:.1f}" y="{y + 3.5:.1f}" text-anchor="middle">{esc((e["member"] or "?")[:4])} {esc(score)}</text></g>')
+    return (f'<svg viewBox="0 0 {width} {height}" width="{width}" height="{height}" role="img" '
+            f'aria-label="what the team made, entry by entry, and what built on what">{"".join(parts)}</svg>')
+
+
+def skills_list(made):
+    skills = [e for e in made if (e["kind"] or "").lower() == "skill" and e["status"] == "valid"]
+    if not skills:
+        return ""
+    users = {s["id"]: [e for e in made if s["id"] in e["parents"]] for s in skills}
+    rows = []
+    for s in sorted(skills, key=lambda e: e.get("t") or 0):
+        used = users[s["id"]]
+        rows.append(f'<li><div><b>{esc(s["id"])}</b> by {esc(s["member"])}</div><div>{esc(s["summary"])}</div>'
+                    f'<div class="muted">' + (f"built on by {len(used)}: " + esc(", ".join(f"{u['id']} ({u['member']}, {u['kind']})" for u in used))
+                                              if used else "not built on yet") + '</div></li>')
+    return '<h2>Tools the team wrote for itself</h2><ul class="cards">' + "".join(rows) + "</ul>"
+
+
+def calls_in(turn, tools, t0):
+    s = turn.get("start") or turn.get("t", t0)
+    e = turn.get("end") or (s + (turn.get("seconds") or 0))
+    return [c for c in tools if c.get("agent") == turn.get("member") and isinstance(c.get("t"), (int, float)) and s - 1 <= c["t"] <= e + 1]
+
+
+def gather_list(turns, tools, t0):
+    rows = []
+    for t in sorted(turns, key=lambda t: t.get("start") or t.get("t") or 0):
+        calls = calls_in(t, tools, t0)
+        if not calls:
+            continue
+        web = [c["what"] for c in calls if tool_class(c["tool"]) == "web"]
+        pages = list(dict.fromkeys(re.sub(r"^https?://([^/]+).*$", r"\1", c["what"]) for c in calls if tool_class(c["tool"]) == "fetch"))
+        files = list(dict.fromkeys(os.path.basename(c["what"]) or c["what"] for c in calls if tool_class(c["tool"]) == "read"))
+        lines = []
+        if web:
+            lines.append(f"searched {times(len(web))}: " + "; ".join(web[:8]) + (f" (and {len(web) - 8} more)" if len(web) > 8 else ""))
+        if pages:
+            lines.append(f"fetched {len(pages)} sites: " + ", ".join(pages[:8]))
+        if files:
+            lines.append(f"read {len(files)} files: " + ", ".join(files[:8]))
+        verdict = f" · {t['status']}" + (f" {t['score']:.6g}" if isinstance(t.get("score"), (int, float)) else "") if t.get("status") else ""
+        rows.append(f'<li data-added="{t.get("start") or t.get("t") or 0}"><div><b>{esc(t["member"])}</b> · turn {esc(t.get("turn"))} · '
+                    f'todo {esc(t.get("todo"))}{esc(verdict)}</div>' + "".join(f'<div class="muted">{esc(x)}</div>' for x in lines) + "</li>")
+    return f'<ul class="cards" id="gather">{"".join(rows) or "<li>no tool calls recorded</li>"}</ul>'
 
 
 def best_svg(t0, t1, turns):
@@ -276,7 +417,7 @@ def wake_list(wakes, t0):
     return f'<ul class="cards" id="wakes">{"".join(rows) or "<li>the planner has not been woken yet</li>"}</ul>'
 
 
-SCRIPT = '(function () {\n  "use strict";\n  var el = document.getElementById("run-data"), svg = document.getElementById("timeline");\n  if (!el || !svg) { return; }\n  var D;\n  try { D = JSON.parse(el.textContent); } catch (err) { return; }\n  var span = Math.max(D.t1 - D.t0, 1e-6), TOP = +svg.getAttribute("data-top"), PH = +svg.getAttribute("data-h");\n  function Y(t) { return TOP + (t - D.t0) / span * PH; }\n  function $(id) { return document.getElementById(id); }\n  function fmt(v) { return String(Math.round(v * 1e6) / 1e6); }\n  function all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }\n  var texts = ["s-events", "s-planner", "s-todos", "s-members", "s-judge", "a-wake", "a-todo", "a-take", "a-answer"];\n  var original = {};\n  texts.forEach(function (id) { if ($(id)) { original[id] = $(id).textContent; } });\n  var bars = all(".bar", svg), lines = all(".event", svg), now = $("now");\n  var todoCards = all("#todos li[data-added]"), wakeCards = all("#wakes li[data-s]");\n  bars.forEach(function (g) {\n    var r = g.querySelector("rect");\n    g._y = +r.getAttribute("y"); g._h = +r.getAttribute("height");\n    g._s = +g.getAttribute("data-s"); g._e = +g.getAttribute("data-e");\n    g.style.cursor = "pointer";\n    g.addEventListener("click", function () { show(g.getAttribute("data-i")); });\n  });\n  var slot = $("player");\n  slot.innerHTML = \'<button type="button" id="play">▶ Replay</button>\' +\n    \'<input type="range" id="scrub" min="0" max="1000" step="1" value="1000" aria-label="time in the run">\' +\n    \'<span id="clock" class="muted"></span>\';\n  var play = $("play"), scrub = $("scrub"), clock = $("clock"), detail = $("detail");\n  var playing = false, t = D.t1, last = 0, rate = Math.max(1, span / 24);\n  function setText(id, text) { var n = $(id); if (n) { n.textContent = text; } }\n  function setOn(id, on) { var n = $(id); if (n) { n.classList.toggle("on", !!on); } }\n  function count(list, test) { var n = 0; list.forEach(function (x) { if (test(x)) { n += 1; } }); return n; }\n  function at(time) {\n    t = time;\n    bars.forEach(function (g) {\n      var r = g.querySelector("rect");\n      if (time < g._s) { g.style.opacity = "0"; return; }\n      g.style.opacity = "1";\n      r.setAttribute("height", (time >= g._e ? g._h : Math.max(3, Y(time) - g._y)).toFixed(1));\n      g.classList.toggle("live", time < g._e);\n    });\n    lines.forEach(function (l) { l.style.opacity = +l.getAttribute("data-t") <= time ? "1" : "0"; });\n    now.setAttribute("y1", Y(time).toFixed(1)); now.setAttribute("y2", Y(time).toFixed(1));\n    now.style.opacity = "1";\n    var flash = Math.max(0.6, span / 60);\n    var planning = D.wakes.some(function (w) { return w.s <= time && time < w.e; });\n    var working = D.turns.filter(function (m) { return m.s <= time && time < m.e; });\n    var ended = D.turns.filter(function (m) { return m.e <= time; });\n    var judged = ended.some(function (m) { return time - m.e < flash; });\n    setOn("n-planner", planning); setOn("n-members", working.length > 0); setOn("n-judge", judged);\n    setOn("n-events", judged || D.wakes.some(function (w) { return w.s <= time && time - w.s < flash; }));\n    var woke = {};\n    D.wakes.forEach(function (w) { if (w.s <= time) { woke[w.wake] = 1; } });\n    var back = count(D.wakes, function (w) { return w.e <= time && w.kind === "planback"; });\n    var added = count(D.todos, function (x) { return x.added <= time; });\n    var dropped = count(D.todos, function (x) { return x.state === "dropped" && x.ended <= time; });\n    var taken = count(D.todos, function (x) { return x.taken && x.taken <= time; });\n    var done = count(D.todos, function (x) { return x.state === "done" && x.ended <= time; });\n    var failed = count(D.todos, function (x) { return x.state === "failed" && x.ended <= time; });\n    var answers = count(ended, function (m) { return m.kind === "result"; });\n    var valid = ended.filter(function (m) { return m.status === "valid"; });\n    var invalid = count(ended, function (m) { return m.status === "invalid"; });\n    var best = null;\n    valid.forEach(function (m) { if (best === null || m.score > best) { best = m.score; } });\n    var nw = Object.keys(woke).length;\n    setText("a-wake", "woke the planner " + nw + (nw === 1 ? " time" : " times") + (back ? " (" + back + " sent back)" : ""));\n    setText("a-todo", added + " todos added, " + dropped + " dropped");\n    setText("a-take", taken + " todos taken");\n    setText("a-answer", answers + " answers" + (ended.length > answers ? ", " + (ended.length - answers) + " without one" : ""));\n    setText("s-todos", (added - taken - dropped) + " open · " + (taken - done - failed) + " taken · " + done + " done · " + failed + " failed");\n    setText("s-members", working.length ? "working now: " + working.map(function (m) { return m.member + " on " + m.todo; }).join(", ") : "waiting for a todo");\n    setText("s-planner", planning ? "planning now" : original["s-planner"]);\n    setText("s-judge", valid.length + " valid, " + invalid + " invalid; " + (best === null ? "no valid answer yet" : "best " + fmt(best)));\n    todoCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-added") > time); });\n    wakeCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-s") > time); });\n    clock.textContent = (time - D.t0).toFixed(1) + " s of " + span.toFixed(0) + " s";\n    scrub.value = String(Math.round((time - D.t0) / span * 1000));\n  }\n  function rest() {\n    bars.forEach(function (g) { g.style.opacity = "1"; g.classList.remove("live"); g.querySelector("rect").setAttribute("height", g._h.toFixed(1)); });\n    lines.forEach(function (l) { l.style.opacity = "1"; });\n    now.style.opacity = "0";\n    ["n-events", "n-planner", "n-todos", "n-members", "n-judge"].forEach(function (id) { setOn(id, false); });\n    Object.keys(original).forEach(function (id) { setText(id, original[id]); });\n    todoCards.concat(wakeCards).forEach(function (li) { li.classList.remove("future"); });\n    clock.textContent = span.toFixed(0) + " s in all" + (D.finished ? "" : " so far");\n    scrub.value = "1000";\n    t = D.t1;\n  }\n  function stop() { playing = false; play.textContent = "▶ Replay"; }\n  function frame(ts) {\n    if (!playing) { return; }\n    var next = t + (last ? (ts - last) / 1000 : 0) * rate;\n    last = ts;\n    if (next >= D.t1) { stop(); rest(); return; }\n    at(next);\n    window.requestAnimationFrame(frame);\n  }\n  play.addEventListener("click", function () {\n    if (playing) { stop(); return; }\n    playing = true; last = 0; play.textContent = "❚❚ Pause";\n    if (t >= D.t1) { at(D.t0); }\n    window.requestAnimationFrame(frame);\n  });\n  scrub.addEventListener("input", function () {\n    stop();\n    var v = +scrub.value;\n    if (v >= 1000) { rest(); } else { at(D.t0 + v / 1000 * span); }\n  });\n  function show(key) {\n    var item = key.charAt(0) === "w" ? D.wakes[+key.slice(1)] : D.turns[+key.slice(1)];\n    if (!item) { return; }\n    var out = [];\n    if (key.charAt(0) === "w") {\n      out.push("planner wake " + item.wake + ", attempt " + item.attempt + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("woken because: " + item.reason);\n      if (item.added && item.added.length) { out.push("added " + item.added.join(", ")); }\n      if (item.dropped && item.dropped.length) { out.push("dropped " + item.dropped.join(", ")); }\n      if (item.problems && item.problems.length) { out.push("sent back: " + item.problems.join("; ")); }\n      if (item.done) { out.push("said the task is done"); }\n      if (item.why) { out.push(item.why); }\n    } else {\n      var todo = D.todos.filter(function (x) { return x.id === item.todo; })[0] || {};\n      out.push(item.member + ", turn " + item.turn + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("todo " + item.todo + ": " + (todo.text || ""));\n      out.push((item.status || item.state || "") + (typeof item.score === "number" ? " · score " + fmt(item.score) : "") + (item.entry ? " · entry " + item.entry : ""));\n      if (item.problem) { out.push(item.problem); }\n    }\n    detail.textContent = "";\n    out.forEach(function (line) { var d = document.createElement("div"); d.textContent = line; detail.appendChild(d); });\n    detail.hidden = false;\n  }\n  rest();\n  if (!D.finished) {\n    window.setTimeout(function again() {\n      if (!playing && +scrub.value >= 1000) { window.location.reload(); } else { window.setTimeout(again, 4000); }\n    }, 5000);\n  }\n})();'
+SCRIPT = '(function () {\n  "use strict";\n  var el = document.getElementById("run-data"), svg = document.getElementById("timeline");\n  if (!el || !svg) { return; }\n  var D;\n  try { D = JSON.parse(el.textContent); } catch (err) { return; }\n  var span = Math.max(D.t1 - D.t0, 1e-6), TOP = +svg.getAttribute("data-top"), PH = +svg.getAttribute("data-h");\n  function Y(t) { return TOP + (t - D.t0) / span * PH; }\n  function $(id) { return document.getElementById(id); }\n  function fmt(v) { return String(Math.round(v * 1e6) / 1e6); }\n  function all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }\n  var texts = ["s-events", "s-planner", "s-todos", "s-members", "s-judge", "a-wake", "a-todo", "a-take", "a-answer"];\n  var original = {};\n  texts.forEach(function (id) { if ($(id)) { original[id] = $(id).textContent; } });\n  var bars = all(".bar", svg), lines = all(".timed"), now = $("now");\n  var todoCards = all("#todos li[data-added], #gather li[data-added]"), wakeCards = all("#wakes li[data-s]");\n  bars.forEach(function (g) {\n    var r = g.querySelector("rect");\n    g._y = +r.getAttribute("y"); g._h = +r.getAttribute("height");\n    g._s = +g.getAttribute("data-s"); g._e = +g.getAttribute("data-e");\n    g.style.cursor = "pointer";\n    g.addEventListener("click", function () { show(g.getAttribute("data-i")); });\n  });\n  var slot = $("player");\n  slot.innerHTML = \'<button type="button" id="play">▶ Replay</button>\' +\n    \'<input type="range" id="scrub" min="0" max="1000" step="1" value="1000" aria-label="time in the run">\' +\n    \'<span id="clock" class="muted"></span>\';\n  var play = $("play"), scrub = $("scrub"), clock = $("clock"), detail = $("detail");\n  var playing = false, t = D.t1, last = 0, rate = Math.max(1, span / 24);\n  function setText(id, text) { var n = $(id); if (n) { n.textContent = text; } }\n  function setOn(id, on) { var n = $(id); if (n) { n.classList.toggle("on", !!on); } }\n  function count(list, test) { var n = 0; list.forEach(function (x) { if (test(x)) { n += 1; } }); return n; }\n  function at(time) {\n    t = time;\n    bars.forEach(function (g) {\n      var r = g.querySelector("rect");\n      if (time < g._s) { g.style.opacity = "0"; return; }\n      g.style.opacity = "1";\n      r.setAttribute("height", (time >= g._e ? g._h : Math.max(3, Y(time) - g._y)).toFixed(1));\n      g.classList.toggle("live", time < g._e);\n    });\n    lines.forEach(function (l) { l.style.opacity = +l.getAttribute("data-t") <= time ? "1" : "0"; });\n    now.setAttribute("y1", Y(time).toFixed(1)); now.setAttribute("y2", Y(time).toFixed(1));\n    now.style.opacity = "1";\n    var flash = Math.max(0.6, span / 60);\n    var planning = D.wakes.some(function (w) { return w.s <= time && time < w.e; });\n    var working = D.turns.filter(function (m) { return m.s <= time && time < m.e; });\n    var ended = D.turns.filter(function (m) { return m.e <= time; });\n    var judged = ended.some(function (m) { return time - m.e < flash; });\n    setOn("n-planner", planning); setOn("n-members", working.length > 0); setOn("n-judge", judged);\n    setOn("n-events", judged || D.wakes.some(function (w) { return w.s <= time && time - w.s < flash; }));\n    var woke = {};\n    D.wakes.forEach(function (w) { if (w.s <= time) { woke[w.wake] = 1; } });\n    var back = count(D.wakes, function (w) { return w.e <= time && w.kind === "planback"; });\n    var added = count(D.todos, function (x) { return x.added <= time; });\n    var dropped = count(D.todos, function (x) { return x.state === "dropped" && x.ended <= time; });\n    var taken = count(D.todos, function (x) { return x.taken && x.taken <= time; });\n    var done = count(D.todos, function (x) { return x.state === "done" && x.ended <= time; });\n    var failed = count(D.todos, function (x) { return x.state === "failed" && x.ended <= time; });\n    var answers = count(ended, function (m) { return m.kind === "result"; });\n    var valid = ended.filter(function (m) { return m.status === "valid"; });\n    var invalid = count(ended, function (m) { return m.status === "invalid"; });\n    var best = null;\n    valid.forEach(function (m) { if (best === null || m.score > best) { best = m.score; } });\n    var nw = Object.keys(woke).length;\n    setText("a-wake", "woke the planner " + nw + (nw === 1 ? " time" : " times") + (back ? " (" + back + " sent back)" : ""));\n    setText("a-todo", added + " todos added, " + dropped + " dropped");\n    setText("a-take", taken + " todos taken");\n    setText("a-answer", answers + " answers" + (ended.length > answers ? ", " + (ended.length - answers) + " without one" : ""));\n    setText("s-todos", (added - taken - dropped) + " open · " + (taken - done - failed) + " taken · " + done + " done · " + failed + " failed");\n    setText("s-members", working.length ? "working now: " + working.map(function (m) { return m.member + " on " + m.todo; }).join(", ") : "waiting for a todo");\n    setText("s-planner", planning ? "planning now" : original["s-planner"]);\n    setText("s-judge", valid.length + " valid, " + invalid + " invalid; " + (best === null ? "no valid answer yet" : "best " + fmt(best)));\n    todoCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-added") > time); });\n    wakeCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-s") > time); });\n    clock.textContent = (time - D.t0).toFixed(1) + " s of " + span.toFixed(0) + " s";\n    scrub.value = String(Math.round((time - D.t0) / span * 1000));\n  }\n  function rest() {\n    bars.forEach(function (g) { g.style.opacity = "1"; g.classList.remove("live"); g.querySelector("rect").setAttribute("height", g._h.toFixed(1)); });\n    lines.forEach(function (l) { l.style.opacity = "1"; });\n    now.style.opacity = "0";\n    ["n-events", "n-planner", "n-todos", "n-members", "n-judge"].forEach(function (id) { setOn(id, false); });\n    Object.keys(original).forEach(function (id) { setText(id, original[id]); });\n    todoCards.concat(wakeCards).forEach(function (li) { li.classList.remove("future"); });\n    clock.textContent = span.toFixed(0) + " s in all" + (D.finished ? "" : " so far");\n    scrub.value = "1000";\n    t = D.t1;\n  }\n  function stop() { playing = false; play.textContent = "▶ Replay"; }\n  function frame(ts) {\n    if (!playing) { return; }\n    var next = t + (last ? (ts - last) / 1000 : 0) * rate;\n    last = ts;\n    if (next >= D.t1) { stop(); rest(); return; }\n    at(next);\n    window.requestAnimationFrame(frame);\n  }\n  play.addEventListener("click", function () {\n    if (playing) { stop(); return; }\n    playing = true; last = 0; play.textContent = "❚❚ Pause";\n    if (t >= D.t1) { at(D.t0); }\n    window.requestAnimationFrame(frame);\n  });\n  scrub.addEventListener("input", function () {\n    stop();\n    var v = +scrub.value;\n    if (v >= 1000) { rest(); } else { at(D.t0 + v / 1000 * span); }\n  });\n  function show(key) {\n    var item = key.charAt(0) === "w" ? D.wakes[+key.slice(1)] : D.turns[+key.slice(1)];\n    if (!item) { return; }\n    var out = [];\n    if (key.charAt(0) === "w") {\n      out.push("planner wake " + item.wake + ", attempt " + item.attempt + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("woken because: " + item.reason);\n      if (item.added && item.added.length) { out.push("added " + item.added.join(", ")); }\n      if (item.dropped && item.dropped.length) { out.push("dropped " + item.dropped.join(", ")); }\n      if (item.problems && item.problems.length) { out.push("sent back: " + item.problems.join("; ")); }\n      if (item.done) { out.push("said the task is done"); }\n      if (item.why) { out.push(item.why); }\n    } else {\n      var todo = D.todos.filter(function (x) { return x.id === item.todo; })[0] || {};\n      out.push(item.member + ", turn " + item.turn + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("todo " + item.todo + ": " + (todo.text || ""));\n      out.push((item.status || item.state || "") + (typeof item.score === "number" ? " · score " + fmt(item.score) : "") + (item.entry ? " · entry " + item.entry : ""));\n      if (item.problem) { out.push(item.problem); }\n      var web = [], got = [], read = [];\n      (item.tools || []).forEach(function (c) { var n = (c[0] || "").toLowerCase(); if (n === "websearch") { web.push(c[1]); } else if (n === "webfetch") { got.push(c[1]); } else { read.push(c[1]); } });\n      if (web.length) { out.push("searched: " + web.join("; ")); }\n      if (got.length) { out.push("fetched: " + got.join(", ")); }\n      if (read.length) { out.push("read: " + read.join(", ")); }\n    }\n    detail.textContent = "";\n    out.forEach(function (line) { var d = document.createElement("div"); d.textContent = line; detail.appendChild(d); });\n    detail.hidden = false;\n  }\n  rest();\n  if (!D.finished) {\n    window.setTimeout(function again() {\n      if (!playing && +scrub.value >= 1000) { window.location.reload(); } else { window.setTimeout(again, 4000); }\n    }, 5000);\n  }\n})();'
 
 
 PAGE = """<!doctype html>
@@ -331,6 +472,13 @@ h1 {{ font-size:1.25rem; margin:0; overflow-wrap:anywhere; }} h2 {{ font-size:1r
 .node.on rect {{ fill:var(--run-bg); stroke-width:3.5; }} .bar.live rect {{ stroke-width:2.5; }}
 .now {{ stroke:var(--accent); stroke-width:2; }} .future {{ opacity:.3; }}
 .detail {{ background:var(--surface); border:1px solid var(--rule); border-radius:8px; padding:8px 10px; font-size:.86rem; overflow-wrap:anywhere; }}
+.tool.web {{ fill:var(--accent); }} .tool.fetch {{ fill:var(--wait); }} .tool.read {{ fill:var(--muted); }}
+.dot {{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }}
+.dot.web {{ background:var(--accent); }} .dot.fetch {{ background:var(--wait); }} .dot.read {{ background:var(--muted); }}
+.lin {{ fill:none; stroke:var(--muted); stroke-width:1.2; opacity:.75; }} .kh {{ fill:var(--ink); font-size:11px; font-weight:600; }}
+.kb rect {{ stroke-width:1.5; }} .kb text {{ font-size:9.5px; fill:var(--ink); }}
+.kb.pass rect {{ fill:var(--pass-bg); stroke:var(--pass); }} .kb.fail rect {{ fill:var(--fail-bg); stroke:var(--fail); }}
+.kb.wait rect {{ fill:var(--surface); stroke:var(--muted); stroke-dasharray:3 2; }}
 </style></head>
 <body><main>
 <h1>{title}</h1>
@@ -343,10 +491,18 @@ h1 {{ font-size:1.25rem; margin:0; overflow-wrap:anywhere; }} h2 {{ font-size:1r
 <div class="fig">{timeline}</div>
 <div class="legend"><span><i class="plan"></i>planner turn</span><span><i class="planback"></i>planner reply sent back</span>
 <span><i class="pass"></i>valid answer</span><span><i class="fail"></i>invalid answer or failure</span><span><i class="bad"></i>backend broke</span>
-<span><i class="none"></i>no answer or still running</span><span>dotted line: a result that woke the planner</span></div>
+<span><i class="none"></i>no answer or still running</span><span>dotted line: a result that woke the planner</span>
+<span><b class="dot web"></b>web search</span><span><b class="dot fetch"></b>page fetched</span><span><b class="dot read"></b>file read</span></div>
 <div class="detail" id="detail" hidden></div>
 <h2>Best verified score over time</h2>
 <div class="fig">{best}</div>
+<h2>What the team made, and what built on what</h2>
+<div class="fig">{lineage}</div>
+<div class="legend"><span><i class="pass"></i>verified (member, score)</span><span><i class="fail"></i>did not pass</span>
+<span>a line runs from an entry to each one that built on it</span></div>
+{skills}
+<h2>How the team gathered information</h2>
+{gather}
 <h2>Every todo</h2>
 {todos}
 <h2>Every planner turn</h2>
@@ -359,7 +515,7 @@ h1 {{ font-size:1.25rem; margin:0; overflow-wrap:anywhere; }} h2 {{ font-size:1r
 
 
 def render(out):
-    engine, turns, todos, summary = load(out)
+    engine, turns, todos, summary, made, tools = load(out)
     start = next((e for e in engine if e.get("kind") == "start"), {})
     stop = next((e for e in engine if e.get("kind") == "stop"), None)
     wakes = [e for e in engine if e.get("kind") == "wake"]
@@ -394,13 +550,15 @@ def render(out):
             "turns": [{"member": t.get("member"), "turn": t.get("turn"), "todo": t.get("todo"), "s": t.get("start") or t.get("t", t0),
                        "e": t.get("end") or (t.get("t", t0) + (t.get("seconds") or 0)), "kind": t.get("kind"),
                        "status": t.get("status"), "score": t.get("score"), "state": t.get("state"), "entry": t.get("entry"),
-                       "problem": t.get("problem")} for t in turns],
+                       "problem": t.get("problem"),
+                       "tools": [[c["tool"], c["what"]] for c in calls_in(t, tools, t0)][:40]} for t in turns],
             "todos": [{"id": t["id"], "text": t.get("text"), "added": t.get("added") or 0, "taken": t.get("taken"),
                        "ended": t.get("ended"), "state": t["state"]} for t in todos]}
     blob = json.dumps(data, ensure_ascii=True).replace("</", "<\\/")
     return PAGE.format(title=title, when=when, chips="".join(chips), data=blob, script=SCRIPT,
                        loop=loop_svg(start, wakes, turns, todos, summary, members, planner),
-                       timeline=timeline_svg(t0, t1, wakes, turns, members, stop.get("why") if stop else None),
+                       timeline=timeline_svg(t0, t1, wakes, turns, members, stop.get("why") if stop else None, tools),
+                       lineage=lineage_svg(made), skills=skills_list(made), gather=gather_list(turns, tools, t0),
                        best=best_svg(t0, t1, turns), todos=todo_list(todos, t0), wakes=wake_list(wakes, t0))
 
 

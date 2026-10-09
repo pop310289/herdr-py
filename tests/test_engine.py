@@ -400,7 +400,7 @@ class ViewTest(Base):
         with open(os.path.join(self.out, "view.html")) as handle:
             page = handle.read()
         for marker in ('id="n-planner"', 'id="a-wake"', 'id="timeline"', 'class="ln">planner<', 'class="ln">a<', 'class="ln">b<',
-                       'class="bar pass"', 'class="bar fail"', 'class="event"', "stopped: the member turns are used up"):
+                       'class="bar pass"', 'class="bar fail"', 'class="event timed"', "stopped: the member turns are used up"):
             self.assertIn(marker, page)
         todos = TeamKB(os.path.join(self.out, "kb")).todo_list()
         for t in todos:
@@ -412,6 +412,48 @@ class ViewTest(Base):
         self.assertEqual((len(data["turns"]), len(data["todos"]), data["finished"]), (2, 2, True))
         self.assertTrue(all(t["s"] <= t["e"] for t in data["turns"] + data["wakes"]))
         self.assertIn('class="player" id="player"></div>', page)  # empty without JavaScript: hidden by .player:empty
+
+    def test_the_page_shows_the_tools_each_turn_used_and_what_built_on_what(self):
+        os.makedirs(os.path.join(self.out, "kb", "artifacts"))
+        os.makedirs(os.path.join(self.out, "members", "claude"))
+        rows = {"engine.jsonl": [{"t": 100.0, "kind": "start", "members": ["a", "b"], "planner": "plan", "turns": 4},
+                                 {"t": 100.5, "start": 100.1, "end": 100.5, "kind": "wake", "wake": 1, "attempt": 1,
+                                  "reason": "the run started", "state": "idle", "added": ["t1"], "dropped": []}],
+                "run.jsonl": [{"t": 101.0, "start": 101.0, "end": 110.0, "turn": 1, "member": "a", "todo": "t1", "state": "idle",
+                               "kind": "result", "status": "valid", "score": 6, "entry": "kskill"},
+                              {"t": 111.0, "start": 111.0, "end": 120.0, "turn": 2, "member": "b", "todo": "t2", "state": "idle",
+                               "kind": "result", "status": "valid", "score": 90, "entry": "kanim"}]}
+        for name, items in rows.items():
+            with open(os.path.join(self.out, name), "w") as handle:
+                handle.write("".join(json.dumps(r) + "\n" for r in items))
+        for rel, text in (("artifacts/s.txt", "ARTIFACT: skill\n---"), ("artifacts/a.txt", "ARTIFACT: animation\n<html>")):
+            with open(os.path.join(self.out, "kb", rel), "w") as handle:
+                handle.write(text)
+        kb = [{"type": "propose", "id": "kskill", "t": 109.0, "member": "a", "summary": "how to draw a walking couple",
+               "parents": [], "kind": "result", "artifact": "artifacts/s.txt"},
+              {"type": "verdict", "id": "kskill", "status": "valid", "score": 6},
+              {"type": "propose", "id": "kanim", "t": 119.0, "member": "b", "summary": "the couple walks through day 1",
+               "parents": ["kskill"], "kind": "result", "artifact": "artifacts/a.txt"},
+              {"type": "verdict", "id": "kanim", "status": "valid", "score": 90}]
+        with open(os.path.join(self.out, "kb", "events.jsonl"), "w") as handle:
+            handle.write("".join(json.dumps(r) + "\n" for r in kb))
+        def use(t, agent, name, inp):
+            return {"t": t, "agent": agent, "event": {"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": name, "input": inp}]}}}
+        log = [use(102.0, "a", "WebSearch", {"query": "新竹 約會 <景點>"}), use(103.0, "a", "WebFetch", {"url": "https://example.org/x"}),
+               use(104.0, "a", "Read", {"file_path": "/r/board/TEAM_BOARD.md"}), use(112.0, "b", "Read", {"file_path": "/r/board/artifacts/kskill.txt"}),
+               use(150.0, "a", "WebSearch", {"query": "outside any turn"})]
+        with open(os.path.join(self.out, "members", "claude", "events.jsonl"), "w") as handle:
+            handle.write("".join(json.dumps(r) + "\n" for r in log))
+        page = engineview.render(self.out)
+        for marker in ('class="tool web timed"', 'class="tool fetch timed"', 'class="tool read timed"', 'class="lin timed"',
+                       'class="kh">skill<', 'class="kh">animation<', "Tools the team wrote for itself",
+                       "built on by 1: kanim (b, animation)", "searched 1 time: 新竹 約會 &lt;景點&gt;", "fetched 1 sites: example.org",
+                       "read 1 files: TEAM_BOARD.md", "read 1 files: kskill.txt"):
+            self.assertIn(marker, page)
+        self.assertNotIn("outside any turn", page.split('id="gather"')[1].split("</ul>")[0])  # only calls inside a turn's time
+        data = json.loads(page.split('<script type="application/json" id="run-data">')[1].split("</script>")[0])
+        self.assertEqual(data["turns"][0]["tools"][0], ["WebSearch", "新竹 約會 <景點>"])
 
     def test_a_run_still_going_is_drawn_from_what_is_there(self):
         os.makedirs(os.path.join(self.out, "kb"))
