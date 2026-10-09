@@ -68,7 +68,7 @@ elif "garbage" in act:
     print("I am not sure what to do.")
 else:
     parents = act.get("parents", "none")
-    print("SUMMARY: answered %s\nPARENTS: %s\n```\n%s\n```" % (act["answer"], parents, act["answer"]))
+    print("SUMMARY: %s\nPARENTS: %s\n```\n%s\n```" % (act.get("summary", "answered " + act["answer"]), parents, act["answer"]))
 '''
 
 # The judge: an answer that is a number is valid with that score; anything else is invalid.
@@ -620,6 +620,44 @@ class PartsTest(Base):
             self.assertEqual(engine.main(argv), 2)
         self.assertIn("a is also a member", e.getvalue())
 
+    def test_a_run_can_start_from_an_earlier_runs_verified_entries(self):
+        self.script([add({"text": "give a number", "for": "a", "parents": []}, {"text": "give one too", "for": "b", "parents": []}),
+                     add(done=True)], {"a": [{"answer": "5"}], "b": [{"answer": "not a number"}]})
+        self.assertEqual(self.run_main("--turns", "2", members=("a", "b"))[0], 0)
+        first = {e["id"]: e for e in TeamKB(os.path.join(self.out, "kb")).entries()}
+        good = next(i for i, e in first.items() if e["status"] == "valid")
+        earlier, self.out = self.out, os.path.join(self.dir, "run2")
+        shutil.rmtree(self.log)
+        self.script([add({"text": "do better than $best", "for": "a", "parents": ["$best"]}), add(done=True)],
+                    {"a": [{"answer": "3"}]})
+        code, out, err = self.run_main("--turns", "1", "--seed-from", earlier, members=("a",))
+        self.assertEqual(code, 0, err)
+        self.assertIn("carried 1 verified entries", out)
+        start = self.records("engine.jsonl")[0]
+        self.assertEqual(start["seeded"]["carried"], [good])
+        self.assertEqual(start["seeded"]["left_out"], {"not valid": 1})
+        self.assertIn(good, self.read_log("planner-01.txt"))  # the planner sees what was carried
+        self.assertIn(good, self.read_log("a-01.prompt"))  # and so does the member told to build on it
+        s = self.summary()
+        self.assertEqual((s["seeded"], s["valid"], s["best"]), (1, 1, 3.0))  # this run's own answers, not the carried 5
+        made = {e["id"]: e for e in TeamKB(os.path.join(self.out, "kb")).entries()}
+        self.assertEqual(next(e for e in made.values() if not e.get("seeded_from"))["parents"], [good])
+        third, self.out = self.out, os.path.join(self.dir, "run3")
+        shutil.rmtree(self.log)  # the stand-ins count their turns in the log: start them again
+        self.script([add("give a number"), add(done=True)], {"a": [{"answer": "4"}]})
+        code, out, err = self.run_main("--turns", "1", "--seed-from", third, "--carry", "skill", members=("a",))
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.records("engine.jsonl")[0]["seeded"]["carried"], [])  # only skills carry on: these were numbers
+        self.assertEqual(self.records("engine.jsonl")[0]["seeded"]["left_out"], {"other kind": 2})
+
+    def test_seeding_is_checked(self):
+        self.script([add(done=True)], {})
+        for extra in (["--carry", "skill"], ["--seed-skip", "k123"], ["--seed-from", os.path.join(self.dir, "nowhere")]):
+            code, _, err = self.run_main("--turns", "1", *extra)
+            self.assertEqual(code, 2, extra)
+            self.assertIn("seed", err)
+            self.assertFalse(os.path.exists(os.path.join(self.out, "kb")), extra)
+
     def test_board_reads_are_counted_from_member_logs(self):
         self.script(planner=[add(done=True)], members={})
         self.run_main("--turns", "1")
@@ -714,7 +752,7 @@ class ViewTest(Base):
         def use(t, agent, name, inp):
             return {"t": t, "agent": agent, "event": {"type": "assistant", "message": {"content": [
                 {"type": "tool_use", "name": name, "input": inp}]}}}
-        log = [use(102.0, "a", "WebSearch", {"query": "新竹 約會 <景點>"}), use(103.0, "a", "WebFetch", {"url": "https://example.org/x"}),
+        log = [use(102.0, "a", "WebSearch", {"query": "咖啡 推薦 <地點>"}), use(103.0, "a", "WebFetch", {"url": "https://example.org/x"}),
                use(104.0, "a", "Read", {"file_path": "/r/board/TEAM_BOARD.md"}), use(112.0, "b", "Read", {"file_path": "/r/board/artifacts/kskill.txt"}),
                use(150.0, "a", "WebSearch", {"query": "outside any turn"})]
         with open(os.path.join(self.out, "members", "claude", "events.jsonl"), "w") as handle:
@@ -722,12 +760,12 @@ class ViewTest(Base):
         page = engineview.render(self.out)
         for marker in ('class="tool web timed"', 'class="tool fetch timed"', 'class="tool read timed"', 'class="lin timed"',
                        'class="kh">skill<', 'class="kh">animation<', "Tools the team wrote for itself",
-                       "built on by 1: kanim (b, animation)", "searched 1 time: 新竹 約會 &lt;景點&gt;", "fetched 1 sites: example.org",
+                       "built on by 1: kanim (b, animation)", "searched 1 time: 咖啡 推薦 &lt;地點&gt;", "fetched 1 sites: example.org",
                        "read 1 files: TEAM_BOARD.md", "read 1 files: kskill.txt"):
             self.assertIn(marker, page)
         self.assertNotIn("outside any turn", page.split('id="gather"')[1].split("</ul>")[0])  # only calls inside a turn's time
         data = json.loads(page.split('<script type="application/json" id="run-data">')[1].split("</script>")[0])
-        self.assertEqual(data["turns"][0]["tools"][0], ["WebSearch", "新竹 約會 <景點>"])
+        self.assertEqual(data["turns"][0]["tools"][0], ["WebSearch", "咖啡 推薦 <地點>"])
 
     def test_the_page_lists_every_agent_and_the_runs_numbers_from_the_records(self):
         self.script(planner=[add({"text": "one", "for": "a"}, {"text": "two", "for": "b"}), add(), add(done=True)],
@@ -763,7 +801,7 @@ class ViewTest(Base):
         self.assertEqual(engineview.fit("abcdefghij", 55.0, 10), "abcdefghij")  # exactly as wide: kept whole
         cut = engineview.fit("abcdefghij", 54.9, 10)
         self.assertTrue(cut.endswith("…") and engineview.text_width(cut, 10) <= 54.9, cut)
-        self.assertEqual(engineview.text_width("新竹", 10), 20)  # a CJK character is as wide as the size
+        self.assertEqual(engineview.text_width("字寬", 10), 20)  # a CJK character is as wide as the size
         svg = engineview.loop_svg({}, [], [], [], None, ["scout", "curator", "builder", "animator", "critic"], "plan")
         self.assertIn(">members (5)<", svg)  # five names do not fit the box: the count, the names are listed under Agents
         self.assertIn(">members: a, b<", engineview.loop_svg({}, [], [], [], None, ["a", "b"], "plan"))

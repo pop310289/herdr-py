@@ -25,6 +25,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import threading
 import time
@@ -39,6 +40,17 @@ TODO_STATES = ("open", "taken", "done", "failed", "dropped")
 STATUSES = ("valid", "invalid", "infra_error")
 SCOPES = ("team", "private")
 MAX_SUMMARY = 4000
+TAG = re.compile(r"^\W*(artifact|kind)\s*:\s*([A-Za-z][\w-]*)", re.I)  # an artifact may name its kind on its first line
+
+
+def artifact_kind(path):
+    """The kind an artifact names on its first line ("ARTIFACT: skill", "kind: data"), in lower case, or None."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            m = TAG.match(handle.readline())
+    except OSError:
+        return None
+    return m.group(2).lower() if m else None
 
 
 class TeamKBError(ValueError):
@@ -155,6 +167,72 @@ class TeamKB:
                 handle.write(data)
             os.replace(tmp, path)
         return sha, rel
+
+    # ---- starting from an earlier run
+    def seed(self, source, kinds=None, skip=(), origin=None):
+        """Start this knowledge base, which must have no events yet, from the verified entries of another one (the
+        folder source, e.g. an earlier run's kb/): every entry whose latest verdict is valid is copied with that verdict
+        and its artifact, keeping its id, author and time, and marked seeded_from (origin, or the folder). kinds: copy
+        only entries whose artifact names one of these kinds on its first line (or whose entry kind is one of them);
+        skip: entry ids never copied (a person excluded them). A parent that is not copied is left out, so no copied
+        entry points at one this base does not have; an artifact whose bytes changed since its verdict is not copied.
+        The source is only read. Returns what was copied and how many were left out, by reason."""
+        kinds = {k.lower() for k in kinds} if kinds else None
+        skip, origin = set(skip or ()), origin or os.path.abspath(source)
+        proposals, verdicts = collections.OrderedDict(), {}
+        path = os.path.join(source, "events.jsonl")
+        if not os.path.isfile(path):
+            raise TeamKBError(f"seed: no knowledge base at {source} (no events.jsonl)")
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if event.get("type") == "propose" and event.get("id") not in proposals:
+                    proposals[event["id"]] = event
+                elif event.get("type") == "verdict" and event.get("id") in proposals:
+                    verdicts[event["id"]] = event
+        out = {"from": origin, "carried": [], "kinds": collections.Counter(), "parents_dropped": 0,
+               "left_out": collections.Counter()}
+        with self.lock:
+            self._catch_up()
+            if self.version:
+                raise TeamKBError("seed: this knowledge base already has events; seed a new one")
+        for eid, p in proposals.items():
+            v = verdicts.get(eid)
+            if not v or v.get("status") != "valid":
+                out["left_out"]["not valid"] += 1
+                continue
+            if eid in skip:
+                out["left_out"]["excluded"] += 1
+                continue
+            data, kind = None, (p.get("kind") or "").lower()
+            if p.get("artifact"):
+                try:
+                    with open(os.path.join(source, p["artifact"]), "rb") as handle:
+                        data = handle.read()
+                except OSError:
+                    out["left_out"]["artifact missing"] += 1
+                    continue
+                if digest(data) != p.get("sha"):
+                    out["left_out"]["artifact changed"] += 1
+                    continue
+                named = TAG.match(data[:200].decode("utf-8", "replace").split("\n", 1)[0])
+                kind = named.group(2).lower() if named else kind
+            if kinds is not None and kind not in kinds:
+                out["left_out"]["other kind"] += 1
+                continue
+            if data is not None:
+                self._store(data, p["artifact"])
+            parents = [q for q in p.get("parents") or [] if q in out["carried"]]
+            out["parents_dropped"] += len(p.get("parents") or []) - len(parents)
+            self._write(dict(p, parents=parents, seeded_from=origin))
+            self._write(dict(v, seeded_from=origin))
+            out["carried"].append(eid)
+            out["kinds"][kind] += 1
+        out["kinds"], out["left_out"] = dict(out["kinds"]), dict(out["left_out"])
+        return out
 
     # ---- what members do
     def propose(self, member, kind, summary, artifact=None, name=None, path=None, parents=(), round=None, session=None,

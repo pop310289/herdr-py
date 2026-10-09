@@ -24,6 +24,11 @@ todo is taken and the planner is not woken; running turns finish), `resume`, `st
 within a quarter second, and recorded in engine.jsonl. Records: kb/ (entries, verdicts and todos: python3 -m herdr_py.teamkb), run.jsonl (every member
 turn: its todo, the board version and the hash of the prompt it was given, state, seconds, tokens, verdict),
 engine.jsonl (every planner turn: why it was woken, what it changed or why it was sent back) and summary.json.
+A run can start from an earlier one: --seed-from RUN_DIR copies that run's verified entries (with their verdicts and
+files; --carry KIND keeps only artifacts that name one of these kinds on their first line, --seed-skip ID leaves one
+out) into this run's knowledge base before the first prompt (TeamKB.seed), so the team starts with what it already
+found and the skills it wrote; carried entries keep their ids and are marked seeded_from, the start record says what was
+carried, and the summary counts only this run's answers.
 Exit codes: 0 a valid answer was found, 1 none, 2 bad arguments, 3 stopped because the setup broke
 (--stop-on-infra-error: a member's backend or the judge broke, not an answer).
 """
@@ -152,7 +157,7 @@ class EngineRun:
     def __init__(self, task, judge, members, names, planner, out, turns, planner_wakes=None, max_open=None, max_todos=None,
                  target=None, patience=0, about=None, results=3, failures=3, answer_bytes=6000, answer_name="answer.txt",
                  turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2, member_access="read",
-                 time_limit=None):
+                 time_limit=None, seeded=None):
         if not names:
             raise ValueError("no members")
         if planner in names:
@@ -185,6 +190,7 @@ class EngineRun:
         self.wake_reasons = ["the run started"]  # wake now: the start, or no todo left with nobody working
         self.ended_since_wake = []  # todos ended since the planner was last woken: a wake when someone is free, or a whole lap
         self.time_limit, self.started = time_limit, time.monotonic()
+        self.seeded = seeded  # what the knowledge base was started with (TeamKB.seed), recorded in the start record
         self.paused, self.paused_at, self.paused_seconds, self.control_at = False, None, 0.0, 0  # a person's commands
         self.said_done, self.stopping, self.broken = False, None, []
         self.best, self.since_best, self.progress = None, 0, []
@@ -554,7 +560,7 @@ class EngineRun:
         self.record(self.elog, self.wake_records, {"t": round(started, 3), "kind": "start", "members": self.names,
                                                   "planner": self.planner, "turns": self.turns,
                                                   "planner_wakes": self.planner_wakes, "max_open": self.max_open,
-                                                  "time_limit": self.time_limit})
+                                                  "time_limit": self.time_limit, "seeded": self.seeded})
         threads = []
         with self.cond:
             while True:
@@ -638,8 +644,10 @@ class EngineRun:
 
     def summary(self, seconds):
         s = self.kb.stats()
-        valid = [e for e in self.kb.entries() if e["status"] == "valid"]
+        mine = [e for e in self.kb.entries() if not e.get("seeded_from")]  # entries carried in from an earlier run are not this run's
+        valid = [e for e in mine if e["status"] == "valid"]
         best = max(valid, key=lambda e: (e["score"], -e["t"]), default=None)
+        statuses = collections.Counter(e["status"] for e in mine)
         turns, wakes = self.turn_records, [w for w in self.wake_records if w.get("kind") == "wake"]
         member_tokens = [t["tokens"] for t in turns if t.get("tokens") is not None]
         planner_tokens = [w["tokens"] for w in wakes if w.get("tokens") is not None]
@@ -651,7 +659,8 @@ class EngineRun:
                 "planner_wakes": self.wakes, "planner_turns": len(wakes),
                 "planner_refused": sum(1 for w in wakes if w.get("problems") and w.get("state") == "idle"),
                 "answers": sum(1 for t in turns if t.get("kind") == "result"),
-                "valid": s["valid"], "invalid": s["invalid"], "judge_errors": s["infra_error"],
+                "valid": statuses["valid"], "invalid": statuses["invalid"], "judge_errors": statuses["infra_error"],
+                "seeded": len(self.kb.entries()) - len(mine),
                 "best": best["score"] if best else None, "best_entry": best["id"] if best else None,
                 "best_member": best["member"] if best else None, "progress": self.progress,
                 "todos": dict(collections.Counter(t["state"] for t in todos)), "todos_total": len(todos),
@@ -727,6 +736,10 @@ def main(argv=None):
     ap.add_argument("--stop-on-infra-error", action="store_true",
                     help="stop when a member's backend or the judge breaks (exit code 3)")
     ap.add_argument("--time-limit", type=float, metavar="S", help="start no new work after this many seconds (running turns finish)")
+    ap.add_argument("--seed-from", metavar="RUN_DIR", help="start the knowledge base from an earlier run's verified entries")
+    ap.add_argument("--carry", action="append", default=[], metavar="KIND",
+                    help="with --seed-from: carry only artifacts of this kind (repeat; default: every verified entry)")
+    ap.add_argument("--seed-skip", action="append", default=[], metavar="ENTRY", help="with --seed-from: never carry this entry")
     ap.add_argument("--member-access", choices=["read", "research"], default="read",
                     help="read (default): members read the board folder; research: and search the web (Claude members)")
     a = ap.parse_args(argv)
@@ -765,9 +778,29 @@ def main(argv=None):
     turns = a.turns if a.turns is not None else 3 * max(1, len(names))
     if turns < 1:
         problems.append("--turns: 1 or more")
+    source = None
+    if a.seed_from:
+        source = next((d for d in (os.path.join(a.seed_from, "kb"), a.seed_from)
+                       if os.path.isfile(os.path.join(d, "events.jsonl"))), None)
+        if source is None:
+            problems.append(f"--seed-from: no knowledge base in {a.seed_from} (neither kb/events.jsonl nor events.jsonl)")
+    elif a.carry or a.seed_skip:
+        problems.append("--carry and --seed-skip go with --seed-from")
     if problems:
         print("herdr-py engine: " + "; ".join(problems), file=sys.stderr)
         return 2
+    seeded = None
+    if source is not None:
+        try:
+            seeded = TeamKB(os.path.join(a.out, "kb")).seed(source, kinds=a.carry or None, skip=a.seed_skip,
+                                                         origin=os.path.abspath(a.seed_from))
+        except TeamKBError as exc:
+            print(f"herdr-py engine: --seed-from: {exc}", file=sys.stderr)
+            return 2
+        print(f"carried {len(seeded['carried'])} verified entries from {a.seed_from}"
+              + (f" ({', '.join(f'{n} {k}' for k, n in sorted(seeded['kinds'].items()))})" if seeded["kinds"] else "")
+              + (f"; left out {', '.join(f'{n} {k}' for k, n in sorted(seeded['left_out'].items()))}" if seeded["left_out"] else ""),
+              flush=True)
     judge = (exit_judge if a.judge_mode == "exit" else command_judge)(resolve_args(a.judge, os.getcwd()), timeout=a.judge_timeout)
     members = Members(specs, os.path.join(os.path.abspath(a.out), "members"), socket=a.socket, sessions="fresh", cwd=os.getcwd())
     try:
@@ -775,7 +808,7 @@ def main(argv=None):
                         target=a.target, patience=a.patience, about=about, results=a.show_results,
                         failures=a.show_failures, answer_bytes=a.answer_bytes, answer_name=a.answer_name,
                         turn_timeout=a.turn_timeout, stop_on_infra_error=a.stop_on_infra_error,
-                        member_access=a.member_access, time_limit=a.time_limit)
+                        member_access=a.member_access, time_limit=a.time_limit, seeded=seeded)
         summary = run.run()
     finally:
         members.close()

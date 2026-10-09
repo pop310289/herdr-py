@@ -316,5 +316,78 @@ class CommandTest(Base):
         self.assertIn("no knowledge base", err)
 
 
+class SeedTest(Base):
+    """A run that goes on from an earlier one starts from that run's verified entries (definitions §24, continuation)."""
+
+    def source(self):
+        src = TeamKB(os.path.join(self.dir, "src"))
+        skill = src.propose("a", "result", "a skill", artifact="ARTIFACT: skill\nname: count\nhow to count", name="x.txt")
+        data = src.propose("b", "result", "some data", artifact="ARTIFACT: data\n1 2 3", name="x.txt", parents=[skill])
+        bad = src.propose("a", "result", "a bad page", artifact="ARTIFACT: page\n<p>bad", name="x.txt")
+        page = src.propose("b", "result", "a page", artifact="ARTIFACT: page\n<p>good", name="x.txt", parents=[bad, data])
+        note = src.propose("a", "note", "an unjudged note")
+        verdicts = {skill: ("valid", 8, ""), data: ("valid", 30, ""), bad: ("invalid", None, "no"), page: ("valid", 100, "")}
+        for eid, got in verdicts.items():
+            src.judge(eid, lambda path, got=got: got)
+        return src, dict(skill=skill, data=data, bad=bad, page=page, note=note)
+
+    def snapshot(self, folder):
+        out = {}
+        for root, _, files in os.walk(folder):
+            for name in files:
+                with open(os.path.join(root, name), "rb") as handle:
+                    out[os.path.relpath(os.path.join(root, name), folder)] = handle.read()
+        return out
+
+    def test_valid_entries_are_carried_with_their_verdicts_ids_and_files(self):
+        src, ids = self.source()
+        before = self.snapshot(src.folder)
+        dst = TeamKB(os.path.join(self.dir, "dst"))
+        got = dst.seed(src.folder, origin="run 1")
+        self.assertEqual(got["carried"], [ids["skill"], ids["data"], ids["page"]])
+        self.assertEqual(got["left_out"], {"not valid": 2})  # the invalid page and the unjudged note
+        self.assertEqual(got["kinds"], {"skill": 1, "data": 1, "page": 1})
+        self.assertEqual(got["parents_dropped"], 1)  # the good page built on the invalid one, which stays behind
+        by_id = {e["id"]: e for e in dst.entries()}
+        self.assertEqual(by_id[ids["page"]]["parents"], [ids["data"]])
+        self.assertEqual(by_id[ids["data"]]["parents"], [ids["skill"]])
+        self.assertEqual({e["id"]: (e["status"], e["score"]) for e in dst.entries()},
+                         {ids["skill"]: ("valid", 8), ids["data"]: ("valid", 30), ids["page"]: ("valid", 100)})
+        self.assertTrue(all(e["seeded_from"] == "run 1" for e in dst.entries()))
+        for e in dst.entries():
+            with open(os.path.join(dst.folder, e["artifact"]), "rb") as mine, open(os.path.join(src.folder, e["artifact"]), "rb") as theirs:
+                self.assertEqual(mine.read(), theirs.read())
+        self.assertEqual(self.snapshot(src.folder), before)  # the earlier run is only read
+        # a carried entry is a real entry here: the team can build on it
+        new = dst.propose("c", "result", "builds on the page", artifact="ARTIFACT: page\n<p>better", parents=[ids["page"]])
+        self.assertIn(new, {e["id"] for e in dst.entries()})
+
+    def test_kinds_and_a_persons_exclusions_choose_what_is_carried(self):
+        src, ids = self.source()
+        dst = TeamKB(os.path.join(self.dir, "dst"))
+        got = dst.seed(src.folder, kinds=["skill", "DATA"], skip=[ids["data"]])
+        self.assertEqual(got["carried"], [ids["skill"]])
+        self.assertEqual(got["left_out"], {"not valid": 2, "excluded": 1, "other kind": 1})
+
+    def test_the_latest_verdict_decides_and_a_changed_file_is_not_carried(self):
+        src, ids = self.source()
+        src.judge(ids["skill"], lambda path: ("invalid", None, "judged again: wrong"))
+        with open(os.path.join(src.folder, src.proposals[ids["data"]]["artifact"]), "a") as handle:
+            handle.write("changed after its verdict")
+        dst = TeamKB(os.path.join(self.dir, "dst"))
+        got = dst.seed(src.folder)
+        self.assertEqual(got["carried"], [ids["page"]])
+        self.assertEqual(got["left_out"], {"not valid": 3, "artifact changed": 1})
+        self.assertEqual(dst.entries()[0]["parents"], [])  # neither parent came along
+
+    def test_only_a_new_knowledge_base_is_seeded_and_the_source_must_exist(self):
+        src, _ = self.source()
+        with self.assertRaises(TeamKBError):
+            self.kb.seed(os.path.join(self.dir, "nowhere"))
+        self.kb.propose("a", "note", "already here")
+        with self.assertRaises(TeamKBError):
+            self.kb.seed(src.folder)
+
+
 if __name__ == "__main__":
     unittest.main()

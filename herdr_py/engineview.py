@@ -33,10 +33,10 @@ import sys
 import time
 import urllib.parse
 
+from .teamkb import TAG
 from .viewstyle import TOKENS
 
 
-TAG = re.compile(r"^\W*(artifact|kind)\s*:\s*([A-Za-z][\w-]*)", re.I)
 WEB, FETCH = ("websearch", "web_search", "search"), ("webfetch", "web_fetch", "fetch")
 
 

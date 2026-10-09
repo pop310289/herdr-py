@@ -222,6 +222,62 @@ also a file in the board folder (`artifacts/<id>.txt`), so a teammate can open o
 rule and nothing else; checked with the real CLI: without the rule dontAsk refused WebSearch, and with it a read
 outside the folder was still refused). Codex members stay read-only.
 
+A run can go on from an earlier one: `--seed-from RUN_DIR` copies that run's verified entries, with their verdicts and
+files, into the new run's knowledge base before the first prompt, so the team starts with what it already found and
+the skills it wrote (`--carry KIND`, repeatable: only artifacts whose first line names that kind; `--seed-skip ID`:
+leave one out). Carried entries keep their ids and authors and are marked `seeded_from`; a parent that was not carried
+is dropped from them, an artifact whose bytes changed since its verdict is not carried, the start record in
+engine.jsonl says what was carried and why the rest was left out, and `summary.json` counts only the run's own answers.
+
+## A notebook of pages: work handed out day by day
+
+`python3 -m herdr_py.notebook` keeps the work a person hands to teams as the pages of a notebook (a folder). A page is
+one piece of work: its definition (`page.json`: the goal, the task file, the judge, the team, the budget of a run, the
+kinds that carry on to the next run and the kinds that are its outputs), every run, and the person's decisions,
+appended to the page's `history.jsonl` with who and when. A draft never runs: `run` refuses a page whose definition or
+task changed since it was last approved. A run goes on from the page's latest run (or `--from N`, or `--fresh`): the
+engine starts from that run's verified entries of the kinds the page carries, without the entries a person excluded
+(`engine --seed-from`), and the notes no run has used yet are added to its task. Every version of every output is
+kept, and a person picks the current one. What waits for a person is worked out from the records, never stored: a
+draft to approve, a run that ended and that nobody has looked at since (a note, a pick, an exclusion, accept, hold or
+done), and a run with no end that has written nothing for 15 minutes.
+
+```
+ you: a goal --> a draft page.json --> you approve --> the team runs (run n, held to the budget)
+                                                          |
+   run n+1 carries what passed, the skills and your notes <-- you review: pick, note, exclude, accept
+```
+
+```json
+{"id": "circles", "title": "26 circles in a square", "day": "2026-10-09", "goal": "the largest sum of radii",
+ "cwd": "~/herdr-py", "task": "examples/coop/packing_task.md", "judge": ["python3", "examples/coop/packing_judge.py"],
+ "team": {"planner": "plan=claude", "members": ["a=claude", "b=codex"], "about": {"a": "tries new layouts"}},
+ "budget": {"turns": 6, "planner_wakes": 4, "time_limit": 1800}}
+```
+
+`carry` and `outputs` (lists of kinds, as an answer names its kind on its first line: `ARTIFACT: skill`) choose what
+the next run carries and which kinds are the page's outputs; without them every verified entry carries on and every
+kind made is an output. `{kb}` and `{run}` in the judge's command name the run's knowledge base and folder.
+
+```sh
+python3 -m herdr_py.notebook ~/notebook draft circles.json        # the page, as a draft
+python3 -m herdr_py.notebook ~/notebook run circles --dry-run      # the exact engine command and task
+python3 -m herdr_py.notebook ~/notebook approve circles
+python3 -m herdr_py.notebook ~/notebook run circles                # run 1; run 2 goes on from it
+python3 -m herdr_py.notebook ~/notebook note circles "start from a hexagonal layout"
+python3 -m herdr_py.notebook ~/notebook pick circles k0123456789ab # the current version of its kind
+python3 -m herdr_py.notebook ~/notebook attach circles runs/e1     # a run made outside the notebook
+python3 -m herdr_py.notebook ~/notebook status
+python3 -m herdr_py.notebook ~/notebook view --out site/ --runs runs/   # --runs: list the runs no page holds
+```
+
+`view` writes a home page by day (what waits for you on top, then each day's pages with what they made and what they
+cost), a page for every page (its team drawn, its runs drawn with what each carried from the one before, every version
+of every output with the current one marked, its knowledge with what the next run would carry, notes and history),
+every run's own page (engineview, dagview or coopview) and the teams' files, ready to open. It is complete without
+JavaScript. `notebook.json` in the folder sets the title and the language of the pages (`en` or `zh-TW`). Commands
+are for one person on one machine; a decision written later than it happened (`--at`) is marked as recorded later.
+
 ## DAG dispatch: steps that wait for each other
 
 `python3 -m herdr_py.dag` runs a **plan**: steps, each done by one member in **its own git clone** and passed or
@@ -438,7 +494,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 448 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 466 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

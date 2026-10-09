@@ -122,6 +122,38 @@ python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3
 
 停止條件：成員回合用完、達到目標分數（`--target`）、planner 宣告完成、planner 的喚醒次數用完而且沒有待辦、或連續 `--patience` 個判定都沒有超過最佳分數。`summary.json` 會算：被領兩次的待辦數（必須是 0）、對得到待辦、看板版本與指令 hash 的回合比例（必須全部）、每個成員「有空卻沒有待辦可領」的時間、planner 占全部 token 的比例，以及成員讀看板的次數（從 Codex、Claude、OpenCode 的紀錄算；程式成員沒有紀錄）。每個已驗證的結果也會變成看板資料夾裡的檔案（`artifacts/<id>.txt`），太長放不進指令的成果，隊友也能打開來看。`--member-access research` 讓 Claude 成員也能上網查資料（WebSearch、WebFetch，用 settings 規則只允許這兩個；真的 CLI 實測：沒有規則時不詢問模式會拒絕 WebSearch，有規則時讀資料夾外的檔案仍然被擋）。Codex 成員維持唯讀。
 
+## 筆記本：每天交出去的工作，一件一頁
+
+`python3 -m herdr_py.notebook` 把交給團隊的工作記成一本筆記本（一個資料夾）裡的頁。一頁是一件工作：它的定義（`page.json`：
+目標、任務檔、評分程式、團隊、每次執行的預算、哪些種類延續到下一次、哪些種類是成果）、每一次執行，以及人的決定（附加在這頁的
+`history.jsonl`，記下誰、什麼時候）。草稿不會執行：定義或任務在上次核准後改過，`run` 就拒絕。每次執行從這頁最近一次延續
+（或 `--from N`、`--fresh`）：引擎從那次通過的條目裡、這頁要帶的種類起步，不帶人排除的條目（`engine --seed-from`），
+還沒被用過的批註加進這次的任務。每種成果的每一版都留著，由人選定現行版。等人處理的事由紀錄算出，不另外存：要核准的草稿、
+結束後還沒人看過的執行（批註、選版、排除、驗收、擱置或完成都算看過）、沒有結束紀錄而且 15 分鐘沒寫東西的執行。
+
+```
+ 你：一句目標 --> 起草 page.json --> 你核准 --> 團隊執行（第 n 次，照預算）
+                                                     |
+   第 n+1 次帶入通過的條目、skill 與你的批註 <-- 你驗收：選現行版、批註、排除、驗收
+```
+
+```sh
+python3 -m herdr_py.notebook ~/notebook draft circles.json        # 這頁的草稿（page.json，欄位見英文說明）
+python3 -m herdr_py.notebook ~/notebook run circles --dry-run      # 列出確切的引擎指令與任務
+python3 -m herdr_py.notebook ~/notebook approve circles
+python3 -m herdr_py.notebook ~/notebook run circles                # 第 1 次；第 2 次從它延續
+python3 -m herdr_py.notebook ~/notebook note circles "從六角形排法開始試"
+python3 -m herdr_py.notebook ~/notebook pick circles k0123456789ab # 這個種類的現行版
+python3 -m herdr_py.notebook ~/notebook attach circles runs/e1     # 在筆記本外跑的執行
+python3 -m herdr_py.notebook ~/notebook status
+python3 -m herdr_py.notebook ~/notebook view --out site/ --runs runs/   # --runs：列出不屬於任何一頁的執行
+```
+
+`view` 寫出依日期排的首頁（最上面是待你處理，接著每天的頁、做出什麼、花多少）、每一頁自己的頁面（畫出團隊、畫出每次執行從前一次
+帶入什麼、每種成果的每一版並標出現行版、這頁的知識庫與下一次會帶入的條目、批註與歷史）、每次執行的頁面（engineview、dagview 或
+coopview），以及團隊做出的檔案。不需要 JavaScript 也完整。資料夾裡的 `notebook.json` 設定標題與頁面語言（`en` 或 `zh-TW`）。
+指令是給一台機器上的一個人用的；事後補記的決定（`--at`）會標成補記。
+
 ## DAG 分派：會互相等待的步驟
 
 `python3 -m herdr_py.dag` 執行一份**計畫**：每個步驟由一個成員在**自己的 git clone** 裡做，由**評分程式**判定過不過。一個步驟要等它需要的步驟全部通過才開始，而且只看得到那些步驟的成果。計畫是一個 JSON 檔，所以團隊怎麼組織（誰做什麼、誰等誰、誰看得到誰的成果）是可以修改、可以拿來比較的資料。
@@ -211,7 +243,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 448 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 466 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 
