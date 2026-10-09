@@ -337,11 +337,12 @@ class HubTest(unittest.TestCase):
             self.hub.abort(name)
             late = threading.Timer(0.3, lambda sid=sid: (self.fake.emit("session.error", sessionID=sid, error={"name": "MessageAbortedError"}),
                                                          self.fake.emit("session.idle", sessionID=sid)))
-            late.start()
+            started = time.monotonic()  # before the timer starts: read after it, a busy machine that held this thread up
+            late.start()                # in between shortened the wait measured (0.23 s seen under the push gate's tests)
             self.addCleanup(late.cancel)
-            started = time.time()
             self.hub.prompt(name, "again")
-            self.assertTrue(0.25 <= time.time() - started < 2, time.time() - started)  # it waited for that end, no longer
+            waited = time.monotonic() - started
+            self.assertTrue(0.25 <= waited < 2, waited)  # it waited for that end, no longer
             time.sleep(0.2)
             self.assertEqual(self.state(name), "starting")  # the new turn, waiting for OpenCode to start it: not "error"
 
