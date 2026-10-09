@@ -125,6 +125,96 @@ def load(out):
     return engine, turns, list(todos.values()), summary, made, tools
 
 
+def text_width(text, size):
+    """About how wide text is drawn at this font size: a CJK character as wide as the size, any other 0.55 of it (in
+    Chrome with the system font the loop's labels measured 0.43 to 0.52 of the size per character)."""
+    return sum(size if ord(c) > 0x2E80 else size * 0.55 for c in str(text))
+
+
+def fit(text, px, size):
+    """The text, cut with an ellipsis when it would be drawn wider than px (an SVG label does not wrap)."""
+    text = str(text)
+    if text_width(text, size) <= px:
+        return text
+    while text and text_width(text + "…", size) > px:
+        text = text[:-1]
+    return text.rstrip(" ,·") + "…"
+
+
+def clock(seconds):
+    s = int(round(max(0, seconds)))
+    return f"{s // 60}m {s % 60:02d}s" if s >= 60 else f"{s}s"
+
+
+def median(values):
+    v = sorted(values)
+    if not v:
+        return None
+    m = len(v) // 2
+    return v[m] if len(v) % 2 else (v[m - 1] + v[m]) / 2
+
+
+LED = {"pass": "ok", "fail": "bad", "bad": "bad"}  # a turn's outcome -> the colour of its member's status light
+
+
+def agents_panel(wakes, turns, todos, summary, members, planner, finished):
+    """One row per agent: the planner, every member, the judge; what each did, from the records only. A member with a
+    todo taken and not ended works now (only while the run goes on); otherwise its light shows its last turn."""
+    rows = []
+    wake_n = len({w.get("wake") for w in wakes})
+    back = sum(1 for w in wakes if w.get("problems") and w.get("state") == "idle")
+    tokens = sum(w["tokens"] for w in wakes if isinstance(w.get("tokens"), int))
+    rows.append(("planner", planner, "planner", "idle", f"{times(wake_n, 'wake')} · {times(len(wakes), 'turn')}"
+                 + (f" · {back} sent back" if back else ""), f"{tokens:,} tokens" if tokens else ""))
+    idle, span = (summary or {}).get("idle_seconds") or {}, (summary or {}).get("seconds")
+    working = {t.get("member"): t for t in todos if t["state"] == "taken"} if not finished else {}
+    for name in members:
+        mine = [t for t in turns if t.get("member") == name]
+        last = mine[-1] if mine else None
+        light = "run" if name in working else (LED.get(outcome(last), "idle") if last else "idle")
+        valid = sum(1 for t in mine if t.get("status") == "valid")
+        used = sum(t["tokens"] for t in mine if isinstance(t.get("tokens"), int))
+        line = f"{times(len(mine), 'turn')} · {valid} valid" + (f" · {len(mine) - valid} not" if len(mine) > valid else "")
+        free = (f"free {idle[name]:.0f} s" + (f" ({idle[name] / span:.0%})" if span else "")) if name in idle else ""
+        now = (f"works on {working[name]['id']}" if name in working else
+               f"last: {last.get('todo')} {last.get('status') or last.get('kind') or last.get('state')}" if last else "no turn yet")
+        rows.append(("member", name, "member", light, line, " · ".join(x for x in (f"{used:,} tokens" if used else "", free, now) if x)))
+    judged = [t for t in turns if t.get("status") in ("valid", "invalid")]
+    scores = [t["score"] for t in judged if t.get("status") == "valid" and isinstance(t.get("score"), (int, float))]
+    rows.append(("judge", "judge", "a program", "ok" if scores else "idle", f"{len(scores)} valid of {len(judged)} judged",
+                 f"best {max(scores):.6g}" if scores else "no valid answer yet"))
+    items = "".join(f'<li data-role="{kind}" data-agent="{esc(n)}" data-led="{light}"><i class="led {light}"></i><b>{esc(n)}</b> '
+                    f'<span class="role">{esc(role)}</span><div class="sub">{esc(a)}</div>'
+                    + (f'<div class="sub">{esc(b)}</div>' if b else "") + "</li>" for kind, n, role, light, a, b in rows)
+    return f'<ul class="agents" id="agents">{items}</ul>'
+
+
+def health_panel(start, wakes, turns, summary):
+    """The run's numbers that say whether the team worked well, each from the records (nothing estimated)."""
+    added = {}
+    for w in wakes:
+        added[w.get("wake")] = added.get(w.get("wake"), 0) + len(w.get("added") or [])
+    items = [("member turns", f"{len(turns)} / {start.get('turns', '?')}", ""),
+             ("planner wakes", str(len(added)), f"{sum(1 for n in added.values() if n == 0)} added no todo"),
+             ("replies sent back", f"{sum(1 for w in wakes if w.get('problems'))} of {len(wakes)}", "")]
+    spent = [t["seconds"] for t in turns if isinstance(t.get("seconds"), (int, float))]
+    if spent:
+        items.append(("member turn", f"{median(spent):.0f} s", f"median; {min(spent):.0f}–{max(spent):.0f} s"))
+    if summary:
+        items.append(("taken twice", str(summary.get("double_takes")), "must be 0"))
+        idle, span = summary.get("idle_seconds") or {}, summary.get("seconds")
+        if idle and span:
+            shares = [v / span for v in idle.values()]
+            items.append(("free, nothing to take", f"{sum(shares) / len(shares):.0%}", f"mean; {min(shares):.0%}–{max(shares):.0%}"))
+        if summary.get("tokens") is not None:
+            share = summary.get("planner_share")
+            items.append(("tokens", f"{summary['tokens']:,}" if isinstance(summary["tokens"], int) else esc(summary["tokens"]),
+                          f"planner {share:.0%}" if isinstance(share, (int, float)) else ""))
+    cells = "".join(f'<div><dt>{esc(k)}</dt><dd>{esc(v)}' + (f'<small>{esc(n)}</small>' if n else "") + "</dd></div>"
+                    for k, v, n in items)
+    return f'<dl class="health">{cells}</dl>'
+
+
 def outcome(turn):
     if turn.get("status") == "valid":
         return "pass"
@@ -153,37 +243,41 @@ def loop_svg(start, wakes, turns, todos, summary, members, planner):
     reads = (summary or {}).get("board_reads") or {}
     read_note = (f"{sum((reads.get('by_member') or {}).values())} board reads" if reads.get("measured")
                  else "read TEAM_BOARD.md while they work")
-    nodes = [("events", "an answer judged, a todo ended, the start"),
+    nodes = [("events", "judged answers, ended todos, the start"),
              (f"planner: {planner}", f"{len(wakes)} turns" + (f", {sum(planner_tokens)} tokens" if planner_tokens else "")),
              ("shared todo list", " · ".join(f"{n} {k}" for k, n in sorted(states.items())) or "empty"),
-             (f"members: {', '.join(members)}", read_note),
+             (f"members: {', '.join(members)}" if text_width(f"members: {', '.join(members)}", 13) <= 232
+              else f"members ({len(members)})", read_note),
              ("judge (a program)", f"{valid} valid, {invalid} invalid; {best}")]
     arrows = [f"woke the planner {times(len({w.get('wake') for w in wakes}))}" + (f" ({sent_back} sent back)" if sent_back else ""),
               f"{added} todos added, {dropped} dropped",
               f"{sum(1 for t in todos if t.get('member'))} todos taken",
               f"{answers} answers" + (f", {other} without one" if other else "")]
-    box_x, box_w, box_h, gap = 14, 236, 48, 52
+    box_x, box_w, box_h, gap = 14, 256, 48, 52
+    rx = box_x + box_w + 50  # the line back to the top, right of the arrows' labels
     parts = []
     keys = ("events", "planner", "todos", "members", "judge")
     arrow_keys = ("wake", "todo", "take", "answer")
     for i, (title, sub) in enumerate(nodes):
         y = 8 + i * (box_h + gap)
-        parts.append(f'<g class="node" id="n-{keys[i]}"><rect x="{box_x}" y="{y}" width="{box_w}" height="{box_h}" rx="8"/>'
-                     f'<text x="{box_x + 12}" y="{y + 20}" class="t">{esc(title)}</text>'
-                     f'<text x="{box_x + 12}" y="{y + 38}" class="s" id="s-{keys[i]}">{esc(sub)}</text></g>')
+        parts.append(f'<g class="node" id="n-{keys[i]}"><rect x="{box_x}" y="{y}" width="{box_w}" height="{box_h}" rx="10"/>'
+                     f'<text x="{box_x + 12}" y="{y + 20}" class="t">{esc(fit(title, box_w - 24, 13))}</text>'
+                     f'<text x="{box_x + 12}" y="{y + 38}" class="s" id="s-{keys[i]}">{esc(fit(sub, box_w - 24, 11))}</text></g>')
         if i < len(arrows):
             y1, y2 = y + box_h, y + box_h + gap
-            parts.append(f'<line class="flow" x1="{box_x + 40}" y1="{y1 + 2}" x2="{box_x + 40}" y2="{y2 - 8}"/>'
+            # a small dot runs down the arrow while that step happens in a replay (none at rest: nothing moves then)
+            parts.append(f'<g class="flowg" id="f-{arrow_keys[i]}"><line class="flow" x1="{box_x + 40}" y1="{y1 + 2}" x2="{box_x + 40}" y2="{y2 - 8}"/>'
                          f'<polygon class="head" points="{box_x + 34},{y2 - 9} {box_x + 46},{y2 - 9} {box_x + 40},{y2 - 1}"/>'
-                         f'<text x="{box_x + 52}" y="{y1 + gap / 2 + 4}" class="a" id="a-{arrow_keys[i]}">{esc(arrows[i])}</text>')
+                         f'<circle class="pulse" cx="{box_x + 40}" cy="{y1 + 3}" r="1.6" style="--len:{gap - 13}px"/>'
+                         f'<text x="{box_x + 52}" y="{y1 + gap / 2 + 4}" class="a" id="a-{arrow_keys[i]}">'
+                         f'{esc(fit(arrows[i], rx - box_x - 60, 11))}</text></g>')
     top, bottom = 8 + box_h / 2, 8 + 4 * (box_h + gap) + box_h / 2
-    rx = box_x + box_w + 30
     parts.append(f'<path class="flow back" d="M {box_x + box_w} {bottom} H {rx} V {top} H {box_x + box_w + 9}"/>'
                  f'<polygon class="head" points="{box_x + box_w + 9},{top - 6} {box_x + box_w + 9},{top + 6} {box_x + box_w + 1},{top}"/>'
                  f'<text class="a" transform="translate({rx + 14},{(top + bottom) / 2}) rotate(-90)" text-anchor="middle">'
                  f'verdicts go to the team knowledge base: the next event</text>')
     height = 8 + 5 * box_h + 4 * gap + 8
-    return (f'<svg viewBox="0 0 330 {height}" width="330" height="{height}" role="img" '
+    return (f'<svg viewBox="0 0 350 {height}" width="350" height="{height}" role="img" '
             f'aria-label="the loop: events wake the planner, the planner keeps the todo list, members take todos, '
             f'a program judges, verdicts are the next events">{"".join(parts)}</svg>')
 
@@ -417,96 +511,129 @@ def wake_list(wakes, t0):
     return f'<ul class="cards" id="wakes">{"".join(rows) or "<li>the planner has not been woken yet</li>"}</ul>'
 
 
-SCRIPT = '(function () {\n  "use strict";\n  var el = document.getElementById("run-data"), svg = document.getElementById("timeline");\n  if (!el || !svg) { return; }\n  var D;\n  try { D = JSON.parse(el.textContent); } catch (err) { return; }\n  var span = Math.max(D.t1 - D.t0, 1e-6), TOP = +svg.getAttribute("data-top"), PH = +svg.getAttribute("data-h");\n  function Y(t) { return TOP + (t - D.t0) / span * PH; }\n  function $(id) { return document.getElementById(id); }\n  function fmt(v) { return String(Math.round(v * 1e6) / 1e6); }\n  function all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }\n  var texts = ["s-events", "s-planner", "s-todos", "s-members", "s-judge", "a-wake", "a-todo", "a-take", "a-answer"];\n  var original = {};\n  texts.forEach(function (id) { if ($(id)) { original[id] = $(id).textContent; } });\n  var bars = all(".bar", svg), lines = all(".timed"), now = $("now");\n  var todoCards = all("#todos li[data-added], #gather li[data-added]"), wakeCards = all("#wakes li[data-s]");\n  bars.forEach(function (g) {\n    var r = g.querySelector("rect");\n    g._y = +r.getAttribute("y"); g._h = +r.getAttribute("height");\n    g._s = +g.getAttribute("data-s"); g._e = +g.getAttribute("data-e");\n    g.style.cursor = "pointer";\n    g.addEventListener("click", function () { show(g.getAttribute("data-i")); });\n  });\n  var slot = $("player");\n  slot.innerHTML = \'<button type="button" id="play">▶ Replay</button>\' +\n    \'<input type="range" id="scrub" min="0" max="1000" step="1" value="1000" aria-label="time in the run">\' +\n    \'<span id="clock" class="muted"></span>\';\n  var play = $("play"), scrub = $("scrub"), clock = $("clock"), detail = $("detail");\n  var playing = false, t = D.t1, last = 0, rate = Math.max(1, span / 24);\n  function setText(id, text) { var n = $(id); if (n) { n.textContent = text; } }\n  function setOn(id, on) { var n = $(id); if (n) { n.classList.toggle("on", !!on); } }\n  function count(list, test) { var n = 0; list.forEach(function (x) { if (test(x)) { n += 1; } }); return n; }\n  function at(time) {\n    t = time;\n    bars.forEach(function (g) {\n      var r = g.querySelector("rect");\n      if (time < g._s) { g.style.opacity = "0"; return; }\n      g.style.opacity = "1";\n      r.setAttribute("height", (time >= g._e ? g._h : Math.max(3, Y(time) - g._y)).toFixed(1));\n      g.classList.toggle("live", time < g._e);\n    });\n    lines.forEach(function (l) { l.style.opacity = +l.getAttribute("data-t") <= time ? "1" : "0"; });\n    now.setAttribute("y1", Y(time).toFixed(1)); now.setAttribute("y2", Y(time).toFixed(1));\n    now.style.opacity = "1";\n    var flash = Math.max(0.6, span / 60);\n    var planning = D.wakes.some(function (w) { return w.s <= time && time < w.e; });\n    var working = D.turns.filter(function (m) { return m.s <= time && time < m.e; });\n    var ended = D.turns.filter(function (m) { return m.e <= time; });\n    var judged = ended.some(function (m) { return time - m.e < flash; });\n    setOn("n-planner", planning); setOn("n-members", working.length > 0); setOn("n-judge", judged);\n    setOn("n-events", judged || D.wakes.some(function (w) { return w.s <= time && time - w.s < flash; }));\n    var woke = {};\n    D.wakes.forEach(function (w) { if (w.s <= time) { woke[w.wake] = 1; } });\n    var back = count(D.wakes, function (w) { return w.e <= time && w.kind === "planback"; });\n    var added = count(D.todos, function (x) { return x.added <= time; });\n    var dropped = count(D.todos, function (x) { return x.state === "dropped" && x.ended <= time; });\n    var taken = count(D.todos, function (x) { return x.taken && x.taken <= time; });\n    var done = count(D.todos, function (x) { return x.state === "done" && x.ended <= time; });\n    var failed = count(D.todos, function (x) { return x.state === "failed" && x.ended <= time; });\n    var answers = count(ended, function (m) { return m.kind === "result"; });\n    var valid = ended.filter(function (m) { return m.status === "valid"; });\n    var invalid = count(ended, function (m) { return m.status === "invalid"; });\n    var best = null;\n    valid.forEach(function (m) { if (best === null || m.score > best) { best = m.score; } });\n    var nw = Object.keys(woke).length;\n    setText("a-wake", "woke the planner " + nw + (nw === 1 ? " time" : " times") + (back ? " (" + back + " sent back)" : ""));\n    setText("a-todo", added + " todos added, " + dropped + " dropped");\n    setText("a-take", taken + " todos taken");\n    setText("a-answer", answers + " answers" + (ended.length > answers ? ", " + (ended.length - answers) + " without one" : ""));\n    setText("s-todos", (added - taken - dropped) + " open · " + (taken - done - failed) + " taken · " + done + " done · " + failed + " failed");\n    setText("s-members", working.length ? "working now: " + working.map(function (m) { return m.member + " on " + m.todo; }).join(", ") : "waiting for a todo");\n    setText("s-planner", planning ? "planning now" : original["s-planner"]);\n    setText("s-judge", valid.length + " valid, " + invalid + " invalid; " + (best === null ? "no valid answer yet" : "best " + fmt(best)));\n    todoCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-added") > time); });\n    wakeCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-s") > time); });\n    clock.textContent = (time - D.t0).toFixed(1) + " s of " + span.toFixed(0) + " s";\n    scrub.value = String(Math.round((time - D.t0) / span * 1000));\n  }\n  function rest() {\n    bars.forEach(function (g) { g.style.opacity = "1"; g.classList.remove("live"); g.querySelector("rect").setAttribute("height", g._h.toFixed(1)); });\n    lines.forEach(function (l) { l.style.opacity = "1"; });\n    now.style.opacity = "0";\n    ["n-events", "n-planner", "n-todos", "n-members", "n-judge"].forEach(function (id) { setOn(id, false); });\n    Object.keys(original).forEach(function (id) { setText(id, original[id]); });\n    todoCards.concat(wakeCards).forEach(function (li) { li.classList.remove("future"); });\n    clock.textContent = span.toFixed(0) + " s in all" + (D.finished ? "" : " so far");\n    scrub.value = "1000";\n    t = D.t1;\n  }\n  function stop() { playing = false; play.textContent = "▶ Replay"; }\n  function frame(ts) {\n    if (!playing) { return; }\n    var next = t + (last ? (ts - last) / 1000 : 0) * rate;\n    last = ts;\n    if (next >= D.t1) { stop(); rest(); return; }\n    at(next);\n    window.requestAnimationFrame(frame);\n  }\n  play.addEventListener("click", function () {\n    if (playing) { stop(); return; }\n    playing = true; last = 0; play.textContent = "❚❚ Pause";\n    if (t >= D.t1) { at(D.t0); }\n    window.requestAnimationFrame(frame);\n  });\n  scrub.addEventListener("input", function () {\n    stop();\n    var v = +scrub.value;\n    if (v >= 1000) { rest(); } else { at(D.t0 + v / 1000 * span); }\n  });\n  function show(key) {\n    var item = key.charAt(0) === "w" ? D.wakes[+key.slice(1)] : D.turns[+key.slice(1)];\n    if (!item) { return; }\n    var out = [];\n    if (key.charAt(0) === "w") {\n      out.push("planner wake " + item.wake + ", attempt " + item.attempt + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("woken because: " + item.reason);\n      if (item.added && item.added.length) { out.push("added " + item.added.join(", ")); }\n      if (item.dropped && item.dropped.length) { out.push("dropped " + item.dropped.join(", ")); }\n      if (item.problems && item.problems.length) { out.push("sent back: " + item.problems.join("; ")); }\n      if (item.done) { out.push("said the task is done"); }\n      if (item.why) { out.push(item.why); }\n    } else {\n      var todo = D.todos.filter(function (x) { return x.id === item.todo; })[0] || {};\n      out.push(item.member + ", turn " + item.turn + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("todo " + item.todo + ": " + (todo.text || ""));\n      out.push((item.status || item.state || "") + (typeof item.score === "number" ? " · score " + fmt(item.score) : "") + (item.entry ? " · entry " + item.entry : ""));\n      if (item.problem) { out.push(item.problem); }\n      var web = [], got = [], read = [];\n      (item.tools || []).forEach(function (c) { var n = (c[0] || "").toLowerCase(); if (n === "websearch") { web.push(c[1]); } else if (n === "webfetch") { got.push(c[1]); } else { read.push(c[1]); } });\n      if (web.length) { out.push("searched: " + web.join("; ")); }\n      if (got.length) { out.push("fetched: " + got.join(", ")); }\n      if (read.length) { out.push("read: " + read.join(", ")); }\n    }\n    detail.textContent = "";\n    out.forEach(function (line) { var d = document.createElement("div"); d.textContent = line; detail.appendChild(d); });\n    detail.hidden = false;\n  }\n  rest();\n  if (!D.finished) {\n    window.setTimeout(function again() {\n      if (!playing && +scrub.value >= 1000) { window.location.reload(); } else { window.setTimeout(again, 4000); }\n    }, 5000);\n  }\n})();'
+SCRIPT = '(function () {\n  "use strict";\n  var el = document.getElementById("run-data"), svg = document.getElementById("timeline");\n  if (!el || !svg) { return; }\n  var D;\n  try { D = JSON.parse(el.textContent); } catch (err) { return; }\n  var span = Math.max(D.t1 - D.t0, 1e-6), TOP = +svg.getAttribute("data-top"), PH = +svg.getAttribute("data-h");\n  function Y(t) { return TOP + (t - D.t0) / span * PH; }\n  function $(id) { return document.getElementById(id); }\n  function fmt(v) { return String(Math.round(v * 1e6) / 1e6); }\n  function all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }\n  var texts = ["s-events", "s-planner", "s-todos", "s-members", "s-judge", "a-wake", "a-todo", "a-take", "a-answer"];\n  var original = {};\n  texts.forEach(function (id) { if ($(id)) { original[id] = $(id).textContent; } });\n  var bars = all(".bar", svg), lines = all(".timed"), now = $("now");\n  var todoCards = all("#todos li[data-added], #gather li[data-added]"), wakeCards = all("#wakes li[data-s]");\n  var agentRows = all("#agents li[data-role]"), flows = ["f-wake", "f-todo", "f-take", "f-answer"];\n  bars.forEach(function (g) {\n    var r = g.querySelector("rect");\n    g._y = +r.getAttribute("y"); g._h = +r.getAttribute("height");\n    g._s = +g.getAttribute("data-s"); g._e = +g.getAttribute("data-e");\n    g.style.cursor = "pointer";\n    g.addEventListener("click", function () { show(g.getAttribute("data-i")); });\n  });\n  var slot = $("player");\n  slot.innerHTML = \'<button type="button" id="play">▶ Replay</button>\' +\n    \'<input type="range" id="scrub" min="0" max="1000" step="1" value="1000" aria-label="time in the run">\' +\n    \'<span id="clock" class="muted"></span>\';\n  var play = $("play"), scrub = $("scrub"), clock = $("clock"), detail = $("detail");\n  var playing = false, t = D.t1, last = 0, rate = Math.max(1, span / 24);\n  function setText(id, text) { var n = $(id); if (n) { n.textContent = text.length > 40 ? text.slice(0, 39) + "\u2026" : text; } }\n  function setOn(id, on) { var n = $(id); if (n) { n.classList.toggle("on", !!on); } }\n  function count(list, test) { var n = 0; list.forEach(function (x) { if (test(x)) { n += 1; } }); return n; }\n  function at(time) {\n    t = time;\n    bars.forEach(function (g) {\n      var r = g.querySelector("rect");\n      if (time < g._s) { g.style.opacity = "0"; return; }\n      g.style.opacity = "1";\n      r.setAttribute("height", (time >= g._e ? g._h : Math.max(3, Y(time) - g._y)).toFixed(1));\n      g.classList.toggle("live", time < g._e);\n    });\n    lines.forEach(function (l) { l.style.opacity = +l.getAttribute("data-t") <= time ? "1" : "0"; });\n    now.setAttribute("y1", Y(time).toFixed(1)); now.setAttribute("y2", Y(time).toFixed(1));\n    now.style.opacity = "1";\n    var flash = Math.max(0.6, span / 60);\n    var planning = D.wakes.some(function (w) { return w.s <= time && time < w.e; });\n    var working = D.turns.filter(function (m) { return m.s <= time && time < m.e; });\n    var ended = D.turns.filter(function (m) { return m.e <= time; });\n    var judged = ended.some(function (m) { return time - m.e < flash; });\n    setOn("n-planner", planning); setOn("n-members", working.length > 0); setOn("n-judge", judged);\n    setOn("n-events", judged || D.wakes.some(function (w) { return w.s <= time && time - w.s < flash; }));\n    var woke = {};\n    D.wakes.forEach(function (w) { if (w.s <= time) { woke[w.wake] = 1; } });\n    var back = count(D.wakes, function (w) { return w.e <= time && w.kind === "planback"; });\n    var added = count(D.todos, function (x) { return x.added <= time; });\n    var dropped = count(D.todos, function (x) { return x.state === "dropped" && x.ended <= time; });\n    var taken = count(D.todos, function (x) { return x.taken && x.taken <= time; });\n    var done = count(D.todos, function (x) { return x.state === "done" && x.ended <= time; });\n    var failed = count(D.todos, function (x) { return x.state === "failed" && x.ended <= time; });\n    var answers = count(ended, function (m) { return m.kind === "result"; });\n    var valid = ended.filter(function (m) { return m.status === "valid"; });\n    var invalid = count(ended, function (m) { return m.status === "invalid"; });\n    var best = null;\n    valid.forEach(function (m) { if (best === null || m.score > best) { best = m.score; } });\n    setOn("f-wake", planning); setOn("f-todo", D.wakes.some(function (w) { return w.e <= time && time - w.e < flash; }));\n    setOn("f-take", D.turns.some(function (m) { return m.s <= time && time - m.s < flash; })); setOn("f-answer", judged);\n    agentRows.forEach(function (li) {\n      var role = li.getAttribute("data-role"), name = li.getAttribute("data-agent"), k = "idle";\n      if (role === "planner") { k = planning ? "run" : "idle"; }\n      else if (role === "judge") { k = valid.length ? "ok" : "idle"; }\n      else if (working.some(function (m) { return m.member === name; })) { k = "run"; }\n      else {\n        var mine = ended.filter(function (m) { return m.member === name; }), o = mine[mine.length - 1];\n        if (o) { k = o.status === "valid" ? "ok" : (o.status === "invalid" || o.kind === "failure" || ["error", "aborted", "provider_stall"].indexOf(o.state) >= 0 ? "bad" : "idle"); }\n      }\n      li.querySelector(".led").className = "led " + k;\n    });\n    var nw = Object.keys(woke).length;\n    setText("a-wake", "woke the planner " + nw + (nw === 1 ? " time" : " times") + (back ? " (" + back + " sent back)" : ""));\n    setText("a-todo", added + " todos added, " + dropped + " dropped");\n    setText("a-take", taken + " todos taken");\n    setText("a-answer", answers + " answers" + (ended.length > answers ? ", " + (ended.length - answers) + " without one" : ""));\n    setText("s-todos", (added - taken - dropped) + " open · " + (taken - done - failed) + " taken · " + done + " done · " + failed + " failed");\n    setText("s-members", working.length ? "working now: " + working.map(function (m) { return m.member; }).join(", ") : "waiting for a todo");\n    setText("s-planner", planning ? "planning now" : original["s-planner"]);\n    setText("s-judge", valid.length + " valid, " + invalid + " invalid; " + (best === null ? "no valid answer yet" : "best " + fmt(best)));\n    todoCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-added") > time); });\n    wakeCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-s") > time); });\n    clock.textContent = (time - D.t0).toFixed(1) + " s of " + span.toFixed(0) + " s";\n    scrub.value = String(Math.round((time - D.t0) / span * 1000));\n  }\n  function rest() {\n    bars.forEach(function (g) { g.style.opacity = "1"; g.classList.remove("live"); g.querySelector("rect").setAttribute("height", g._h.toFixed(1)); });\n    lines.forEach(function (l) { l.style.opacity = "1"; });\n    now.style.opacity = "0";\n    ["n-events", "n-planner", "n-todos", "n-members", "n-judge"].concat(flows).forEach(function (id) { setOn(id, false); });\n    agentRows.forEach(function (li) { li.querySelector(".led").className = "led " + li.getAttribute("data-led"); });\n    Object.keys(original).forEach(function (id) { setText(id, original[id]); });\n    todoCards.concat(wakeCards).forEach(function (li) { li.classList.remove("future"); });\n    clock.textContent = span.toFixed(0) + " s in all" + (D.finished ? "" : " so far");\n    scrub.value = "1000";\n    t = D.t1;\n  }\n  function stop() { playing = false; play.textContent = "▶ Replay"; }\n  function frame(ts) {\n    if (!playing) { return; }\n    var next = t + (last ? (ts - last) / 1000 : 0) * rate;\n    last = ts;\n    if (next >= D.t1) { stop(); rest(); return; }\n    at(next);\n    window.requestAnimationFrame(frame);\n  }\n  play.addEventListener("click", function () {\n    if (playing) { stop(); return; }\n    playing = true; last = 0; play.textContent = "❚❚ Pause";\n    if (t >= D.t1) { at(D.t0); }\n    window.requestAnimationFrame(frame);\n  });\n  scrub.addEventListener("input", function () {\n    stop();\n    var v = +scrub.value;\n    if (v >= 1000) { rest(); } else { at(D.t0 + v / 1000 * span); }\n  });\n  function show(key) {\n    var item = key.charAt(0) === "w" ? D.wakes[+key.slice(1)] : D.turns[+key.slice(1)];\n    if (!item) { return; }\n    var out = [];\n    if (key.charAt(0) === "w") {\n      out.push("planner wake " + item.wake + ", attempt " + item.attempt + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("woken because: " + item.reason);\n      if (item.added && item.added.length) { out.push("added " + item.added.join(", ")); }\n      if (item.dropped && item.dropped.length) { out.push("dropped " + item.dropped.join(", ")); }\n      if (item.problems && item.problems.length) { out.push("sent back: " + item.problems.join("; ")); }\n      if (item.done) { out.push("said the task is done"); }\n      if (item.why) { out.push(item.why); }\n    } else {\n      var todo = D.todos.filter(function (x) { return x.id === item.todo; })[0] || {};\n      out.push(item.member + ", turn " + item.turn + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("todo " + item.todo + ": " + (todo.text || ""));\n      out.push((item.status || item.state || "") + (typeof item.score === "number" ? " · score " + fmt(item.score) : "") + (item.entry ? " · entry " + item.entry : ""));\n      if (item.problem) { out.push(item.problem); }\n      var web = [], got = [], read = [];\n      (item.tools || []).forEach(function (c) { var n = (c[0] || "").toLowerCase(); if (n === "websearch") { web.push(c[1]); } else if (n === "webfetch") { got.push(c[1]); } else { read.push(c[1]); } });\n      if (web.length) { out.push("searched: " + web.join("; ")); }\n      if (got.length) { out.push("fetched: " + got.join(", ")); }\n      if (read.length) { out.push("read: " + read.join(", ")); }\n    }\n    detail.textContent = "";\n    out.forEach(function (line) { var d = document.createElement("div"); d.textContent = line; detail.appendChild(d); });\n    detail.hidden = false;\n  }\n  rest();\n  if (!D.finished) {\n    window.setTimeout(function again() {\n      if (!playing && +scrub.value >= 1000) { window.location.reload(); } else { window.setTimeout(again, 4000); }\n    }, 5000);\n  }\n})();'
 
 
 PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <style>
-:root {{ --bg:#F3F5F4; --surface:#FFFFFF; --ink:#16201C; --muted:#5A6661; --rule:#D4DBD8; --accent:#1D5C70;
-  --pass:#2B7448; --pass-bg:#E2F1E7; --fail:#A93636; --fail-bg:#F6E0DF; --wait:#94600E; --wait-bg:#F7EBD6; --run-bg:#E1EEF2; }}
-@media (prefers-color-scheme: dark) {{ :root {{ color-scheme:dark; --bg:#101514; --surface:#171E1C; --ink:#E0E7E4;
-  --muted:#96A29D; --rule:#2A3431; --accent:#6DB3C8; --pass:#79C995; --pass-bg:#1A3123; --fail:#E68B88; --fail-bg:#3A1D1C;
-  --wait:#E1AE5C; --wait-bg:#33280F; --run-bg:#16303A; }} }}
+:root {{ color-scheme:dark; --bg:#090A0F; --panel:#11141A; --inset:#0C0F14; --line:rgba(255,255,255,.07); --hi:rgba(255,255,255,.10);
+  --ink:#E5E7EB; --muted:#9CA3AF; --faint:#6B7280; --wire:#3B4352; --grid:rgba(255,255,255,.06); --ice:#93C5FD;
+  --ice-bg:rgba(147,197,253,.10); --ok:#10B981; --ok-bg:rgba(16,185,129,.12); --bad:#EF4444; --bad-bg:rgba(239,68,68,.12);
+  --amber:#D4A24C; --amber-bg:rgba(212,162,76,.12); }}
 * {{ box-sizing:border-box; }}
-body {{ margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system,"PingFang TC","Noto Sans TC",sans-serif;
-  padding-inline:16px; padding-block:16px 40px; }}
-main {{ max-width:1100px; margin:0 auto; display:flex; flex-direction:column; gap:14px; }}
-h1 {{ font-size:1.25rem; margin:0; overflow-wrap:anywhere; }} h2 {{ font-size:1rem; margin:8px 0 0; }}
-.muted {{ color:var(--muted); font-size:.85rem; overflow-wrap:anywhere; }}
-.chips {{ display:flex; flex-wrap:wrap; gap:6px; }} .chip {{ font-size:.78rem; border:1px solid var(--rule); border-radius:999px; padding:1px 9px; white-space:nowrap; }}
-.chip.bad {{ color:var(--fail); background:var(--fail-bg); border-color:transparent; }}
-.chip.good {{ color:var(--pass); background:var(--pass-bg); border-color:transparent; }}
-.fig {{ overflow-x:auto; background:var(--surface); border:1px solid var(--rule); border-radius:8px; padding:6px; }}
-.fig svg {{ display:block; }}
-.node rect {{ fill:var(--surface); stroke:var(--accent); stroke-width:1.5; }}
-.node .t {{ fill:var(--ink); font-size:13px; font-weight:600; }} .node .s, .a, .ax, .ln {{ fill:var(--muted); font-size:11px; }}
+body {{ margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system,"SF Pro Text","PingFang TC","Noto Sans TC",sans-serif;
+  padding-inline:16px; padding-block:16px 40px; -webkit-font-smoothing:antialiased; }}
+main {{ max-width:1180px; margin:0 auto; display:flex; flex-direction:column; gap:14px; }}
+.panel {{ background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:14px; min-width:0;
+  box-shadow:inset 0 1px 0 var(--hi), 0 10px 30px rgba(0,0,0,.6); }}
+.top {{ display:flex; flex-direction:column; gap:6px; }}
+.brand {{ font-size:.72rem; letter-spacing:.08em; text-transform:uppercase; color:var(--faint); }}
+h1 {{ font-size:1.3rem; margin:0; overflow-wrap:anywhere; font-weight:650; text-wrap:balance; }}
+h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); font-weight:600; }}
+.state, .muted {{ color:var(--muted); font-size:.85rem; overflow-wrap:anywhere; }}
+.chips {{ display:flex; flex-wrap:wrap; gap:6px; }}
+.chip {{ font-size:.76rem; color:var(--muted); background:var(--inset); border:1px solid var(--line); border-radius:999px;
+  padding:1px 9px; white-space:nowrap; font-variant-numeric:tabular-nums; }}
+.chip.bad {{ color:#F3A6A6; border-color:rgba(239,68,68,.35); }} .chip.good {{ color:#7FD8B6; border-color:rgba(16,185,129,.35); }}
+.led {{ display:inline-block; width:6px; height:6px; border-radius:50%; background:var(--faint); margin-right:7px; vertical-align:2px; }}
+.led.ok {{ background:var(--ok); }} .led.bad {{ background:var(--bad); }}
+.led.run {{ background:var(--ink); animation:breathe 1.6s ease-in-out infinite; }}
+@keyframes breathe {{ 50% {{ opacity:.3; }} }}
+.grid2 {{ display:grid; gap:14px; }}
+@media (min-width:900px) {{ .grid2 {{ grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:start; }} }}
+.side {{ display:flex; flex-direction:column; gap:14px; min-width:0; }}
+.fig {{ overflow-x:auto; }} .fig svg {{ display:block; margin:0 auto; }}
+.fig.fit svg {{ width:100%; max-width:420px; height:auto; }}
+.node rect {{ fill:var(--inset); stroke:var(--wire); stroke-width:1; }} .node.on rect {{ stroke:var(--ice); fill:var(--ice-bg); }}
+.node .t {{ fill:var(--ink); font-size:13px; font-weight:600; }} .node .s, .a, .ax {{ fill:var(--muted); font-size:11px; }}
 .ln {{ fill:var(--ink); font-size:12px; }}
-.flow {{ fill:none; stroke:var(--accent); stroke-width:1.5; }} .flow.back {{ stroke-dasharray:5 4; }} .head {{ fill:var(--accent); }}
-.lane, .tick {{ stroke:var(--rule); stroke-width:1; }}
-.bar rect {{ stroke-width:1.5; }} .bar text {{ font-size:10px; fill:var(--ink); }}
-.bar.plan rect {{ fill:var(--run-bg); stroke:var(--accent); }} .bar.planback rect {{ fill:var(--wait-bg); stroke:var(--wait); }}
-.bar.pass rect {{ fill:var(--pass-bg); stroke:var(--pass); }} .bar.fail rect {{ fill:var(--fail-bg); stroke:var(--fail); }}
-.bar.bad rect {{ fill:var(--fail); stroke:var(--fail); }} .bar.none rect {{ fill:var(--surface); stroke:var(--muted); stroke-dasharray:3 2; }}
-.event {{ stroke:var(--muted); stroke-width:1; stroke-dasharray:2 3; }} .stop {{ stroke:var(--fail); stroke-width:1.5; }}
-.best {{ fill:none; stroke:var(--pass); stroke-width:2; }} .dots circle {{ fill:var(--pass); }}
-.legend {{ display:flex; flex-wrap:wrap; gap:4px 14px; font-size:.78rem; color:var(--muted); }}
-.legend i {{ display:inline-block; width:12px; height:10px; border-radius:3px; border:1.5px solid var(--muted); margin-right:5px; vertical-align:-1px; }}
-.legend i.plan {{ background:var(--run-bg); border-color:var(--accent); }} .legend i.planback {{ background:var(--wait-bg); border-color:var(--wait); }}
-.legend i.pass {{ background:var(--pass-bg); border-color:var(--pass); }} .legend i.fail {{ background:var(--fail-bg); border-color:var(--fail); }}
-.legend i.bad {{ background:var(--fail); border-color:var(--fail); }} .legend i.none {{ border-style:dashed; }}
+.flow {{ fill:none; stroke:var(--wire); stroke-width:1.2; }} .flow.back {{ stroke-dasharray:5 4; }} .head {{ fill:var(--wire); }}
+.pulse {{ fill:var(--ice); opacity:0; }} .flowg.on .pulse {{ opacity:1; animation:down 1.1s linear infinite; }}
+@keyframes down {{ from {{ transform:translateY(0); }} to {{ transform:translateY(var(--len)); }} }}
+.lane, .tick {{ stroke:var(--grid); stroke-width:1; }}
+.bar rect {{ stroke-width:1; }} .bar text {{ font-size:10px; fill:var(--ink); }} .bar.live rect {{ stroke-width:1.8; }}
+.bar.plan rect {{ fill:var(--ice-bg); stroke:var(--ice); }} .bar.planback rect {{ fill:var(--amber-bg); stroke:var(--amber); }}
+.bar.pass rect {{ fill:var(--ok-bg); stroke:var(--ok); }} .bar.fail rect {{ fill:var(--bad-bg); stroke:var(--bad); }}
+.bar.bad rect {{ fill:var(--bad); stroke:var(--bad); }} .bar.none rect {{ fill:none; stroke:var(--faint); stroke-dasharray:3 2; }}
+.event {{ stroke:var(--faint); stroke-width:1; stroke-dasharray:2 3; }} .stop {{ stroke:var(--bad); stroke-width:1.2; }}
+.best {{ fill:none; stroke:var(--ok); stroke-width:1.6; }} .dots circle {{ fill:var(--ok); }}
+.now {{ stroke:var(--ice); stroke-width:1; }} .future {{ opacity:.3; }}
+.tool.web {{ fill:var(--ice); }} .tool.fetch {{ fill:var(--amber); }} .tool.read {{ fill:var(--faint); }}
+.lin {{ fill:none; stroke:var(--wire); stroke-width:1; }} .kh {{ fill:var(--ink); font-size:11px; font-weight:600; }}
+.kb rect {{ stroke-width:1; }} .kb text {{ font-size:9.5px; fill:var(--ink); }}
+.kb.pass rect {{ fill:var(--ok-bg); stroke:var(--ok); }} .kb.fail rect {{ fill:var(--bad-bg); stroke:var(--bad); }}
+.kb.wait rect {{ fill:none; stroke:var(--faint); stroke-dasharray:3 2; }}
+.legend {{ display:flex; flex-wrap:wrap; gap:4px 14px; font-size:.76rem; color:var(--muted); margin-top:10px; }}
+.legend i {{ display:inline-block; width:12px; height:9px; border-radius:3px; border:1px solid var(--faint); margin-right:5px; vertical-align:-1px; }}
+.legend i.plan {{ background:var(--ice-bg); border-color:var(--ice); }} .legend i.planback {{ background:var(--amber-bg); border-color:var(--amber); }}
+.legend i.pass {{ background:var(--ok-bg); border-color:var(--ok); }} .legend i.fail {{ background:var(--bad-bg); border-color:var(--bad); }}
+.legend i.bad {{ background:var(--bad); border-color:var(--bad); }} .legend i.none {{ border-style:dashed; }}
+.dot {{ display:inline-block; width:6px; height:6px; border-radius:50%; margin-right:6px; vertical-align:1px; }}
+.dot.web {{ background:var(--ice); }} .dot.fetch {{ background:var(--amber); }} .dot.read {{ background:var(--faint); }}
+.agents {{ list-style:none; margin:0; padding:0; }}
+.agents li {{ padding:9px 0; border-top:1px solid var(--line); overflow-wrap:anywhere; }} .agents li:first-child {{ border-top:0; padding-top:0; }}
+.agents b {{ font-weight:600; }} .agents .role {{ color:var(--faint); font-size:.8rem; }}
+.agents .sub {{ color:var(--muted); font-size:.8rem; padding-left:13px; font-variant-numeric:tabular-nums; }}
+.health {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; margin:0; }}
+.health div {{ background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:8px 10px; min-width:0; }}
+.health dt {{ font-size:.72rem; color:var(--faint); }} .health dd {{ margin:2px 0 0; font-size:1.05rem; font-variant-numeric:tabular-nums; }}
+.health small {{ display:block; font-size:.72rem; color:var(--muted); overflow-wrap:anywhere; }}
+.health div:last-child:nth-child(odd) {{ grid-column:1 / -1; }}
 .cards {{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; font-size:.86rem; }}
-.cards li {{ background:var(--surface); border:1px solid var(--rule); border-radius:8px; padding:8px 10px; overflow-wrap:anywhere; }}
-.st {{ font-size:.75rem; border-radius:999px; padding:0 7px; border:1px solid var(--rule); }}
-.st.done {{ color:var(--pass); background:var(--pass-bg); border-color:transparent; }}
-.st.failed {{ color:var(--fail); background:var(--fail-bg); border-color:transparent; }}
-.st.taken {{ color:var(--accent); background:var(--run-bg); border-color:transparent; }}
+.cards li {{ background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:8px 10px; overflow-wrap:anywhere; }}
+.st {{ font-size:.72rem; border-radius:999px; padding:0 7px; border:1px solid var(--line); color:var(--muted); }}
+.st.done {{ color:#7FD8B6; border-color:rgba(16,185,129,.35); }} .st.failed {{ color:#F3A6A6; border-color:rgba(239,68,68,.35); }}
+.st.taken {{ color:var(--ice); border-color:rgba(147,197,253,.35); }}
 .said {{ font-size:.8rem; color:var(--muted); }}
-.player {{ position:sticky; top:env(safe-area-inset-top, 0px); z-index:2; display:flex; flex-wrap:wrap; align-items:center;
-  gap:8px; background:var(--bg); padding-block:6px; border-bottom:1px solid var(--rule); }}
+.player {{ position:sticky; top:env(safe-area-inset-top, 0px); z-index:2; display:flex; flex-wrap:wrap; align-items:center; gap:10px;
+  background:rgba(9,10,15,.94); padding-block:8px; border-bottom:1px solid var(--line); }}
 .player:empty {{ display:none; }}
-.player button {{ font:inherit; font-size:.9rem; padding:6px 14px; border-radius:999px; border:1px solid var(--accent);
-  background:var(--surface); color:var(--accent); }}
-.player input {{ flex:1 1 150px; min-width:0; accent-color:var(--accent); }}
-.node.on rect {{ fill:var(--run-bg); stroke-width:3.5; }} .bar.live rect {{ stroke-width:2.5; }}
-.now {{ stroke:var(--accent); stroke-width:2; }} .future {{ opacity:.3; }}
-.detail {{ background:var(--surface); border:1px solid var(--rule); border-radius:8px; padding:8px 10px; font-size:.86rem; overflow-wrap:anywhere; }}
-.tool.web {{ fill:var(--accent); }} .tool.fetch {{ fill:var(--wait); }} .tool.read {{ fill:var(--muted); }}
-.dot {{ display:inline-block; width:8px; height:8px; border-radius:50%; margin-right:5px; }}
-.dot.web {{ background:var(--accent); }} .dot.fetch {{ background:var(--wait); }} .dot.read {{ background:var(--muted); }}
-.lin {{ fill:none; stroke:var(--muted); stroke-width:1.2; opacity:.75; }} .kh {{ fill:var(--ink); font-size:11px; font-weight:600; }}
-.kb rect {{ stroke-width:1.5; }} .kb text {{ font-size:9.5px; fill:var(--ink); }}
-.kb.pass rect {{ fill:var(--pass-bg); stroke:var(--pass); }} .kb.fail rect {{ fill:var(--fail-bg); stroke:var(--fail); }}
-.kb.wait rect {{ fill:var(--surface); stroke:var(--muted); stroke-dasharray:3 2; }}
+.player button {{ font:inherit; font-size:.85rem; padding:5px 14px; border-radius:999px; border:1px solid var(--line);
+  background:var(--panel); color:var(--ink); box-shadow:inset 0 1px 0 var(--hi); }}
+.player input {{ flex:1 1 150px; min-width:0; accent-color:var(--ice); }}
+.detail {{ background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:.86rem;
+  overflow-wrap:anywhere; margin-top:10px; }}
+@media (prefers-reduced-motion:reduce) {{ .led.run, .flowg.on .pulse {{ animation:none; }} }}
 </style></head>
 <body><main>
-<h1>{title}</h1>
-<div class="muted">{when}</div>
+<header class="top">
+<div class="brand">herdr-py · event-driven team</div>
+<h1>{name}</h1>
+<div class="state"><i class="led {state}"></i>{when}</div>
 <div class="chips">{chips}</div>
+</header>
 <div class="player" id="player"></div>
-<h2>The loop, with this run's numbers</h2>
-<div class="fig">{loop}</div>
-<h2>From the first event to the end</h2>
+<div class="grid2">
+<section class="panel"><h2>The loop, with this run's numbers</h2><div class="fig fit">{loop}</div></section>
+<div class="side">
+<section class="panel"><h2>Agents</h2>{agents}</section>
+<section class="panel"><h2>How the run went</h2>{health}</section>
+</div>
+</div>
+<div class="grid2">
+<section class="panel"><h2>From the first event to the end</h2>
 <div class="fig">{timeline}</div>
 <div class="legend"><span><i class="plan"></i>planner turn</span><span><i class="planback"></i>planner reply sent back</span>
 <span><i class="pass"></i>valid answer</span><span><i class="fail"></i>invalid answer or failure</span><span><i class="bad"></i>backend broke</span>
 <span><i class="none"></i>no answer or still running</span><span>dotted line: a result that woke the planner</span>
 <span><b class="dot web"></b>web search</span><span><b class="dot fetch"></b>page fetched</span><span><b class="dot read"></b>file read</span></div>
-<div class="detail" id="detail" hidden></div>
-<h2>Best verified score over time</h2>
-<div class="fig">{best}</div>
-<h2>What the team made, and what built on what</h2>
-<div class="fig">{lineage}</div>
+<div class="detail" id="detail" hidden></div></section>
+<div class="side">
+<section class="panel"><h2>Best verified score over time</h2><div class="fig">{best}</div></section>
+<section class="panel"><h2>What the team made, and what built on what</h2><div class="fig">{lineage}</div>
 <div class="legend"><span><i class="pass"></i>verified (member, score)</span><span><i class="fail"></i>did not pass</span>
-<span>a line runs from an entry to each one that built on it</span></div>
+<span>a line runs from an entry to each one that built on it</span></div></section>
 {skills}
-<h2>How the team gathered information</h2>
-{gather}
-<h2>Every todo</h2>
-{todos}
-<h2>Every planner turn</h2>
-{wakes}
+</div>
+</div>
+<section class="panel"><h2>How the team gathered information</h2>
+{gather}</section>
+<section class="panel"><h2>Every todo</h2>
+{todos}</section>
+<section class="panel"><h2>Every planner turn</h2>
+{wakes}</section>
 </main>
 <script type="application/json" id="run-data">{data}</script>
 <script>{script}</script>
@@ -534,13 +661,16 @@ def render(out):
         chips.append(f'<span class="chip">traceable {esc(summary.get("traceable"))}</span>')
         if summary.get("tokens") is not None:
             share = summary.get("planner_share")
-            chips.append(f'<span class="chip">{esc(summary["tokens"])} tokens'
+            chips.append(f'<span class="chip">{summary["tokens"]:,} tokens' if isinstance(summary["tokens"], int)
+                         else f'<span class="chip">{esc(summary["tokens"])} tokens'
                          + (f", planner {share:.0%}" if isinstance(share, (int, float)) else "") + "</span>")
     if stop:
         chips.append(f'<span class="chip bad">stopped: {esc(stop.get("why"))}</span>')
-    when = ("started " + esc(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0)))
-            + (f" · {t1 - t0:.0f} s · finished" if stop else " · still running (written after every event)"))
-    title = esc(f"Event-driven team {os.path.basename(os.path.abspath(out))}")
+    when = (("finished" if stop else "still running (written after every event)") + f" · {clock(t1 - t0)}"
+            + f" ({t1 - t0:.0f} s) · started " + esc(time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(t0))))
+    name = os.path.basename(os.path.abspath(out))
+    title = esc(f"Event-driven team {name}")
+    state = "run" if not stop else ("ok" if scores else "bad")
     data = {"t0": t0, "t1": t1, "finished": bool(stop), "planner": planner, "members": members,
             "wakes": [{"wake": w.get("wake"), "attempt": w.get("attempt"), "reason": w.get("reason"),
                        "s": w.get("start") or (w.get("t", t0) - (w.get("seconds") or 0)), "e": w.get("end") or w.get("t", t0),
@@ -555,10 +685,14 @@ def render(out):
             "todos": [{"id": t["id"], "text": t.get("text"), "added": t.get("added") or 0, "taken": t.get("taken"),
                        "ended": t.get("ended"), "state": t["state"]} for t in todos]}
     blob = json.dumps(data, ensure_ascii=True).replace("</", "<\\/")
-    return PAGE.format(title=title, when=when, chips="".join(chips), data=blob, script=SCRIPT,
+    skills = skills_list(made)
+    return PAGE.format(title=title, name=esc(name), state=state, when=when, chips="".join(chips), data=blob, script=SCRIPT,
+                       agents=agents_panel(wakes, turns, todos, summary, members, planner, bool(stop)),
+                       health=health_panel(start, wakes, turns, summary),
                        loop=loop_svg(start, wakes, turns, todos, summary, members, planner),
                        timeline=timeline_svg(t0, t1, wakes, turns, members, stop.get("why") if stop else None, tools),
-                       lineage=lineage_svg(made), skills=skills_list(made), gather=gather_list(turns, tools, t0),
+                       lineage=lineage_svg(made), skills=f'<section class="panel">{skills}</section>' if skills else "",
+                       gather=gather_list(turns, tools, t0),
                        best=best_svg(t0, t1, turns), todos=todo_list(todos, t0), wakes=wake_list(wakes, t0))
 
 

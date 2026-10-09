@@ -5,6 +5,7 @@ so no model is called."""
 import contextlib
 import io
 import json
+import re
 import os
 import shutil
 import sys
@@ -625,6 +626,61 @@ class ViewTest(Base):
         self.assertNotIn("outside any turn", page.split('id="gather"')[1].split("</ul>")[0])  # only calls inside a turn's time
         data = json.loads(page.split('<script type="application/json" id="run-data">')[1].split("</script>")[0])
         self.assertEqual(data["turns"][0]["tools"][0], ["WebSearch", "新竹 約會 <景點>"])
+
+    def test_the_page_lists_every_agent_and_the_runs_numbers_from_the_records(self):
+        self.script(planner=[add({"text": "one", "for": "a"}, {"text": "two", "for": "b"}), add(), add(done=True)],
+                    members={"a": [{"answer": "40"}], "b": [{"fail": "cannot", "sleep": 0.3}]})
+        code, said, err = self.run_main("--turns", "2")
+        page = engineview.render(self.out)
+        agents = page.split('id="agents">')[1].split("</ul>")[0]
+        rows = re.findall(r'<li data-role="(\w+)" data-agent="([^"]+)" data-led="(\w+)"><i class="led (\w+)">', agents)
+        self.assertEqual([(r[0], r[1], r[2]) for r in rows],
+                         [("planner", "plan", "idle"), ("member", "a", "ok"), ("member", "b", "bad"), ("judge", "judge", "ok")])
+        self.assertTrue(all(r[2] == r[3] for r in rows))  # the light drawn is the one the replay goes back to
+        self.assertIn("1 turn · 1 valid", agents)
+        self.assertIn("1 turn · 0 valid · 1 not", agents)
+        self.assertIn("1 valid of 1 judged", agents)
+        s = self.summary()
+        health = dict(re.findall(r"<dt>([^<]+)</dt><dd>([^<]+)", page.split('class="health">')[1].split("</dl>")[0]))
+        wakes = [w for w in self.records("engine.jsonl") if w["kind"] == "wake"]
+        self.assertEqual(health["member turns"], "2 / 2")
+        self.assertEqual(health["planner wakes"], str(len({w["wake"] for w in wakes})))
+        self.assertEqual(health["taken twice"], "0")
+        if s.get("tokens") is None:
+            self.assertNotIn("tokens", health)  # program members count no tokens: no tile, not a made-up 0
+        else:
+            self.assertEqual(health["tokens"], "{:,}".format(s["tokens"]))
+        spent = sorted(t["seconds"] for t in self.records("run.jsonl"))
+        self.assertEqual(health["member turn"], "%.0f s" % ((spent[0] + spent[1]) / 2))
+        self.assertNotIn("budget", page.lower())  # nothing the records do not hold
+
+    def test_a_label_that_would_not_fit_is_cut_with_an_ellipsis(self):
+        self.assertEqual(engineview.fit("short", 100, 11), "short")
+        width = engineview.text_width("abcdefghij", 10)  # 10 characters at 0.55 of the size
+        self.assertAlmostEqual(width, 55.0)
+        self.assertEqual(engineview.fit("abcdefghij", 55.0, 10), "abcdefghij")  # exactly as wide: kept whole
+        cut = engineview.fit("abcdefghij", 54.9, 10)
+        self.assertTrue(cut.endswith("…") and engineview.text_width(cut, 10) <= 54.9, cut)
+        self.assertEqual(engineview.text_width("新竹", 10), 20)  # a CJK character is as wide as the size
+        svg = engineview.loop_svg({}, [], [], [], None, ["scout", "curator", "builder", "animator", "critic"], "plan")
+        self.assertIn(">members (5)<", svg)  # five names do not fit the box: the count, the names are listed under Agents
+        self.assertIn(">members: a, b<", engineview.loop_svg({}, [], [], [], None, ["a", "b"], "plan"))
+
+    def test_a_members_light_shows_its_last_turn(self):
+        os.makedirs(os.path.join(self.out, "kb"))
+        with open(os.path.join(self.out, "engine.jsonl"), "w") as handle:
+            handle.write(json.dumps({"t": 100.0, "kind": "start", "members": ["a", "b"], "planner": "plan", "turns": 4}) + "\n")
+        turns = [{"t": 101.0, "start": 101.0, "end": 102.0, "turn": 1, "member": "a", "todo": "t1", "state": "idle", "kind": "result",
+                  "status": "valid", "score": 5}, {"t": 103.0, "start": 103.0, "end": 104.0, "turn": 2, "member": "a", "todo": "t2",
+                  "state": "idle", "kind": "failure"},
+                 {"t": 101.0, "start": 101.0, "end": 102.0, "turn": 3, "member": "b", "todo": "t3", "state": "idle", "kind": "failure"},
+                 {"t": 103.0, "start": 103.0, "end": 104.0, "turn": 4, "member": "b", "todo": "t4", "state": "idle", "kind": "result",
+                  "status": "valid", "score": 7}]
+        with open(os.path.join(self.out, "run.jsonl"), "w") as handle:
+            handle.write("".join(json.dumps(r) + "\n" for r in turns))
+        page = engineview.render(self.out)
+        lights = dict(re.findall(r'data-agent="(\w+)" data-led="(\w+)"', page))
+        self.assertEqual((lights["a"], lights["b"]), ("bad", "ok"))  # a's last turn failed, b's last one passed
 
     def test_a_run_still_going_is_drawn_from_what_is_there(self):
         os.makedirs(os.path.join(self.out, "kb"))

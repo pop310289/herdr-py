@@ -193,8 +193,10 @@ python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3
     --socket ~/.local/state/herdr-py/herdr-py.sock --turns 4 --out runs/e2
 ```
 
-`view.html` (rewritten after every event, so it can be watched while the run goes on) draws the loop with this
-run's numbers, a timeline with time running down the page (a column for the planner and one for each member, every
+`view.html` (rewritten after every event, so it can be watched while the run goes on; one dark look, two columns on a
+wide screen and one on a phone) draws the loop with this run's numbers, every agent with a status light (its last
+turn: green passed, red failed; white while it works) and the run's numbers (turns, wakes that added no todo, replies
+sent back, the median turn, the time members were free, tokens), all from the records, a timeline with time running down the page (a column for the planner and one for each member, every
 turn a bar, every result that woke the planner a dotted line), the best verified score over time, every todo from
 added to ended and every planner turn. It is complete without JavaScript; with JavaScript a player replays the run
 from the first event to the end: drag the time, and the loop lights up the stage that is working while its counts
@@ -429,7 +431,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 438 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 441 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
