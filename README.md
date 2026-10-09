@@ -150,7 +150,10 @@ task is done; a reply that names an unknown member or entry, or opens too many t
 The planner is not woken by every result: only when todos have ended and a member is free with nothing it can take,
 or when as many todos have ended as there are members (a whole lap), and its prompt says who works on what and who is
 free. A todo can come after others ("after": an id, or "#2" for the second todo of the same reply): it cannot be
-taken until they have ended. `--time-limit S` starts no new work after S seconds.
+taken until they have ended. A todo with "review": true is never given to whoever made what it reviews (the members
+of its parents, and whoever did the todos it comes after), so nobody reviews their own work; a review meant for its own
+author is sent back, and when nobody can take the open todos the planner is woken (the run stops once its wakes are
+used up). `--time-limit S` starts no new work after S seconds.
 A member that is free takes the oldest open todo meant for it or for anyone, so a fast member never waits for a slow
 one, and two members never take the same todo (the take is chosen and recorded under the knowledge base's file lock).
 While members work, `TEAM_BOARD.md` in their folder (read-only) shows the latest verified results, failures and todos,
@@ -414,7 +417,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 427 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 432 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

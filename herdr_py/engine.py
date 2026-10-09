@@ -8,8 +8,9 @@ coop.py runs a team in rounds: every prompt of a round is built before the round
 slowest member. Here events drive the team. When a todo has ended and a member is free with nothing it can take (or
 as many todos have ended as there are members, a whole lap), the planner is woken with the team's state (built by code
 from the team knowledge base: verified results, failures, todos, and who is working or free) and replies with todos to
-add or drop, or says the task is done; a todo can come after others (it waits until they have ended); a reply that breaks the rules (an unknown member or entry, too many
-open todos) is sent back with the reasons. A member that is free takes the oldest open todo meant for it or for anyone
+add or drop, or says the task is done; a todo can come after others (it waits until they have ended), and a review todo
+is never given to whoever made what it reviews; a reply that breaks the rules (an unknown member or entry, too many
+open todos, a review for its own author) is sent back with the reasons. A member that is free takes the oldest open todo meant for it or for anyone
 (teamkb.take_todo: never two members on one todo); its prompt is built by code from the state at that moment, and its
 answer is judged like a coop answer (the same reply format and judge contract). While members work, TEAM_BOARD.md in
 their folder shows the team's latest state, rewritten by the program after every event; members work in that folder
@@ -60,12 +61,14 @@ Right now: {now}
 Keep every free member busy: when you add todos, make sure each free member has one it can take now. Set "for" only
 when the work needs that member's role; leave it null and whoever is free first takes it. If a todo needs another
 todo's result first, list that todo in "after" (an id from the board, or "#2" for the second todo you add in this
-reply): it cannot be taken until that one has ended.
+reply): it cannot be taken until that one has ended. A todo that reviews or critiques work already made (not new
+work) gets "review": true: it is never given to whoever made its parents or did the todos it comes after, so nobody
+reviews their own work.
 
 Reply with one fenced JSON block:
 ```json
 {{"add": [{{"text": "what to do, in one or two sentences", "for": "a member's name, or null for anyone", \
-"parents": ["ids of verified results it should build on"], "after": ["todos that must end first"]}}],
+"parents": ["ids of verified results it should build on"], "after": ["todos that must end first"], "review": false}}],
  "drop": ["ids of open todos no longer worth doing"],
  "done": false,
  "why": "one sentence"}}
@@ -109,7 +112,10 @@ def todo_line(todo):
         state = f"failed ({todo['taken_by']}): {one_line(todo['detail'] or todo['status'] or '', 120)}"
     parents = f" (builds on {', '.join(todo['parents'])})" if todo["parents"] else ""
     after = f" (after {', '.join(todo['after'])})" if todo.get("after") else ""
-    return f"- {todo['id']} [{state}] {who}: {one_line(todo['text'], 300)}{parents}{after}"
+    review = ""
+    if todo.get("review"):
+        review = f" (a review, not for {', '.join(todo['not_for'])})" if todo.get("not_for") else " (a review)"
+    return f"- {todo['id']} [{state}] {who}: {one_line(todo['text'], 300)}{parents}{after}{review}"
 
 
 class EngineRun:
@@ -246,10 +252,11 @@ class EngineRun:
         if not isinstance(done, bool):
             problems.append('"done": true or false')
         todos = {t["id"]: t for t in self.kb.todo_list()}
-        entries = {e["id"] for e in self.kb.entries()}
+        entries = {e["id"]: e["member"] for e in self.kb.entries()}
         clean = []
         for i, item in enumerate(add, 1):
             text, who, parents, after = item.get("text"), item.get("for") or None, item.get("parents") or [], item.get("after") or []
+            review = item.get("review", False)
             if isinstance(who, str) and who.strip().lower() in ("null", "none", "anyone", "any"):
                 who = None
             if not isinstance(text, str) or not text.strip():
@@ -274,7 +281,23 @@ class EngineRun:
                         problems.append(f"add {i}: \"after\" {a} must point to an earlier todo in this reply (#1 to #{i - 1})")
                 elif a not in todos:
                     problems.append(f"add {i}: \"after\" names no todo {a}")
-            clean.append({"text": text, "for": who, "parents": parents, "after": after})
+            if not isinstance(review, bool):
+                problems.append(f"add {i}: \"review\" is true or false")
+                review = False
+            if review:  # who is known to have made what it reviews: its parents' members, who will do the todos it is after
+                made = {entries[p] for p in parents if p in entries}
+                for a in after:
+                    if a.startswith("#") and a[1:].isdigit() and 1 <= int(a[1:]) < i:
+                        made.add(clean[int(a[1:]) - 1]["for"])
+                    elif a in todos:
+                        made.add(todos[a]["taken_by"] or todos[a]["for"])
+                made.discard(None)
+                if who in made:
+                    problems.append(f"add {i}: a review for {who}, who makes what it reviews: leave \"for\" null or give it "
+                                    "to someone else")
+                elif made >= set(self.names):
+                    problems.append(f"add {i}: a review nobody could take: {', '.join(sorted(made))} make what it reviews")
+            clean.append({"text": text, "for": who, "parents": parents, "after": after, "review": review})
         for tid in drop:
             if tid not in todos:
                 problems.append(f"drop: no todo {tid}")
@@ -325,7 +348,7 @@ class EngineRun:
                              if not a.startswith("#") or int(a[1:]) <= len(added)]
                     try:
                         added.append(self.kb.add_todo(item["text"], for_member=item["for"], parents=item["parents"],
-                                                      by=self.planner, wake=wake, after=after))
+                                                      by=self.planner, wake=wake, after=after, review=item["review"]))
                     except TeamKBError as exc:  # checked above; a race with another writer is reported, not hidden
                         rec.setdefault("problems", []).append(str(exc))
                         added.append(None)
@@ -424,6 +447,14 @@ class EngineRun:
                     self.cond.notify_all()
 
     # ---- the engine
+    def nothing_to_take(self):
+        """With nobody working: None when some member can take a todo now; otherwise why not, in a few words (then
+        nothing changes until the planner adds or drops todos)."""
+        if any(self.kb.takeable(n) for n in self.names):
+            return None
+        stuck = [t["id"] for t in self.kb.todo_list() if t["state"] == "open"]
+        return f"nobody can take the open todos ({', '.join(stuck)})" if stuck else "no todo is left"
+
     def why_stop(self):
         """Called with the condition held: why no new work should start, or None."""
         if self.time_limit and time.monotonic() - self.started >= self.time_limit:
@@ -438,12 +469,12 @@ class EngineRun:
             return "the planner says the task is done"
         if self.turns_used >= self.turns:
             return "the member turns are used up"
-        todos = self.kb.todo_list()
-        if (not any(t["state"] in ("open", "taken") for t in todos) and not self.planner_running and not self.wake_reasons
-                and not self.running):
+        why = None if self.running or self.planner_running or self.wake_reasons else self.nothing_to_take()
+        if why:
             if self.wakes >= self.planner_wakes:
-                return "the planner's wakes are used up and no todo is left"
-            self.wake_reasons.append("no todo is open and no one is working")
+                return f"the planner's wakes are used up and {why}"
+            self.wake_reasons.append("no todo is open and no one is working" if why == "no todo is left"
+                                     else f"{why} and no one is working")
         return None
 
     def run(self):
@@ -486,10 +517,11 @@ class EngineRun:
                         threads[-1].start()
                 if self.stopping is not None and self.running == 0 and not self.planner_running:
                     break
-                if self.stopping is None and not self.planner_running and self.running == 0 and self.wakes >= self.planner_wakes \
-                        and not any(t["state"] == "open" for t in self.kb.todo_list()):
-                    self.stopping = "the planner's wakes are used up and no todo is left"
-                    continue
+                if self.stopping is None and not self.planner_running and self.running == 0 and self.wakes >= self.planner_wakes:
+                    why = self.nothing_to_take()
+                    if why:
+                        self.stopping = f"the planner's wakes are used up and {why}"
+                        continue
                 self.cond.wait(timeout=1.0)
         for t in threads:
             t.join()

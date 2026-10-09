@@ -13,7 +13,9 @@ content hash under FOLDER/artifacts, so:
 - entries can be private ("private" scope: only their author sees them), for teams whose members must not share;
 - a team can keep a shared todo list in the same log (engine.py): a todo is added, taken by one member at a time, then
   ended (done or failed, with the entry it produced) or dropped; taking chooses and records under the file lock, so two
-  members never take the same todo. A todo can come after others: it cannot be taken until they have ended.
+  members never take the same todo. A todo can come after others: it cannot be taken until they have ended. A review
+  todo is never taken by whoever made what it reviews (the members of its parents, whoever took the todos it comes
+  after): nobody reviews their own work.
 Several threads or processes may write at once: appends take a file lock and read what others wrote first.
 Standard library only; Python 3.6+.
 """
@@ -100,7 +102,7 @@ class TeamKB:
         todo = self.todos.get(tid)
         if op == "add" and todo is None:
             self.todos[tid] = {"id": tid, "text": event.get("text"), "for": event.get("for"), "parents": event.get("parents") or [],
-                               "after": event.get("after") or [],
+                               "after": event.get("after") or [], "review": bool(event.get("review")),
                                "by": event.get("by"), "t": event.get("t"), "state": "open", "taken_by": None, "takes": 0,
                                "entry": None, "status": None, "score": None, "detail": None}
         elif todo is None:
@@ -194,9 +196,10 @@ class TeamKB:
         return eid
 
     # ---- the shared todo list (the program writes it: the planner's todos after checking them, members' takes and ends)
-    def add_todo(self, text, for_member=None, parents=(), by=None, wake=None, after=()):
+    def add_todo(self, text, for_member=None, parents=(), by=None, wake=None, after=(), review=False):
         """Add an open todo and return its id. parents: entries the todo builds on (they must exist); after: todos that
-        must have ended (done, failed or dropped) before this one can be taken (they must exist)."""
+        must have ended (done, failed or dropped) before this one can be taken (they must exist); review: it reviews
+        other work, so whoever made that never takes it (authors())."""
         if not isinstance(text, str) or not text.strip():
             raise TeamKBError("todo: say what to do")
         if len(text) > MAX_SUMMARY:
@@ -211,8 +214,11 @@ class TeamKB:
             if unknown:
                 raise TeamKBError(f"after: no todo {', '.join(unknown)}")
             tid = "t" + digest(f"{len(self.todos)}\0{text}\0{for_member}\0{round_t()}".encode("utf-8"))[:12]
-            self._write({"type": "todo", "op": "add", "id": tid, "t": round_t(), "text": text, "for": for_member,
-                         "parents": parents, "by": by, "wake": wake, "after": after})
+            event = {"type": "todo", "op": "add", "id": tid, "t": round_t(), "text": text, "for": for_member,
+                     "parents": parents, "by": by, "wake": wake, "after": after}
+            if review:
+                event["review"] = True
+            self._write(event)
         return tid
 
     def take_todo(self, member, turn=None):
@@ -228,7 +234,22 @@ class TeamKB:
 
     def _takeable(self, todo, member):
         return (todo["state"] == "open" and todo["for"] in (None, member)
-                and all(self.todos[a]["state"] in ("done", "failed", "dropped") for a in todo.get("after") or () if a in self.todos))
+                and all(self.todos[a]["state"] in ("done", "failed", "dropped") for a in todo.get("after") or () if a in self.todos)
+                and member not in self._authors(todo))
+
+    def _authors(self, todo):
+        """Who made what a review todo reviews: the members of its parents and whoever took the todos it comes after
+        (as far as known now). Empty for a todo that is not a review."""
+        if not todo.get("review"):
+            return set()
+        return ({self.proposals[p]["member"] for p in todo["parents"] if p in self.proposals}
+                | {self.todos[a]["taken_by"] for a in todo.get("after") or () if a in self.todos and self.todos[a]["taken_by"]})
+
+    def takeable(self, member):
+        """The ids of the todos this member could take now."""
+        with self.lock:
+            self._catch_up()
+            return [t["id"] for t in self.todos.values() if self._takeable(t, member)]
 
     def end_todo(self, tid, member, outcome, entry=None, status=None, score=None, detail=None):
         """End a taken todo: outcome "done" (a valid answer) or "failed" (anything else), with what it produced."""
@@ -245,9 +266,10 @@ class TeamKB:
         return bool(self._write(choose))
 
     def todo_list(self):
+        """Every todo, with "not_for": the members a review todo will not be given to (its authors so far)."""
         with self.lock:
             self._catch_up()
-            return [dict(t) for t in self.todos.values()]
+            return [dict(t, not_for=sorted(self._authors(t))) for t in self.todos.values()]
 
     # ---- what only the program does
     def judge(self, eid, check, judge="check"):

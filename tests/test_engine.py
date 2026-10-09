@@ -301,6 +301,27 @@ class EngineTest(Base):
         self.assertEqual(code, 0, said + err)
         self.assertEqual([t["member"] for t in self.records("run.jsonl")], ["b", "b"])  # a was free, and took neither
 
+    def test_a_review_todo_skips_the_members_who_made_what_it_reviews(self):
+        kb = TeamKB(os.path.join(self.dir, "kb3"))
+        made = kb.propose("a", "result", "a's answer", artifact="1")
+        plain = kb.add_todo("build on it", parents=[made])
+        first = kb.take_todo("a")
+        self.assertEqual(first["id"], plain)  # not a review: its author may build on it
+        review = kb.add_todo("review it", parents=[made], review=True)
+        self.assertIsNone(kb.take_todo("a"))
+        self.assertEqual(kb.takeable("a"), [])
+        self.assertEqual(kb.takeable("b"), [review])
+        self.assertEqual(kb.take_todo("b")["id"], review)
+        work = kb.add_todo("make another", for_member="c")
+        after = kb.add_todo("review the other", after=[work], review=True)
+        self.assertEqual(kb.take_todo("c")["id"], work)
+        kb.end_todo(work, "c", "done")
+        self.assertEqual({t["id"]: t["not_for"] for t in kb.todo_list()}, {plain: [], review: ["a"], work: [], after: ["c"]})
+        self.assertIsNone(kb.take_todo("c"))  # c did the todo it comes after
+        again = TeamKB(kb.folder)  # read back from the file: still a review
+        self.assertIsNone(again.take_todo("c"))
+        self.assertEqual(again.take_todo("a")["id"], after)
+
     def test_a_take_of_a_todo_that_is_not_open_is_counted(self):
         folder = os.path.join(self.dir, "kb2")
         kb = TeamKB(folder)
@@ -446,6 +467,44 @@ class EngineTest(Base):
         self.assertGreater(s["idle_seconds"]["b"], 0.5)  # b waited for a about 1 s
         self.assertTrue(s["seconds"] > 0.9 and all(t["seconds"] >= 0 for t in self.records("run.jsonl")))
 
+    def test_a_review_is_not_given_to_whoever_made_what_it_reviews(self):
+        review = {"text": "review it", "for": None, "parents": [], "after": ["#1"], "review": True}
+        self.script(planner=[add({"text": "make it", "for": "a"}, {"text": "other work", "for": "b"}, review), add()],
+                    members={"a": [{"answer": "1"}], "b": [{"answer": "2", "sleep": 0.6}, {"answer": "3"}]})
+        code, said, err = self.run_main("--turns", "3", "--max-open", "3")
+        self.assertEqual(code, 0, said + err)
+        todos = {t["text"]: t for t in TeamKB(os.path.join(self.out, "kb")).todo_list()}
+        self.assertEqual(todos["review it"]["taken_by"], "b")  # a was free first, but a made what it reviews
+        self.assertGreaterEqual(todos["review it"]["taken_t"], todos["other work"]["ended_t"])
+        self.assertEqual(todos["review it"]["not_for"], ["a"])
+        with open(os.path.join(self.out, "board", "TEAM_BOARD.md")) as handle:
+            self.assertIn("(after %s) (a review, not for a)" % todos["make it"]["id"], handle.read())
+        prompt = self.read_log("planner-01.txt")
+        self.assertIn('gets "review": true: it is never given to whoever made its parents', prompt)
+        self.assertIn('"review": false}]', prompt)
+
+    def test_a_review_for_its_own_author_or_for_nobody_is_sent_back(self):
+        bad = {"add": [{"text": "make", "for": "a"}, {"text": "check", "for": "a", "after": ["#1"], "review": True},
+                       {"text": "make more", "for": "b"}, {"text": "check both", "after": ["#1", "#3"], "review": True},
+                       {"text": "maybe", "review": "yes"}], "drop": [], "done": False}
+        self.script(planner=[bad, add(done=True)], members={"a": [{"answer": "5"}]})
+        self.run_main("--turns", "1", "--planner-wakes", "1", "--max-open", "5")
+        problems = " | ".join([w for w in self.records("engine.jsonl") if w["kind"] == "wake"][0]["problems"])
+        self.assertIn('add 2: a review for a, who makes what it reviews: leave "for" null or give it to someone else', problems)
+        self.assertIn("add 4: a review nobody could take: a, b make what it reviews", problems)
+        self.assertIn('add 5: "review" is true or false', problems)
+        self.assertNotIn("add 1:", problems)
+        self.assertNotIn("add 3:", problems)
+
+    def test_a_review_nobody_can_take_wakes_the_planner_and_then_stops_the_run(self):
+        review = {"text": "review it", "for": None, "parents": [], "after": ["#1"], "review": True}
+        self.script(planner=[add("make it", review), add()], members={"a": [{"answer": "1"}]})
+        code, said, err = self.run_main("--turns", "3", "--planner-wakes", "3", "--time-limit", "8", members=("a",))
+        wakes = [w for w in self.records("engine.jsonl") if w["kind"] == "wake"]
+        tid = next(t["id"] for t in TeamKB(os.path.join(self.out, "kb")).todo_list() if t["text"] == "review it")
+        self.assertEqual(wakes[2]["reason"], "nobody can take the open todos (%s) and no one is working" % tid)
+        self.assertEqual(self.summary()["stopped"], "the planner's wakes are used up and nobody can take the open todos (%s)" % tid)
+
 
 class PartsTest(Base):
     def test_arguments_are_checked(self):
@@ -468,6 +527,26 @@ class PartsTest(Base):
         run = engine.EngineRun("t", None, None, ["a", "b"], "plan", self.out + "2", 1)
         run.out = self.out
         self.assertEqual(run.board_reads(), {"by_member": {"a": 1, "b": 1}, "measured": ["claude"]})
+
+    def test_a_review_of_work_already_made_or_given_out_is_checked_against_its_makers(self):
+        run = engine.EngineRun("t", None, None, ["a", "b", "c"], "plan", self.out, 1, max_open=9)
+        made = run.kb.propose("a", "result", "a's answer", artifact="1")
+        given = run.kb.add_todo("make more", for_member="b")
+        taken = run.kb.add_todo("make even more")
+        self.assertEqual(run.kb.take_todo("c")["id"], taken)
+        items = [{"text": "review a's", "for": "a", "parents": [made], "review": True},
+                 {"text": "review b's", "for": "b", "after": [given], "review": True},
+                 {"text": "review c's", "for": "c", "after": [taken], "review": True},
+                 {"text": "review all", "parents": [made], "after": [given, taken], "review": True},
+                 {"text": "fine", "for": "b", "parents": [made], "review": True},
+                 {"text": "not a review", "for": "a", "parents": [made]}]
+        plan, problems = run.check_plan("```json\n" + json.dumps({"add": items}) + "\n```")
+        said = " | ".join(problems)
+        for i, who in ((1, "a"), (2, "b"), (3, "c")):
+            self.assertIn("add %d: a review for %s, who makes what it reviews" % (i, who), said)
+        self.assertIn("add 4: a review nobody could take: a, b, c make what it reviews", said)
+        self.assertNotIn("add 5:", said)
+        self.assertNotIn("add 6:", said)
 
     def test_a_take_is_atomic_across_kb_objects(self):
         folder = os.path.join(self.dir, "kb")
