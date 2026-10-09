@@ -5,17 +5,18 @@ judges every answer (definitions §23).
         --member a=claude --member b=codex --about "a=layout and colour" --turns 6 --out runs/e1 [--target 90]
 
 coop.py runs a team in rounds: every prompt of a round is built before the round starts, and the team waits for its
-slowest member. Here events drive the team. When an answer has been judged or a todo has ended, the planner is woken
-with the team's state (built by code from the team knowledge base: verified results, failures, todos) and replies with
-todos to add or drop, or says the task is done; a reply that breaks the rules (an unknown member or entry, too many
+slowest member. Here events drive the team. When a todo has ended and a member is free with nothing it can take (or
+as many todos have ended as there are members, a whole lap), the planner is woken with the team's state (built by code
+from the team knowledge base: verified results, failures, todos, and who is working or free) and replies with todos to
+add or drop, or says the task is done; a todo can come after others (it waits until they have ended); a reply that breaks the rules (an unknown member or entry, too many
 open todos) is sent back with the reasons. A member that is free takes the oldest open todo meant for it or for anyone
 (teamkb.take_todo: never two members on one todo); its prompt is built by code from the state at that moment, and its
 answer is judged like a coop answer (the same reply format and judge contract). While members work, TEAM_BOARD.md in
 their folder shows the team's latest state, rewritten by the program after every event; members work in that folder
 read-only. Only the judge's verdicts enter the shared state: the planner's todos are plans, not facts.
 
-The run stops when the member turns are used up, the target score is reached, the planner says done (running turns
-finish first), the planner's wakes are used up with nothing left to do, or --patience judged answers in a row did not
+The run stops when the member turns are used up, the time limit is reached, the target score is reached, the
+planner says done (running turns finish first), the planner's wakes are used up with nothing left to do, or --patience judged answers in a row did not
 beat the best score. Records: kb/ (entries, verdicts and todos: python3 -m herdr_py.teamkb), run.jsonl (every member
 turn: its todo, the board version and the hash of the prompt it was given, state, seconds, tokens, verdict),
 engine.jsonl (every planner turn: why it was woken, what it changed or why it was sent back) and summary.json.
@@ -54,11 +55,17 @@ Team state, as the program recorded it (board version {version}):
 
 Budget: {turns_left} member turns left of {turns}; at most {max_open} todos may be open at a time.
 You were woken because: {reason}.
+Right now: {now}
+
+Keep every free member busy: when you add todos, make sure each free member has one it can take now. Set "for" only
+when the work needs that member's role; leave it null and whoever is free first takes it. If a todo needs another
+todo's result first, list that todo in "after" (an id from the board, or "#2" for the second todo you add in this
+reply): it cannot be taken until that one has ended.
 
 Reply with one fenced JSON block:
 ```json
 {{"add": [{{"text": "what to do, in one or two sentences", "for": "a member's name, or null for anyone", \
-"parents": ["ids of verified results it should build on"]}}],
+"parents": ["ids of verified results it should build on"], "after": ["todos that must end first"]}}],
  "drop": ["ids of open todos no longer worth doing"],
  "done": false,
  "why": "one sentence"}}
@@ -101,7 +108,8 @@ def todo_line(todo):
     elif state == "failed":
         state = f"failed ({todo['taken_by']}): {one_line(todo['detail'] or todo['status'] or '', 120)}"
     parents = f" (builds on {', '.join(todo['parents'])})" if todo["parents"] else ""
-    return f"- {todo['id']} [{state}] {who}: {one_line(todo['text'], 300)}{parents}"
+    after = f" (after {', '.join(todo['after'])})" if todo.get("after") else ""
+    return f"- {todo['id']} [{state}] {who}: {one_line(todo['text'], 300)}{parents}{after}"
 
 
 class EngineRun:
@@ -110,7 +118,8 @@ class EngineRun:
 
     def __init__(self, task, judge, members, names, planner, out, turns, planner_wakes=None, max_open=None, max_todos=None,
                  target=None, patience=0, about=None, results=3, failures=3, answer_bytes=6000, answer_name="answer.txt",
-                 turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2, member_access="read"):
+                 turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2, member_access="read",
+                 time_limit=None):
         if not names:
             raise ValueError("no members")
         if planner in names:
@@ -135,12 +144,14 @@ class EngineRun:
         os.makedirs(self.board_dir, exist_ok=True)
         self.board_lock = threading.Lock()
         self.cond = threading.Condition()
-        now = time.time()
+        now = time.monotonic()  # durations use the monotonic clock: a VM's wall clock can jump backwards
         self.free = {n: True for n in self.names}
         self.idle_since = {n: now for n in self.names}
         self.idle = {n: 0.0 for n in self.names}
         self.turns_used, self.running, self.planner_running, self.wakes = 0, 0, False, 0
-        self.wake_reasons = ["the run started"]
+        self.wake_reasons = ["the run started"]  # wake now: the start, or no todo left with nobody working
+        self.ended_since_wake = []  # todos ended since the planner was last woken: a wake when someone is free, or a whole lap
+        self.time_limit, self.started = time_limit, time.monotonic()
         self.said_done, self.stopping, self.broken = False, None, []
         self.best, self.since_best, self.progress = None, 0, []
         self.turn_records, self.wake_records = [], []
@@ -206,9 +217,13 @@ class EngineRun:
         members = "\n".join(f"- {n}" + (f": {self.about[n]}" if self.about.get(n) else "") for n in self.names)
         with self.cond:
             left = self.turns - self.turns_used
+            free = [n for n in self.names if self.free[n]]
+        working = {t["taken_by"]: t for t in self.kb.todo_list() if t["state"] == "taken"}
+        now = "; ".join([f"{n} works on {working[n]['id']} ({one_line(working[n]['text'], 60)})" for n in self.names if n in working]
+                        + ([f"free and waiting for a todo: {', '.join(free)}"] if free else ["nobody is free"]))
         prompt = PLANNER.format(n=len(self.names), task=self.task.strip(), members=members, version=version,
                                 board=self.board_text(), turns_left=left, turns=self.turns, max_open=self.max_open,
-                                reason=reason, problems=problems)
+                                reason=reason, now=now, problems=problems)
         return prompt, version
 
     def check_plan(self, reply):
@@ -234,7 +249,7 @@ class EngineRun:
         entries = {e["id"] for e in self.kb.entries()}
         clean = []
         for i, item in enumerate(add, 1):
-            text, who, parents = item.get("text"), item.get("for") or None, item.get("parents") or []
+            text, who, parents, after = item.get("text"), item.get("for") or None, item.get("parents") or [], item.get("after") or []
             if isinstance(who, str) and who.strip().lower() in ("null", "none", "anyone", "any"):
                 who = None
             if not isinstance(text, str) or not text.strip():
@@ -249,7 +264,17 @@ class EngineRun:
             missing = [p for p in parents if p not in entries]
             if missing:
                 problems.append(f"add {i}: no entry {', '.join(missing)} (build only on entries on the board)")
-            clean.append({"text": text, "for": who, "parents": parents})
+            if not isinstance(after, list) or not all(isinstance(a, str) for a in after):
+                problems.append(f"add {i}: \"after\" is a list of todo ids")
+                after = []
+            for a in after:
+                if a.startswith("#"):
+                    k = a[1:]
+                    if not (k.isdigit() and 1 <= int(k) < i):
+                        problems.append(f"add {i}: \"after\" {a} must point to an earlier todo in this reply (#1 to #{i - 1})")
+                elif a not in todos:
+                    problems.append(f"add {i}: \"after\" names no todo {a}")
+            clean.append({"text": text, "for": who, "parents": parents, "after": after})
         for tid in drop:
             if tid not in todos:
                 problems.append(f"drop: no todo {tid}")
@@ -270,15 +295,15 @@ class EngineRun:
         try:
             for attempt in range(1, self.planner_tries + 1):
                 prompt, version = self.planner_prompt(reason, problems)
-                before, start = self.tokens(self.planner), time.time()
+                before, start, clock = self.tokens(self.planner), time.time(), time.monotonic()
                 try:
                     reply, state = self.members.run_turn(self.planner, prompt, timeout=self.turn_timeout)
                 except Exception as exc:  # the planner's backend broke: no plan this wake
                     reply, state = f"({type(exc).__name__}: {exc})", "error"
-                end = time.time()
+                end, took = time.time(), time.monotonic() - clock
                 rec = {"t": round(end, 3), "start": round(start, 3), "end": round(end, 3), "kind": "wake", "wake": wake,
                        "attempt": attempt, "reason": reason, "board_version": version, "prompt_sha": sha_text(prompt),
-                       "state": state, "seconds": round(end - start, 2), "tokens": used(before, self.tokens(self.planner))}
+                       "state": state, "seconds": round(took, 2), "tokens": used(before, self.tokens(self.planner))}
                 if state != "idle":
                     rec["problems"] = [f"the planner's turn ended {state}: {one_line(reply, 200)}"]
                     if state in BROKEN:
@@ -296,11 +321,15 @@ class EngineRun:
                 dropped = [tid for tid in plan["drop"] if self.kb.drop_todo(tid, by=self.planner)]
                 added = []
                 for item in plan["add"]:
+                    after = [added[int(a[1:]) - 1] if a.startswith("#") else a for a in item["after"]
+                             if not a.startswith("#") or int(a[1:]) <= len(added)]
                     try:
                         added.append(self.kb.add_todo(item["text"], for_member=item["for"], parents=item["parents"],
-                                                      by=self.planner, wake=wake))
+                                                      by=self.planner, wake=wake, after=after))
                     except TeamKBError as exc:  # checked above; a race with another writer is reported, not hidden
                         rec.setdefault("problems", []).append(str(exc))
+                        added.append(None)
+                added = [a for a in added if a]
                 rec.update(added=added, dropped=dropped, done=plan["done"], why=one_line(plan.get("why") or "", 300))
                 self.record(self.elog, self.wake_records, rec)
                 if plan["done"]:
@@ -337,13 +366,13 @@ class EngineRun:
         try:
             prompt, shown, version = self.member_prompt(name, todo, turn)
             rec.update(board_version=version, prompt_sha=sha_text(prompt))
-            before, start = self.tokens(name), time.time()
+            before, clock = self.tokens(name), time.monotonic()
             try:
                 text, state = self.members.run_turn(name, prompt, timeout=self.turn_timeout, workdir=self.board_dir,
                                                     access=self.member_access)
             except Exception as exc:  # a member backend that breaks fails its turn
                 text, state = f"({type(exc).__name__}: {exc})", "error"
-            rec.update(state=state, seconds=round(time.time() - start, 2), tokens=used(before, self.tokens(name)))
+            rec.update(state=state, seconds=round(time.monotonic() - clock, 2), tokens=used(before, self.tokens(name)))
             parsed = parse_reply(text) if state == "idle" else None
             if parsed is None:
                 detail = rec["problem"] = f"the turn ended {state}" + (f": {one_line(text, 300)}" if text else "")
@@ -379,7 +408,7 @@ class EngineRun:
                 self.view()
                 with self.cond:
                     self.free[name] = True
-                    self.idle_since[name] = time.time()
+                    self.idle_since[name] = time.monotonic()
                     self.running -= 1
                     if rec.get("state") in BROKEN:
                         self.broken.append(f"{name} turn {turn}: the backend ended {rec['state']}")
@@ -391,12 +420,14 @@ class EngineRun:
                         else:
                             self.since_best += 1
                         self.progress.append({"turn": turn, "t": round(time.time(), 3), "best": self.best})
-                    self.wake_reasons.append(f"{name} ended todo {todo['id']}: {outcome}")
+                    self.ended_since_wake.append(f"{name} ended todo {todo['id']}: {outcome}")
                     self.cond.notify_all()
 
     # ---- the engine
     def why_stop(self):
         """Called with the condition held: why no new work should start, or None."""
+        if self.time_limit and time.monotonic() - self.started >= self.time_limit:
+            return f"the time limit of {self.time_limit:g} s was reached"
         if self.target is not None and self.best is not None and self.best >= self.target:
             return f"the target {self.target:g} was reached"
         if self.patience and self.since_best >= self.patience:
@@ -408,14 +439,15 @@ class EngineRun:
         if self.turns_used >= self.turns:
             return "the member turns are used up"
         todos = self.kb.todo_list()
-        if not any(t["state"] in ("open", "taken") for t in todos) and not self.planner_running and not self.wake_reasons:
+        if (not any(t["state"] in ("open", "taken") for t in todos) and not self.planner_running and not self.wake_reasons
+                and not self.running):
             if self.wakes >= self.planner_wakes:
                 return "the planner's wakes are used up and no todo is left"
             self.wake_reasons.append("no todo is open and no one is working")
         return None
 
     def run(self):
-        started = time.time()
+        started, self.started = time.time(), time.monotonic()
         self.write_board()
         self.record(self.elog, self.wake_records, {"t": round(started, 3), "kind": "start", "members": self.names,
                                                   "planner": self.planner, "turns": self.turns,
@@ -425,12 +457,6 @@ class EngineRun:
             while True:
                 if self.stopping is None:
                     self.stopping = self.why_stop()
-                if self.stopping is None and self.wake_reasons and not self.planner_running and self.wakes < self.planner_wakes:
-                    reason = "; ".join(self.wake_reasons[:5]) + (f" (and {len(self.wake_reasons) - 5} more)" if len(self.wake_reasons) > 5 else "")
-                    self.wake_reasons = []
-                    self.planner_running, self.wakes = True, self.wakes + 1
-                    threads.append(threading.Thread(target=self.plan, args=(self.wakes, reason), daemon=True))
-                    threads[-1].start()
                 if self.stopping is None:
                     for name in self.names:
                         if not self.free[name] or self.turns_used >= self.turns:
@@ -440,8 +466,23 @@ class EngineRun:
                             continue
                         self.turns_used += 1
                         self.free[name], self.running = False, self.running + 1
-                        self.idle[name] += time.time() - self.idle_since[name]
+                        self.idle[name] += time.monotonic() - self.idle_since[name]
                         threads.append(threading.Thread(target=self.member_turn, args=(name, todo, self.turns_used), daemon=True))
+                        threads[-1].start()
+                if self.stopping is None and not self.planner_running and self.wakes < self.planner_wakes:
+                    # wake the planner for the start or a stall, or when todos have ended and someone is free with
+                    # nothing to take (or a whole lap of todos has ended): not after every single result
+                    starving = [n for n in self.names if self.free[n]]  # (once the turns are used up the run is stopping)
+                    reasons = list(self.wake_reasons)
+                    if self.ended_since_wake and (starving or len(self.ended_since_wake) >= len(self.names)):
+                        reasons += self.ended_since_wake
+                        if starving:
+                            reasons.append("free with nothing to take: " + ", ".join(starving))
+                    if reasons:
+                        reason = "; ".join(reasons[:6]) + (f" (and {len(reasons) - 6} more)" if len(reasons) > 6 else "")
+                        self.wake_reasons, self.ended_since_wake = [], []
+                        self.planner_running, self.wakes = True, self.wakes + 1
+                        threads.append(threading.Thread(target=self.plan, args=(self.wakes, reason), daemon=True))
                         threads[-1].start()
                 if self.stopping is not None and self.running == 0 and not self.planner_running:
                     break
@@ -452,15 +493,15 @@ class EngineRun:
                 self.cond.wait(timeout=1.0)
         for t in threads:
             t.join()
-        ended = time.time()
+        ended, took = time.time(), time.monotonic() - self.started
         for name in self.names:  # time a member spent free with nothing to take, up to the end
             if self.free[name]:
-                self.idle[name] += ended - self.idle_since[name]
+                self.idle[name] += time.monotonic() - self.idle_since[name]
         self.record(self.elog, self.wake_records, {"t": round(ended, 3), "kind": "stop", "why": self.stopping})
         self.write_board()
         self.log.close()
         self.elog.close()
-        summary = self.summary(ended - started)
+        summary = self.summary(took)
         tmp = os.path.join(self.out, "summary.json.tmp")
         with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(summary, handle, ensure_ascii=False, indent=1)
@@ -559,6 +600,7 @@ def main(argv=None):
     ap.add_argument("--answer-name", default="answer.txt", help="the answer file's name (its extension matters to some judges)")
     ap.add_argument("--stop-on-infra-error", action="store_true",
                     help="stop when a member's backend or the judge breaks (exit code 3)")
+    ap.add_argument("--time-limit", type=float, metavar="S", help="start no new work after this many seconds (running turns finish)")
     ap.add_argument("--member-access", choices=["read", "research"], default="read",
                     help="read (default): members read the board folder; research: and search the web (Claude members)")
     a = ap.parse_args(argv)
@@ -607,7 +649,7 @@ def main(argv=None):
                         target=a.target, patience=a.patience, about=about, results=a.show_results,
                         failures=a.show_failures, answer_bytes=a.answer_bytes, answer_name=a.answer_name,
                         turn_timeout=a.turn_timeout, stop_on_infra_error=a.stop_on_infra_error,
-                        member_access=a.member_access)
+                        member_access=a.member_access, time_limit=a.time_limit)
         summary = run.run()
     finally:
         members.close()

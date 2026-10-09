@@ -13,7 +13,7 @@ content hash under FOLDER/artifacts, so:
 - entries can be private ("private" scope: only their author sees them), for teams whose members must not share;
 - a team can keep a shared todo list in the same log (engine.py): a todo is added, taken by one member at a time, then
   ended (done or failed, with the entry it produced) or dropped; taking chooses and records under the file lock, so two
-  members never take the same todo.
+  members never take the same todo. A todo can come after others: it cannot be taken until they have ended.
 Several threads or processes may write at once: appends take a file lock and read what others wrote first.
 Standard library only; Python 3.6+.
 """
@@ -100,6 +100,7 @@ class TeamKB:
         todo = self.todos.get(tid)
         if op == "add" and todo is None:
             self.todos[tid] = {"id": tid, "text": event.get("text"), "for": event.get("for"), "parents": event.get("parents") or [],
+                               "after": event.get("after") or [],
                                "by": event.get("by"), "t": event.get("t"), "state": "open", "taken_by": None, "takes": 0,
                                "entry": None, "status": None, "score": None, "detail": None}
         elif todo is None:
@@ -193,21 +194,25 @@ class TeamKB:
         return eid
 
     # ---- the shared todo list (the program writes it: the planner's todos after checking them, members' takes and ends)
-    def add_todo(self, text, for_member=None, parents=(), by=None, wake=None):
-        """Add an open todo and return its id. parents: entries the todo builds on (they must exist)."""
+    def add_todo(self, text, for_member=None, parents=(), by=None, wake=None, after=()):
+        """Add an open todo and return its id. parents: entries the todo builds on (they must exist); after: todos that
+        must have ended (done, failed or dropped) before this one can be taken (they must exist)."""
         if not isinstance(text, str) or not text.strip():
             raise TeamKBError("todo: say what to do")
         if len(text) > MAX_SUMMARY:
             raise TeamKBError(f"todo: at most {MAX_SUMMARY} characters")
-        parents = list(parents or ())
+        parents, after = list(parents or ()), list(after or ())
         with self.lock:
             self._catch_up()
             missing = [p for p in parents if p not in self.proposals]
             if missing:
                 raise TeamKBError(f"parents: no entry {', '.join(missing)}")
+            unknown = [a for a in after if a not in self.todos]
+            if unknown:
+                raise TeamKBError(f"after: no todo {', '.join(unknown)}")
             tid = "t" + digest(f"{len(self.todos)}\0{text}\0{for_member}\0{round_t()}".encode("utf-8"))[:12]
             self._write({"type": "todo", "op": "add", "id": tid, "t": round_t(), "text": text, "for": for_member,
-                         "parents": parents, "by": by, "wake": wake})
+                         "parents": parents, "by": by, "wake": wake, "after": after})
         return tid
 
     def take_todo(self, member, turn=None):
@@ -215,11 +220,15 @@ class TeamKB:
         no two members take the same one. Returns the todo, or None when there is none."""
         def choose():
             for todo in self.todos.values():
-                if todo["state"] == "open" and todo["for"] in (None, member):
+                if self._takeable(todo, member):
                     return {"type": "todo", "op": "take", "id": todo["id"], "t": round_t(), "member": member, "turn": turn}
             return None
         event = self._write(choose)
         return dict(self.todos[event["id"]]) if event else None
+
+    def _takeable(self, todo, member):
+        return (todo["state"] == "open" and todo["for"] in (None, member)
+                and all(self.todos[a]["state"] in ("done", "failed", "dropped") for a in todo.get("after") or () if a in self.todos))
 
     def end_todo(self, tid, member, outcome, entry=None, status=None, score=None, detail=None):
         """End a taken todo: outcome "done" (a valid answer) or "failed" (anything else), with what it produced."""

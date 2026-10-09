@@ -17,7 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 
 from herdr_py import engine, engineview  # noqa: E402
-from herdr_py.teamkb import TeamKB  # noqa: E402
+from herdr_py.teamkb import TeamKB, TeamKBError  # noqa: E402
 
 # The planner: its n-th reply is ENGINE_TEST_PLANNER[n] (the last one repeats); "$best" becomes the id of the best
 # verified result in the prompt, "$open" the ids of the open todos. Every prompt is kept in ENGINE_TEST_LOG.
@@ -356,6 +356,96 @@ class EngineTest(Base):
         with open(os.path.join(self.out, "board", "TEAM_BOARD.md")) as handle:
             self.assertIn("artifacts/%s.txt: %s by a, score 42" % (entry["id"], entry["id"]), handle.read())
 
+    def test_a_todo_waits_for_the_todos_it_comes_after(self):
+        self.script(planner=[add("first", {"text": "second", "for": None, "parents": [], "after": ["#1"]}), add()],
+                    members={"a": [{"answer": "1", "sleep": 0.6}], "b": [{"answer": "2"}]})
+        code, said, err = self.run_main("--turns", "2")
+        self.assertEqual(code, 0, said + err)
+        todos = {t["text"]: t for t in TeamKB(os.path.join(self.out, "kb")).todo_list()}
+        first, second = todos["first"], todos["second"]
+        self.assertEqual(second["after"], [first["id"]])
+        self.assertGreaterEqual(second["taken_t"], first["ended_t"])  # b was free, but second waited for first to end
+        with open(os.path.join(self.out, "board", "TEAM_BOARD.md")) as handle:
+            self.assertIn("(after %s)" % first["id"], handle.read())
+
+    def test_after_must_name_an_existing_or_earlier_todo(self):
+        bad = {"add": [{"text": "x", "after": ["t000000000000"]}, {"text": "y", "after": ["#2"]}], "drop": [], "done": False}
+        self.script(planner=[bad, add(done=True)], members={"a": [{"answer": "5"}]})
+        self.run_main("--turns", "1", "--planner-wakes", "1", members=("a",))
+        problems = " | ".join([w for w in self.records("engine.jsonl") if w["kind"] == "wake"][0]["problems"])
+        self.assertIn('add 1: "after" names no todo t000000000000', problems)
+        self.assertIn('add 2: "after" #2 must point to an earlier todo in this reply (#1 to #1)', problems)
+
+    def test_a_busy_team_does_not_wake_the_planner_after_every_result(self):
+        self.script(planner=[add(*["t%d" % i for i in range(6)]), add()],
+                    members={m: [{"answer": str(i), "sleep": 0.3}] for i, m in enumerate("abc", 1)})
+        code, said, err = self.run_main("--turns", "6", "--max-open", "6", members=("a", "b", "c"))
+        self.assertEqual(code, 0, said + err)
+        s = self.summary()
+        self.assertEqual(s["turns"], 6)
+        self.assertLessEqual(s["planner_wakes"], 3)  # the start and a lap of 3 results, not one wake per result (7)
+
+    def test_a_member_free_with_nothing_to_take_wakes_the_planner_at_once(self):
+        self.script(planner=[add({"text": "quick", "for": "a"}, {"text": "slow", "for": "b"}), add({"text": "more", "for": "a"}), add()],
+                    members={"a": [{"answer": "1"}, {"answer": "3"}], "b": [{"answer": "2", "sleep": 1.2}]})
+        code, said, err = self.run_main("--turns", "3")
+        self.assertEqual(code, 0, said + err)
+        wakes = [w for w in self.records("engine.jsonl") if w["kind"] == "wake"]
+        self.assertIn("free with nothing to take: a", wakes[1]["reason"])
+        b_end = [t for t in self.records("run.jsonl") if t["member"] == "b"][0]["end"]
+        self.assertLess(wakes[1]["start"], b_end)  # a did not wait for b
+        prompt = self.read_log("planner-02.txt")
+        self.assertIn("free and waiting for a todo: a", prompt)
+        self.assertIn("b works on", prompt)
+
+    def test_the_time_limit_stops_new_work(self):
+        self.script(planner=[add(*["t%d" % i for i in range(6)]), add()],
+                    members={"a": [{"answer": "1", "sleep": 1.5}], "b": [{"answer": "2", "sleep": 1.5}]})
+        started = time.time()
+        code, said, err = self.run_main("--turns", "10", "--max-open", "6", "--time-limit", "1")
+        s = self.summary()
+        self.assertEqual((s["turns"], s["stopped"]), (2, "the time limit of 1 s was reached"))  # running turns finished
+        self.assertLess(time.time() - started, 4)
+
+    def test_after_points_to_the_right_todo_of_the_same_reply(self):
+        third = {"text": "third", "for": None, "parents": [], "after": ["#1"]}
+        self.script(planner=[add("first", "second", third), add()], members={"a": [{"answer": "1"}]})
+        self.run_main("--turns", "1", "--planner-wakes", "1", "--max-open", "3", members=("a",))
+        todos = {t["text"]: t for t in TeamKB(os.path.join(self.out, "kb")).todo_list()}
+        self.assertEqual(todos["third"]["after"], [todos["first"]["id"]])
+
+    def test_results_that_arrive_one_by_one_are_gathered_into_a_lap(self):
+        self.script(planner=[add(*["t%d" % i for i in range(8)]), add()],
+                    members={"a": [{"answer": "1", "sleep": 0.2}], "b": [{"answer": "2", "sleep": 0.45}], "c": [{"answer": "3", "sleep": 0.9}]})
+        code, said, err = self.run_main("--turns", "7", "--max-open", "8", members=("a", "b", "c"))
+        self.assertEqual(code, 0, said + err)
+        s = self.summary()
+        self.assertEqual(s["turns"], 7)
+        self.assertLessEqual(s["planner_wakes"], 3)  # one wake per result would be about 7
+
+    def test_no_planner_wake_once_the_turns_are_used_up(self):
+        self.script(planner=[add("x", "y"), add()], members={"a": [{"answer": "1"}], "b": [{"answer": "2", "sleep": 0.8}]})
+        code, said, err = self.run_main("--turns", "2")
+        self.assertEqual(code, 0, said + err)
+        self.assertEqual(self.summary()["planner_wakes"], 1)  # a was free after its turn, but no turns were left to give it
+
+    def test_a_wall_clock_that_jumps_back_does_not_bend_the_durations(self):
+        # seen on RHEL in a VM: the guest's clock was stepped back mid-run and b's waiting time came out as -1.0 s
+        import threading
+        import types
+        real, shift = time.time, {"by": 0.0}
+        engine.time = types.SimpleNamespace(time=lambda: real() - shift["by"], monotonic=time.monotonic, sleep=time.sleep,
+                                            strftime=time.strftime, localtime=time.localtime)
+        self.addCleanup(setattr, engine, "time", time)
+        threading.Timer(0.5, lambda: shift.__setitem__("by", 5.0)).start()  # the wall clock jumps 5 s back
+        self.script(planner=[add("t1", "t2"), add()], members={"a": [{"answer": "1", "sleep": 1.0}], "b": [{"answer": "2"}]})
+        code, said, err = self.run_main("--turns", "2")
+        self.assertEqual(code, 0, said + err)
+        s = self.summary()
+        self.assertTrue(all(v >= 0 for v in s["idle_seconds"].values()), s["idle_seconds"])
+        self.assertGreater(s["idle_seconds"]["b"], 0.5)  # b waited for a about 1 s
+        self.assertTrue(s["seconds"] > 0.9 and all(t["seconds"] >= 0 for t in self.records("run.jsonl")))
+
 
 class PartsTest(Base):
     def test_arguments_are_checked(self):
@@ -387,6 +477,8 @@ class PartsTest(Base):
         self.assertIsNone(two.take_todo("b"))  # the second object reads the first's take before choosing
         self.assertEqual(two.double_takes, 0)
         self.assertFalse(two.drop_todo(tid))  # taken: it runs to its end
+        with self.assertRaises(TeamKBError):
+            one.add_todo("after nothing", after=["tnothing00000"])
         one.end_todo(tid, "a", "done", entry=None, status="valid", score=1)
         self.assertEqual(TeamKB(folder).todo_list()[0]["state"], "done")
 

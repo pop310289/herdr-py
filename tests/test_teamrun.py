@@ -159,7 +159,9 @@ class RepeatedRunTest(unittest.TestCase):
             per.append({"match": summary["final"]["match"], "strict": summary["final"]["strict"],
                         "accepted": sum(1 for t in summary["turns"] if t["kind"] == "revise" and t["accepted"]),
                         "fixups": sum(1 for t in turns if t["kind"] == "fix"),
-                        "minutes": (chat[-1]["t"] - chat[0]["t"]) / 60,
+                        # as runreport.team_minutes: earliest to latest line (members write chat.jsonl at once, so lines
+                        # are not always in time order)
+                        "minutes": (max(m["t"] for m in chat) - min(m["t"] for m in chat)) / 60,
                         "tokens": sum(a["tokens"] for a in agents.values())})
         with open(os.path.join(self.out, "aggregate.md")) as handle:
             text = handle.read()
