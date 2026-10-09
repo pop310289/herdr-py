@@ -50,8 +50,10 @@ def file_parts(paths):
 
 
 class Agent:
-    def __init__(self, name, session_id, model=None, budget_s=None, followups=(), created=None):
+    def __init__(self, name, session_id, model=None, budget_s=None, followups=(), created=None, directory=None, deny=()):
         self.name, self.session_id, self.model = name, session_id, model
+        self.directory = directory        # the folder its session works in, when not the server's (a DAG step's clone)
+        self.deny = set(deny)             # permission kinds refused before the policy is asked (a step that only reads)
         self.budget_s = budget_s
         self.followups = list(followups)
         self.created = created or time.time()
@@ -71,6 +73,9 @@ class Agent:
         self.decisions = []               # [(t, request id, description, action, by)]
         self.seq = 0                      # +1 on every state change (waits compare against a baseline, as in herdr)
         self.past_sessions = []           # earlier OpenCode sessions of this name (start with fresh=True)
+        self.last_heard = None            # when OpenCode last said something about this agent (or a prompt was sent)
+        self.retry_since = None           # set while OpenCode retries a failed call to the model provider
+        self.provider_wait = 0.0          # seconds this session lost to the model provider (provider_retry)
 
     @property
     def state(self):
@@ -90,7 +95,8 @@ class Agent:
                             for rid, p in self.pending.items()],
                 "activity": [{"t": round(t, 3), "text": text, "tone": tone} for t, text, tone in list(self.activity.values())[-6:]],
                 "stream": {"kind": self.stream["kind"], "text": self.stream["text"][-400:]},
-                "model": self.model, "past_sessions": self.past_sessions[-5:]}
+                "model": self.model, "past_sessions": self.past_sessions[-5:], "directory": self.directory,
+                "deny": sorted(self.deny), "provider_wait_s": round(self.provider_wait, 1)}
 
 
 class Hub:
@@ -170,7 +176,8 @@ class Hub:
         with self.lock:
             data = {"version": 1, "agents": [{"name": a.name, "session_id": a.session_id, "model": a.model, "budget_s": a.budget_s,
                                                "followups": a.followups, "turns": a.turns, "idles": a.idles, "created": a.created,
-                                               "children": sorted(a.children), "past_sessions": a.past_sessions}
+                                               "children": sorted(a.children), "past_sessions": a.past_sessions,
+                                               "directory": a.directory, "deny": sorted(a.deny)}
                                               for a in self.agents.values()]}
         tmp = self.state_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -198,11 +205,14 @@ class Hub:
         with self.lock:
             return self.agent(name).view(self.clock())
 
-    def start(self, name, prompt, budget_s=None, followups=(), model=None, title=None, files=(), fresh=False):
+    def start(self, name, prompt, budget_s=None, followups=(), model=None, title=None, files=(), fresh=False, directory=None,
+              deny=()):
         """Create an agent (an OpenCode session) and send its first prompt. fresh=True with a name that exists gives that
         agent a new session instead: OpenCode compacts a long session at a moment nobody chooses, so a caller that puts
         everything the turn needs into the prompt can start every turn clean. The role's counters (tokens, turns,
-        decisions) carry on; the old session and its subagents are dropped, and their late events are ignored."""
+        decisions) carry on; the old session and its subagents are dropped, and their late events are ignored.
+        directory: the session works in that folder instead of the server's (OpenCode's ?directory=); deny: permission
+        kinds this agent is refused whatever the policy says (["edit", "bash"] for a step that only reads)."""
         with self.lock:
             old = self.agents.get(name)
             if old is not None:
@@ -212,9 +222,10 @@ class Hub:
                     raise HubError(f"agent {name!r} is {old.state}: abort it or wait for it before giving it a new session")
             elif self.max_agents is not None and len(self.agents) >= self.max_agents:
                 raise HubError(f"max_agents ({self.max_agents}) reached")
-        session = self.client.create_session(title or f"herdr-py: {name}")
+        session = self.client.create_session(title or f"herdr-py: {name}", directory=directory)
         with self.lock:
-            agent = Agent(name, session["id"], model or (old.model if old else self.model), budget_s, followups, created=self.clock())
+            agent = Agent(name, session["id"], model or (old.model if old else self.model), budget_s, followups, created=self.clock(),
+                          directory=directory, deny=deny)
             if old is not None:
                 agent.tokens, agent.turns, agent.idles, agent.decisions = old.tokens, old.turns, old.idles, old.decisions
                 agent.seq, agent.history = old.seq, old.history
@@ -238,22 +249,32 @@ class Hub:
                 raise HubError(f"max_prompts ({self.max_prompts}) reached for {name}")
             agent.sticky = None
             agent.awaiting_busy = True
+            agent.last_heard = self.clock()  # silence from here on is either the model working or the provider stalling
             agent.turns += 1
             if agent.base in FINAL or agent.base == "starting":
                 agent.base = "starting"
             self.note(agent, f"prompt-{agent.turns}", f"prompt #{agent.turns} ({source}): {text[:60]}", "info")
             self.record({"hub": "prompt", "agent": name, "source": source, "text": text})
             self.refresh(agent, "prompt")
-            session_id, model = agent.session_id, agent.model
-        self.client.prompt(session_id, text, model=model, files=parts)
+            session_id, model, directory = agent.session_id, agent.model, agent.directory
+        self.client.prompt(session_id, text, model=model, files=parts, directory=directory)
         self.save()
         return self.get(name)
+
+    def folder(self, directory):
+        """The names OpenCode lists in `directory`; HubError when it cannot see that folder (an OpenCode in a container
+        without the folder mounted at the same path)."""
+        try:
+            entries = self.client.files(".", directory=directory)
+        except Exception as exc:
+            raise HubError(f"OpenCode cannot list {directory}: {exc}") from None
+        return sorted(e["name"] for e in entries if isinstance(e, dict) and e.get("name"))
 
     def abort(self, name, reason="user"):
         with self.lock:
             agent = self.agent(name)
-            session_id = agent.session_id
-        self.client.abort(session_id)
+            session_id, directory = agent.session_id, agent.directory
+        self.client.abort(session_id, directory=directory)
         with self.lock:
             agent.sticky = "aborted"
             agent.followups = []
@@ -273,11 +294,11 @@ class Hub:
         if pending["kind"] == "question":
             if reply != "reject":
                 raise HubError("questions can only be dismissed (reply 'reject') in herdr-py 0.1")
-            self.client.reject_question(request_id)
+            self.client.reject_question(request_id, directory=agent.directory)
         else:
             if reply not in ("once", "always", "reject"):
                 raise HubError("reply must be once, always or reject")
-            self.client.reply_permission(request_id, reply, message)
+            self.client.reply_permission(request_id, reply, message, directory=agent.directory)
         with self.lock:
             agent.decisions.append((self.clock(), request_id, pending["description"], reply, by))
             verdict = {"once": "allowed once", "always": "allowed always", "reject": "rejected"}[reply]
@@ -346,9 +367,9 @@ class Hub:
 
     def transcript(self, name, limit=20):
         with self.lock:
-            session_id = self.agent(name).session_id
+            session_id, directory = self.agent(name).session_id, self.agent(name).directory
         out = []
-        for message in (self.client.messages(session_id) or [])[-limit:]:
+        for message in (self.client.messages(session_id, directory=directory) or [])[-limit:]:
             role = (message.get("info") or {}).get("role", "?")
             for part in message.get("parts") or []:
                 if part.get("type") == "text" and part.get("text"):
@@ -385,7 +406,7 @@ class Hub:
                 self.record({"hub": "automation_error", "agent": name, "action": kind, "error": str(exc)})
 
     # ---------------------------------------------------------------- OpenCode events
-    def root_of(self, session_id, kind=None, props=None):
+    def root_of(self, session_id, kind=None, props=None, directory=None):
         """Root session id for one of our sessions or its subagents; None for sessions we do not own."""
         if session_id in self.by_session:
             return session_id
@@ -396,7 +417,7 @@ class Hub:
         parent = info.get("parentID") if kind in ("session.created", "session.updated") and info.get("id") == session_id else None
         if parent is None and kind in CHILD_STATE_EVENTS:  # a subagent's request can arrive before session.created
             try:
-                parent = (self.client.session(session_id) or {}).get("parentID")
+                parent = (self.client.session(session_id, directory=directory) or {}).get("parentID")
             except Exception:
                 parent = None
         seen = 0
@@ -409,7 +430,7 @@ class Hub:
                 self.note(agent, f"child-{session_id}", f"subagent started ({session_id[-8:]})", "info")
                 return root
             try:
-                parent = (self.client.session(parent) or {}).get("parentID")
+                parent = (self.client.session(parent, directory=directory) or {}).get("parentID")
             except Exception:
                 return None
             seen += 1
@@ -423,13 +444,36 @@ class Hub:
         session_id = props.get("sessionID") or part.get("sessionID") or (props.get("info") or {}).get("sessionID") \
             or (props.get("info") or {}).get("id")
         with self.lock:
-            root = self.root_of(session_id, kind, props) if session_id else None
+            root = self.root_of(session_id, kind, props, event.get("directory")) if session_id else None
             if root is None:
                 return
             if self.log and kind != "message.part.delta":
                 self.record({"opencode": event})
             agent = self.agents[self.by_session[root]]
+            now = self.clock()
+            if kind == "session.status":
+                status = props.get("status") or {}
+                if status.get("type") == "retry":
+                    self.provider_retry(agent, status, now)
+                elif agent.retry_since is not None:  # working again, or the turn ended: the retry is over
+                    agent.provider_wait += max(0.0, now - agent.retry_since)
+                    agent.retry_since = None
+            agent.last_heard = now
             self.handle(agent, kind, props, part, child=session_id != root)
+
+    def provider_retry(self, agent, status, now):
+        """OpenCode says a call to the model provider failed and it will retry (a provider timeout, a rate limit). The
+        silence before this report, and the time until the session works again, were the provider's, not the agent's:
+        provider_wait counts them, so a caller can leave them out of the agent's time limit. Only what the provider
+        reported as a failure counts; a model that is merely slow to answer is the agent's own time."""
+        since = agent.retry_since if agent.retry_since is not None else agent.last_heard
+        if since is not None:
+            agent.provider_wait += max(0.0, now - since)
+        agent.retry_since = now
+        message = str(status.get("message") or "")
+        self.note(agent, f"provider-{now}", f"provider failed, retry {status.get('attempt')}: {message[:48]}", "warn")
+        self.record({"hub": "provider_retry", "agent": agent.name, "attempt": status.get("attempt"), "message": message[:300],
+                     "provider_wait_s": round(agent.provider_wait, 1)})
 
     def handle(self, agent, kind, props, part, child):
         if kind == "message.part.updated":
@@ -509,7 +553,9 @@ class Hub:
             return
         description = describe(props) if kind == "permission" else "question: " + "; ".join(
             q.get("question", "") for q in props.get("questions") or [])[:80]
-        if kind == "permission":
+        if kind == "permission" and props.get("permission") in agent.deny:
+            action, message, rule = "deny", f"This step only reads: {props.get('permission')} is not allowed here.", "agent.deny"
+        elif kind == "permission":
             action, message, rule = self.policy.decide(props, agent=agent.name)
         else:
             action, message, rule = ("deny", "dismissed", None) if self.questions == "reject" else ("ask", "", None)
@@ -523,7 +569,8 @@ class Hub:
         self.refresh(agent, f"{kind}.asked")
         if action != "ask":
             reply = REPLIES[action] if kind == "permission" else "reject"
-            self.run(lambda: self.safe_reply(request_id, reply, message, f"policy rule {rule}" if rule else "policy default"))
+            by = rule if rule == "agent.deny" else (f"policy rule {rule}" if rule is not None else "policy default")
+            self.run(lambda: self.safe_reply(request_id, reply, message, by))
 
     def safe_reply(self, request_id, reply, message, by):
         try:
@@ -547,10 +594,14 @@ class Hub:
 
     def resync(self):
         """Rebuild what may have been missed while the event stream was down: session states and pending requests."""
+        with self.lock:
+            folders = [None] + sorted({a.directory for a in self.agents.values() if a.directory})
+        statuses, permissions, questions = {}, [], []
         try:
-            statuses = self.client.statuses()
-            permissions = self.client.pending_permissions()
-            questions = self.client.pending_questions()
+            for folder in folders:  # OpenCode answers these per folder
+                statuses.update(self.client.statuses(directory=folder))
+                permissions += [p for p in self.client.pending_permissions(directory=folder) if p not in permissions]
+                questions += [q for q in self.client.pending_questions(directory=folder) if q not in questions]
         except Exception as exc:
             self.record({"hub": "resync_error", "error": str(exc)})
             return
@@ -579,7 +630,8 @@ class Hub:
         with self.lock:
             for item in data.get("agents", []):
                 agent = Agent(item["name"], item["session_id"], item.get("model"), item.get("budget_s"),
-                              item.get("followups") or [], item.get("created"))
+                              item.get("followups") or [], item.get("created"), directory=item.get("directory"),
+                              deny=item.get("deny") or ())
                 agent.turns, agent.idles = item.get("turns", 0), item.get("idles", 0)
                 agent.base = "idle"
                 agent.children = set(item.get("children") or [])

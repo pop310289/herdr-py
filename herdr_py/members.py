@@ -19,6 +19,7 @@ On the command line a member is NAME=BACKEND[:MODEL] or NAME=command:COMMAND (pa
 starts a new session (the prompt must carry everything); sessions="keep" lets codex, claude and opencode members keep
 their conversation.
 """
+import json
 import os
 import re
 import shlex
@@ -34,6 +35,9 @@ from .codex_agents import CodexAgents
 BACKENDS = ("opencode", "codex", "claude", "command")
 NAME = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")  # also a folder name
 FINAL = ("idle", "aborted", "error")
+# A turn that ended in one of these did not happen because the setup broke (a backend error, an abort, a model provider
+# that stalled for as long as the turn's whole time limit): a caller stops instead of counting it against the member.
+BROKEN = ("error", "aborted", "provider_stall")
 
 
 class MemberError(ValueError):
@@ -120,14 +124,36 @@ class CommandMembers:
         return None  # a program does not report what it used
 
 
+# A turn in a given folder (a DAG step's clone): the session works there (OpenCode's ?directory=) and herdr-py refuses
+# its calls outside the folder and, for a step that only reads, every edit and command. herdr-py hears of a call only
+# when OpenCode asks about it, so OpenCode must ask about these kinds (README: Permission policy).
+REFUSED = {"write": ["external_directory"], "read": ["external_directory", "edit", "bash"]}
+
+
 class DaemonMembers:
     """OpenCode agents through a running herdr-py daemon: start the agent (a new session after forget(name)) or prompt
-    its session, wait until it stops, and read what it said after the last prompt."""
+    its session, wait until it stops, and read what it said after the last prompt. With a workdir, every turn is a new
+    session working in that folder (REFUSED says what it may not do); before it starts, the daemon must say OpenCode
+    asks about those kinds and OpenCode must list the folder as this machine does, or MemberError says why."""
 
-    def __init__(self, socket=None, client=None, poll_s=1.0, clock=time.time, sleep=time.sleep):
+    def __init__(self, socket=None, client=None, poll_s=1.0, clock=time.time, sleep=time.sleep, log_dir=None):
         self.client = client or Client(socket, timeout=None)
         self.poll_s, self.clock, self.sleep = poll_s, clock, sleep
         self.fresh = set()
+        self.unasked = None  # the kinds OpenCode runs without asking, from the daemon's ping (read once)
+        self.log = os.path.join(log_dir, "events.jsonl") if log_dir else None
+
+    def note_tools(self, name, messages):
+        """The turn's tool calls, one line each in log_dir/events.jsonl ({"agent", "t", "event"}, as the codex and
+        claude backends keep theirs), so a DAG run can count calls that name another step's clone (dag.out_of_bounds)."""
+        if not self.log:
+            return
+        last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user" and m.get("kind") == "text"), default=-1)
+        os.makedirs(os.path.dirname(self.log), exist_ok=True)
+        with open(self.log, "a", encoding="utf-8") as handle:
+            for message in messages[last_user + 1:]:
+                if message.get("kind") == "tool":
+                    handle.write(json.dumps({"agent": name, "t": time.time(), "event": message}, ensure_ascii=False) + "\n")
 
     def forget(self, name):
         self.fresh.add(name)
@@ -135,34 +161,77 @@ class DaemonMembers:
     def close(self):
         pass
 
+    def check_folder(self, workdir, access):
+        if self.unasked is None:
+            unasked = self.client.call("ping").get("opencode_does_not_ask")
+            if unasked is None:
+                raise MemberError("the daemon could not read OpenCode's permission config, so nothing shows that OpenCode "
+                                  "asks before the calls an opencode member may not make outside its folder")
+            self.unasked = {item.split("=")[0] for item in unasked}
+        loose = [kind for kind in REFUSED[access] if kind in self.unasked]
+        if loose:
+            raise MemberError(f"OpenCode does not ask before {', '.join(loose)}, so herdr-py could not refuse those calls "
+                              f"to an opencode member working in {workdir}: start OpenCode with OPENCODE_CONFIG_CONTENT "
+                              "(README: Permission policy)")
+        try:
+            seen = set(self.client.call("folder.list", directory=workdir)["names"])
+        except ClientError as exc:
+            raise MemberError(f"OpenCode cannot see {workdir} ({exc}); an OpenCode in a container needs the folder "
+                              "mounted at the same path") from None
+        if not seen <= set(os.listdir(workdir)):
+            raise MemberError(f"OpenCode lists other files in {workdir} than this machine does ({sorted(seen)[:5]}): "
+                              "an OpenCode in a container needs the folder mounted at the same path")
+
     def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None):
+        place = {}
         if workdir:
-            raise MemberError("opencode members cannot work in a given folder yet: the daemon starts agents in its own")
-        names = {a["name"] for a in self.client.call("agent.list")["agents"]}
-        fresh = name in self.fresh
+            workdir, access = os.path.abspath(workdir), access or "write"
+            if access not in REFUSED:
+                raise MemberError(f"access is write or read, not {access!r}")
+            self.check_folder(workdir, access)
+            place = {"directory": workdir, "deny": REFUSED[access]}
+        agents = {a["name"]: a for a in self.client.call("agent.list")["agents"]}
+        fresh = name in self.fresh or bool(workdir)  # a turn in a folder never continues a session from another one
         self.fresh.discard(name)
-        if name in names and not fresh:
+        if name in agents and not fresh:
+            base = agents[name].get("provider_wait_s", 0)
             self.client.call("agent.prompt", name=name, text=prompt, files=list(files))
         else:
-            self.client.call("agent.start", name=name, prompt=prompt, model=model, files=list(files), fresh=name in names)
-        start = self.clock()
+            base = 0  # a new session counts from 0
+            self.client.call("agent.start", name=name, prompt=prompt, model=model, files=list(files), fresh=name in agents,
+                             **place)
+        # The time limit is the member's own time: what the model provider lost (the daemon's provider_wait_s, from
+        # OpenCode's retry reports) is added to it, up to one more limit; a provider that takes longer ends the turn as
+        # provider_stall, a broken setup and not the member's failure.
+        start, lost = self.clock(), 0.0
         while True:
             view = self.client.call("agent.get", name=name)
             if view["state"] in FINAL and not view["followups_left"]:
                 state = view["state"]
                 break
-            if self.clock() - start > timeout:
-                self.client.call("agent.abort", name=name, reason="turn time limit")
-                state = "timeout"
+            lost = max(0.0, view.get("provider_wait_s", 0) - base)
+            spent = self.clock() - start
+            if spent - lost > timeout or spent > 2 * timeout:
+                state = "timeout" if spent - lost > timeout else "provider_stall"
+                self.client.call("agent.abort", name=name, reason="turn time limit" if state == "timeout" else
+                                 f"the model provider stalled {lost:.0f} s")
                 break
             self.sleep(self.poll_s)
-        return this_turn_reply(self.client.call("agent.read", name=name, limit=60)["messages"]), state
+        messages = self.client.call("agent.read", name=name, limit=60)["messages"]
+        self.note_tools(name, messages)
+        reply = this_turn_reply(messages)
+        if state == "provider_stall":
+            reply = f"(the model provider stalled: {lost:.0f} s of {self.clock() - start:.0f} s) {reply}".strip()
+        return reply, state
 
     def tokens(self, name):
+        """The daemon's token count for this member: 0 before its first turn (as the codex and claude backends count,
+        so the first turn's tokens can be worked out), None when the daemon cannot be asked."""
         try:
-            return self.client.call("agent.get", name=name)["tokens"]
+            agents = {a["name"]: a for a in self.client.call("agent.list")["agents"]}
         except (ClientError, OSError, KeyError):
             return None
+        return agents[name].get("tokens", 0) if name in agents else 0
 
 
 def this_turn_reply(messages):
@@ -194,7 +263,7 @@ class Members:
         if "opencode" in kinds:
             if not socket:
                 raise MemberError("opencode members need the herdr-py daemon's socket")
-            self.backends["opencode"] = DaemonMembers(socket)
+            self.backends["opencode"] = DaemonMembers(socket, log_dir=os.path.join(work, "opencode"))
         if "command" in kinds:
             self.backends["command"] = CommandMembers(os.path.join(work, "command"), cwd=cwd)
             for spec in self.spec.values():

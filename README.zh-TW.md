@@ -52,6 +52,8 @@ herdr-py start fixer "再幫它加一個測試" --fresh   # 同一個名字，�
 
 `agent.start` 加上 `fresh: true`（命令列 `--fresh`）時，若名字已存在、而且上一輪已結束，會換上新的 OpenCode session。OpenCode 會在無法預期的時候自動壓縮過長的 session（我們有一次實驗，壓縮後畫圖者回的是摘要，不是要它交的 JSON），所以每輪都把需要的資訊放進指令的呼叫者，可以讓每一輪都從乾淨的 session 開始。token、輪數與權限決定紀錄會累計；舊 session 之後才到的事件一律忽略。
 
+`agent.start` 加上 `directory` 時，session 在那個資料夾工作，而不是 OpenCode 自己的資料夾（OpenCode 的 `?directory=`；這種 session 的事件只出現在 OpenCode 的 `/global/event`，daemon 聽的就是它）；`deny` 列出這個 agent 一律被擋的權限種類，在問權限策略之前就擋（只讀的 agent 用 `["edit", "bash"]`）。`folder.list` 回傳 OpenCode 在某個資料夾列出的內容，看不到那個資料夾就回錯誤。
+
 ## 權限策略
 
 OpenCode 只會為它自己設定成 "ask" 的動作送權限請求給 herdr-py。用 OpenCode 的預設值時（OpenCode 1.18.32 實測），bash 指令和編輯直接執行：策略拒絕的 curl 照樣跑了。啟動 OpenCode 時要設 `"permission": {"edit": "ask", "bash": "ask", "webfetch": "ask", "external_directory": "ask", "doom_loop": "ask"}`（見快速開始）。`herdr-py serve` 會讀 OpenCode 的設定，有任何一項不是 "ask" 就警告；`herdr-py status` 的 `opencode_does_not_ask` 也列得出來。
@@ -99,12 +101,12 @@ open /tmp/dag-demo/run1/view.html                         # 計畫畫成圖，�
 python3 -m herdr_py.dag --recheck /tmp/dag-demo/run1      # 在全新的 clone 把每個通過的步驟重新評分
 ```
 
-- **隔離由程式負責**：每次嘗試都有自己的 `git clone --shared`，不留遠端；步驟的 clone 只會拿到它需要的步驟的輸出 commit（`refs/dag/<id>`），沒有任何其他步驟的東西，指令裡也只有那些步驟的摘要與 diff。Codex 成員在 `workspace-write` 沙盒裡工作；Claude 成員用 `--permission-mode acceptEdits` 加上檔案工具（唯讀步驟用 `dontAsk` 加讀檔工具）。用真的 Claude Code 實測過：在 clone 之外寫、讀、Glob、Grep 都會被擋；不能用 `--allowedTools`，它會讓成員讀寫整台機器。Codex 的沙盒不限制讀取，所以每次執行都會數成員的工具紀錄裡，指向別的步驟 clone 的次數（`summary.json` 的 `out_of_bounds`）。
+- **隔離由程式負責**：每次嘗試都有自己的 `git clone --shared`，不留遠端；步驟的 clone 只會拿到它需要的步驟的輸出 commit（`refs/dag/<id>`），沒有任何其他步驟的東西，指令裡也只有那些步驟的摘要與 diff。Codex 成員在 `workspace-write` 沙盒裡工作；Claude 成員用 `--permission-mode acceptEdits` 加上檔案工具（唯讀步驟用 `dontAsk` 加讀檔工具）。用真的 Claude Code 實測過：在 clone 之外寫、讀、Glob、Grep 都會被擋；不能用 `--allowedTools`，它會讓成員讀寫整台機器。OpenCode 成員（透過 daemon，`--socket`）每一步開一個在 clone 裡工作的新 session（OpenCode 的 `?directory=`）；daemon 會在問權限策略之前，先擋掉它在 clone 之外的動作，唯讀步驟連編輯和指令都擋。這只在 OpenCode 會先詢問這些動作時才成立（見權限策略），所以每一步開工前先確認 daemon 說 OpenCode 會詢問，而且 OpenCode 列出的 clone 內容和這台機器看到的一樣（OpenCode 在容器裡的話，執行資料夾要掛載在同一個路徑）；不成立就停下並說明原因。OpenCode 1.18.32 實測：唯讀步驟的編輯、讀 clone 之外的檔案都被擋下（檔案沒變；讀外面的檔案時 OpenCode 送來的是 external_directory 請求）。Codex 的沙盒不限制讀取，所以每次執行都會數成員的工具紀錄（Codex、Claude、OpenCode）裡，指向別的步驟 clone 的次數（`summary.json` 的 `out_of_bounds`）。
 - **步驟的檔案從哪裡開始**：不需要別的步驟 → 基準 commit；需要一個 → 接著那個步驟的輸出；需要好幾個 → 基準（兩種做法通常改同一批檔，由成員比較、整合），或指定 `"start": "merge"`（由程式先合併，衝突時這一步失敗並列出檔案）、或指定其中一個。重試會接著上一次的 commit，指令裡附上評分程式的說明。
 - **輸出是程式做的 commit**，不是成員做的：回合結束時把 clone 裡的變更全部 commit，評分程式檢查這個 commit（和 `coop` 同一套約定：回覆檔是最後一個參數；印 JSON 判定，或用 `"judge_mode": "exit"` 看結束碼）。評分程式的檔案以計畫檔所在的資料夾為準、在所有 clone 之外，開始時記下 hash：執行中被改就是評分錯誤。
-- **失敗**：一個步驟失敗，需要它的步驟都會被擋下，不相干的步驟照常進行。成員的後端壞掉、評分程式壞掉或 clone 建不起來，就不再開始新步驟（結束碼 3；`--keep-going` 只讓那一步失敗）；逾時或答案不合格是成員自己的失敗。
+- **失敗**：一個步驟失敗，需要它的步驟都會被擋下，不相干的步驟照常進行。成員的後端壞掉、評分程式壞掉或 clone 建不起來，就不再開始新步驟（結束碼 3；`--keep-going` 只讓那一步失敗）；逾時或答案不合格是成員自己的失敗。步驟的時限只算成員自己的時間：OpenCode 成員遇到模型供應商失敗、OpenCode 回報重試時，回報之前的空白和重試本身算供應商的，會加回時限，最多再加一個時限；供應商佔掉更久，這一回合就以 `provider_stall` 結束，算環境壞掉（結束碼 3），不算成員失敗。模型只是回得慢，仍算成員的時間。OpenCode 1.18.32 加免費模型實測：一次供應商逾時讓一個步驟的 900 秒少了 300 秒。
 - **收據與接續**：每次派工、交回、commit、判定都先寫進 `events.jsonl` 才往下走；`--resume` 從它重建狀態，已通過的步驟絕不重跑，因環境壞掉而失敗的步驟會重跑，計畫、題目或評分程式變了就拒絕接續。`summary.json` 只從事件算出「上游還沒通過就開始的次數」和「通過後又被派工的次數」（兩者都必須是 0），以及平行度。
-- 不會合併進你的 repo，也不會推送：輸出是執行資料夾裡的 commit，要不要合併由你決定。OpenCode 成員可以參加沒有 repo 的計畫（daemon 還不能在指定的資料夾工作）。
+- 不會合併進你的 repo，也不會推送：輸出是執行資料夾裡的 commit，要不要合併由你決定。
 
 ## 範例：投影片團隊
 
@@ -170,7 +172,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 374 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 389 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

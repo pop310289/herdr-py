@@ -25,7 +25,8 @@ step. Where the clone's files start ("start"): a step that needs nothing starts 
 one step continues from that step's output; a step that needs several starts at the base, and the member compares and
 combines them (two ways of doing one thing usually touch the same files). "start" can name one of the needs, "base",
 or "merge": the program merges the needs' outputs first, and a conflict fails the step, naming the files. Codex members work there in the workspace-write sandbox, Claude members with file tools only (their
-modules say what the real CLIs refuse); opencode members cannot work in a given folder yet. When the member's turn
+modules say what the real CLIs refuse), opencode members in a session of that folder, with every call outside it
+refused, and every edit and command too in a read step (members.py, DaemonMembers). When the member's turn
 ends, the program commits everything in the clone; that commit is the step's output and what the judge checks (a
 step with "access": "read" keeps no changes: its output is its start commit and its reply). Without a repo the reply
 is the output and members work where they always do.
@@ -62,7 +63,7 @@ import time
 
 from . import dagview
 from .coop import command_judge, exit_judge
-from .members import MemberError, Members, parse_member
+from .members import BROKEN, MemberError, Members, parse_member
 from .teamkb import one_line
 
 NODE_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,31}$")
@@ -262,9 +263,6 @@ def load_plan(path):
         elif not repo or subprocess.run(["git", "-C", repo, "rev-parse", "--git-dir"], stdout=subprocess.DEVNULL,
                                         stderr=subprocess.DEVNULL).returncode != 0:
             problems.append(f"repo: {raw.get('repo')!r} is not a git repository")
-        for nid in order:
-            if (nodes[nid]["member"] or {}).get("backend") == "opencode":
-                problems.append(f"node {nid}: opencode members cannot work in a step's clone yet")
     base = raw.get("base", "HEAD")
     if not isinstance(base, str) or not base.strip():
         problems.append("base: a commit, branch or tag")
@@ -592,7 +590,7 @@ class DagRun:
                     self.emit("node.commit", node=nid, attempt=attempt, dispatch=dispatch, sha=sha, changed=changed)
                 except WorkspaceError as exc:
                     broken = f"the step's clone could not be committed: {exc}"
-            if state in ("error", "aborted"):
+            if state in BROKEN:
                 return self.fail(nid, attempt, f"the member's backend ended {state}: {one_line(reply, 300)}", dispatch, infra=True)
             if broken:
                 status, score, detail = "invalid", None, broken
@@ -715,8 +713,8 @@ def invariants(events, nodes):
 
 
 def out_of_bounds(out, events):
-    """Member tool events (codex and claude logs under members/) that name another step's workspace while a step ran:
-    {"count": n, "examples": [...], "measured": [backends with logs]}; command members keep no such log."""
+    """Member tool events (codex, claude and opencode logs under members/) that name another step's workspace while a
+    step ran: {"count": n, "examples": [...], "measured": [backends with logs]}; command members keep no such log."""
     homes = {}
     for e in events:
         if e["kind"] == "node.dispatch" and e.get("workspace"):
@@ -726,7 +724,7 @@ def out_of_bounds(out, events):
     windows = [(e["member"], e["t"], ends.get((e["node"], e["attempt"]), float("inf")), homes[(e["node"], e["attempt"])])
                for e in events if e["kind"] == "node.dispatch" and e.get("workspace")]
     count, examples, measured = 0, [], []
-    for backend in ("codex", "claude"):
+    for backend in ("codex", "claude", "opencode"):
         path = os.path.join(out, "members", backend, "events.jsonl")
         if not os.path.isfile(path):
             continue

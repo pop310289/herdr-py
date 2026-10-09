@@ -197,15 +197,14 @@ class PlanTest(Base):
         self.assertEqual(node["judge_argv"], ["python3", os.path.join(self.plans, "judge.py"), "--strict"])
         self.assertIn(os.path.join(self.plans, "member.py"), node["member"]["command"])  # run in a clone, found anyway
 
-    def test_a_repository_is_checked_and_opencode_members_cannot_use_one(self):
+    def test_a_repository_is_checked_and_opencode_members_can_use_one(self):
         with self.assertRaises(dag.PlanError) as caught:
             dag.load_plan(self.plan([{"id": "A"}], repo=os.path.join(self.dir, "plan")))
         # a machine without git (the RHEL 8 test image) is told so instead of crashing
         self.assertIn("is not a git repository" if HAVE_GIT else "git is not installed", str(caught.exception))
         if HAVE_GIT:
-            with self.assertRaises(dag.PlanError) as caught:
-                dag.load_plan(self.plan([{"id": "A", "member": "o=opencode"}]))
-            self.assertIn("opencode members cannot work in a step's clone yet", str(caught.exception))
+            plan = dag.load_plan(self.plan([{"id": "A", "member": "o=opencode"}]))
+            self.assertEqual(plan["nodes"]["A"]["member"]["backend"], "opencode")
 
 
 @unittest.skipUnless(HAVE_GIT, "git is not installed")
@@ -472,3 +471,112 @@ class OutOfBoundsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAVE_GIT, "git is not installed")
+class OpenCodeStepsTest(Base):
+    """opencode members through a real daemon and a fake OpenCode that behaves as 1.18 with folders: each step's
+    session works in the step's clone, its events come on /global/event, and the scripted agent acts in that folder."""
+
+    def setUp(self):
+        super().setUp()
+        from fake_opencode import FakeOpenCode
+        from herdr_py.opencode import OpenCode
+        from herdr_py.policy import Policy
+        from herdr_py.server import Daemon
+        self.fake = FakeOpenCode(global_events=True).start()
+        self.addCleanup(self.fake.stop)
+        self.sock_dir = tempfile.mkdtemp(dir="/tmp")  # AF_UNIX paths are limited to ~104 bytes on macOS
+        self.addCleanup(shutil.rmtree, self.sock_dir, True)
+        policy = Policy([{"permission": "edit", "action": "allow"}, {"permission": "external_directory", "action": "deny"}],
+                        default="deny")
+        self.daemon = Daemon(OpenCode(self.fake.url), policy, self.sock_dir)
+        self.daemon.unasked = []  # what `serve` reads from an OpenCode that asks about everything
+        self.daemon.start()
+        self.addCleanup(self.daemon.stop)
+        self.fake.on_prompt = self.agent
+        self.peek = None  # a folder B's read tool names: its own, or another step's clone
+        self.stall = False
+
+    def agent(self, session_id, text):
+        """A: writes a.txt in its folder. B: tries to edit, is refused, reads a.txt (where self.peek says) and reports.
+        With self.stall, the model provider never answers: OpenCode reports a retry every 0.2 s."""
+        import time
+        folder = self.fake.folder_of(session_id)
+        if self.stall:
+            self.fake.emit("session.status", sessionID=session_id, status={"type": "busy"})
+            for n in range(40):
+                time.sleep(0.2)
+                self.fake.emit("session.status", sessionID=session_id,
+                               status={"type": "retry", "attempt": n + 1, "message": "Rate limit exceeded"})
+            return
+        if "doing step A " in text:
+            with open(os.path.join(folder, "a.txt"), "w") as handle:
+                handle.write("from A\n")
+            self.fake.turn(session_id, "wrote a.txt", tools=[("write", "completed", {"filePath": os.path.join(folder, "a.txt")}, "")])
+        else:
+            rid = self.fake.ask_permission(session_id, "edit", patterns=["a.txt"])
+            deadline = time.time() + 5
+            while rid in self.fake.pending and time.time() < deadline:
+                time.sleep(0.02)
+            read = os.path.join(self.peek or folder, "a.txt")
+            with open(os.path.join(folder, "a.txt")) as handle:
+                self.fake.turn(session_id, "a.txt says: " + handle.read().strip(),
+                               tools=[("read", "completed", {"filePath": read}, "from A")])
+
+    def plan_ab(self):
+        self.judge_rules({"A": {"files": {"a.txt": "from A"}}, "B": {"reply": "says: from A"}})
+        return self.plan([{"id": "A", "member": "o1=opencode:opencode/big-pickle", "timeout": 30},
+                          {"id": "B", "member": "o2=opencode", "needs": ["A"], "access": "read", "timeout": 30}])
+
+    def test_each_step_is_a_session_in_its_own_clone_and_a_read_step_cannot_edit(self):
+        out = os.path.join(self.dir, "run")
+        code, said, err = self.run_main(self.plan_ab(), "--out", out, "--socket", self.daemon.socket_path)
+        self.assertEqual(code, 0, said + err)
+        folders = sorted(s.get("directory") or "" for s in self.fake.sessions.values())
+        self.assertEqual(folders, [os.path.join(out, "workspaces", "A-1"), os.path.join(out, "workspaces", "B-1")])
+        self.assertEqual(sh(os.path.join(out, "workspaces", "A-1"), "git", "show", "HEAD:a.txt"), "from A")
+        self.assertEqual([r[1] for r in self.fake.replies], ["reject"])  # B's edit, refused before the policy (which allows edits)
+        self.assertIn("only reads", self.fake.replies[0][2])
+        self.assertEqual(self.summary(out)["out_of_bounds"], {"count": 0, "examples": [], "measured": ["opencode"]})
+        b = self.daemon.hub.agent("o2")
+        self.assertEqual((b.directory, sorted(b.deny)), (os.path.join(out, "workspaces", "B-1"), ["bash", "edit", "external_directory"]))
+        self.assertEqual(self.daemon.hub.agent("o1").model, "opencode/big-pickle")
+
+    def test_the_run_stops_when_opencode_does_not_ask_or_cannot_see_the_clone(self):
+        self.daemon.unasked = ["external_directory=unset"]
+        out, plan = os.path.join(self.dir, "run1"), self.plan_ab()
+        code, said, err = self.run_main(plan, "--out", out, "--socket", self.daemon.socket_path)
+        self.assertEqual(code, 3, said + err)  # stopped: the setup broke
+        stops = [e for e in self.events(out) if e["kind"] == "node.fail"]
+        self.assertIn("does not ask before external_directory", stops[0]["why"])
+        self.assertFalse(self.fake.sessions)  # nothing started
+
+        self.daemon.unasked, self.fake.unseen = [], True
+        out = os.path.join(self.dir, "run2")
+        code, said, err = self.run_main(plan, "--out", out, "--socket", self.daemon.socket_path)
+        self.assertEqual(code, 3, said + err)
+        stops = [e for e in self.events(out) if e["kind"] == "node.fail"]
+        self.assertIn("OpenCode cannot see", stops[0]["why"])
+        self.assertFalse(self.fake.sessions)
+
+    def test_a_tool_call_naming_another_steps_clone_is_counted(self):
+        out = os.path.join(self.dir, "run")
+        self.peek = os.path.join(out, "workspaces", "A-1")  # B's read names A's clone, not its own
+        code, said, err = self.run_main(self.plan_ab(), "--out", out, "--socket", self.daemon.socket_path)
+        self.assertEqual(code, 0, said + err)
+        self.assertEqual(self.summary(out)["out_of_bounds"], {"count": 1, "examples": ["o2 touched A-1"], "measured": ["opencode"]})
+
+    def test_a_provider_that_never_answers_stops_the_run_instead_of_failing_the_member(self):
+        self.stall = True
+        self.judge_rules({"A": {"files": {"a.txt": "from A"}}})
+        out = os.path.join(self.dir, "run")
+        plan = self.plan([{"id": "A", "member": "o1=opencode", "timeout": 1, "retries": 2}])
+        code, said, err = self.run_main(plan, "--out", out, "--socket", self.daemon.socket_path)
+        self.assertEqual(code, 3, said + err)  # the setup broke: no retry is spent on it
+        events = self.events(out)
+        self.assertEqual([e["state"] for e in events if e["kind"] == "node.return"], ["provider_stall"])
+        fail = [e for e in events if e["kind"] == "node.fail"][0]
+        self.assertTrue(fail["infra"])
+        self.assertIn("the model provider stalled", fail["why"])
+        self.assertFalse([e for e in events if e["kind"] in ("node.verdict", "node.retry")])

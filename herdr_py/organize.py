@@ -33,7 +33,7 @@ import sys
 import time
 
 from . import dag
-from .members import MemberError, Members, parse_member
+from .members import BROKEN, MemberError, Members, parse_member
 from .teamkb import one_line
 
 FENCE = re.compile(r"^[ \t]*```[ \t]*(?:json)?[ \t]*\n(.*?)^[ \t]*```[ \t]*$", re.S | re.M)
@@ -250,7 +250,7 @@ class Organizer:
             if state != "idle":
                 problems = [f"the organizer's turn ended {state}: {one_line(reply, 200)}"]
                 self.emit("organize.refused", attempt=attempt, problems=problems)
-                if state in ("error", "aborted"):
+                if state in BROKEN:
                     return False, problems  # the setup broke: asking again would not help
                 continue
             plan, problem = parse(reply)

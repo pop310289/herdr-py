@@ -2,7 +2,8 @@
 
 1. A Unix socket speaking newline-delimited JSON (requests `{"id", "method", "params"}`; responses `{"id", "result"}` or
    `{"id", "error": {"code", "message"}}`). Method names follow herdr's style: ping, agent.list, agent.get, agent.start,
-   agent.prompt, agent.abort, agent.wait, agent.read, permission.list, permission.reply, events.subscribe, server.stop.
+   agent.prompt, agent.abort, agent.wait, agent.read, permission.list, permission.reply, folder.list, events.subscribe,
+   server.stop.
 2. An optional HTTP server for the web UI: static files plus /api/* (JSON and Server-Sent Events). Every /api call needs
    the token from <state dir>/token (header `Authorization: Bearer <token>`, or `?token=` for EventSource).
 
@@ -75,7 +76,8 @@ class Daemon:
             return hub.get(p["name"])
         if method == "agent.start":
             view = hub.start(p["name"], p["prompt"], budget_s=p.get("budget_s"), followups=p.get("followups") or [],
-                             model=p.get("model"), title=p.get("title"), files=p.get("files") or [], fresh=bool(p.get("fresh")))
+                             model=p.get("model"), title=p.get("title"), files=p.get("files") or [], fresh=bool(p.get("fresh")),
+                             directory=p.get("directory"), deny=p.get("deny") or ())
             if p.get("wait"):
                 return hub.wait(p["name"], until=p.get("until") or ["idle", "aborted", "error"], timeout=p.get("timeout_s"))
             return view
@@ -84,6 +86,8 @@ class Daemon:
                 return hub.prompt_and_wait(p["name"], p["text"], until=p.get("until") or ["idle"], timeout=p.get("timeout_s"),
                                            files=p.get("files") or [])
             return hub.prompt(p["name"], p["text"], files=p.get("files") or [])
+        if method == "folder.list":
+            return {"names": hub.folder(p["directory"])}
         if method == "agent.abort":
             return hub.abort(p["name"], reason=p.get("reason", "user"))
         if method == "agent.wait":

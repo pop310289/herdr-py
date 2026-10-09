@@ -167,8 +167,15 @@ python3 -m herdr_py.dag --recheck /tmp/dag-demo/run1      # judge every passed s
   only those steps' summaries and diffs. Codex members work there in the `workspace-write` sandbox; Claude members get
   `--permission-mode acceptEdits` with file tools only (a read step: `dontAsk` with read tools). Checked against the
   real Claude Code: writes, reads, Glob and Grep outside the clone are refused; `--allowedTools` must not be used, as it
-  let the member read and write anywhere. Codex's sandbox does not limit reads, so a run counts the member tool events
-  that name another step's clone (`out_of_bounds` in `summary.json`).
+  let the member read and write anywhere. OpenCode members (through the daemon, `--socket`) get a new session working
+  in the clone (OpenCode's `?directory=`); the daemon refuses their calls outside it and, in a read step, every edit
+  and command, before the policy is asked. That holds only when OpenCode asks before those calls (Permission policy),
+  so a step checks first that the daemon says it does and that OpenCode lists the clone as this machine does (an
+  OpenCode in a container needs the run folder mounted at the same path); otherwise the run stops and says why.
+  Checked with OpenCode 1.18.32: a read step's edit and a read of a file outside the clone were both refused (the
+  file left as it was; OpenCode asked about the outside read as external_directory). Codex's sandbox does not
+  limit reads, so a run counts the member tool events (Codex, Claude and OpenCode logs) that name another step's clone
+  (`out_of_bounds` in `summary.json`).
 - **Where a step's files start**: a step that needs nothing starts at the base commit; one need: that step's output;
   several: the base (two ways of doing one thing usually touch the same files, so the member compares and combines),
   or `"start": "merge"` (merged by the program; a conflict fails the step and names the files) or one of the needs. A
@@ -179,13 +186,16 @@ python3 -m herdr_py.dag --recheck /tmp/dag-demo/run1      # judge every passed s
   are hashed when the run starts: a judge changed during the run is a judge error.
 - **Failures**: a failed step blocks every step that needs it, and independent steps go on. A broken backend, a broken
   judge or a clone that cannot be made stops new steps (exit code 3; `--keep-going` fails only that step); a timeout or
-  an invalid answer is the member's own failure.
+  an invalid answer is the member's own failure. A step's time limit is the member's own time: for opencode members,
+  the time the model provider lost (OpenCode reported a failed call and retried: the silence before the report and the
+  retry itself) is added to it, up to one more limit; a provider that takes longer ends the turn as `provider_stall`,
+  a broken setup (exit code 3), not the member's failure. A model that is merely slow to answer is the member's time.
+  Seen with OpenCode 1.18.32 and a free model: a provider timeout cost one step 300 s of its 900 s.
 - **Receipts and resume**: every dispatch, return, commit and verdict is in `events.jsonl` before the run goes on;
   `--resume` rebuilds the state from it, never runs a passed step again, runs again a step whose setup broke, and
   refuses if the plan, a task or a judge changed. `summary.json` counts, from the events alone, steps started before
   their needs passed and passed steps dispatched again (both must be 0), and the parallelism of the run.
 - Nothing is merged into your repository or pushed: outputs are commits in the run folder, and merging is up to you.
-  OpenCode members can take part in plans without a repository (the daemon cannot work in a given folder yet).
 
 ## Example: a slide team
 
@@ -303,8 +313,9 @@ The daemon listens on a Unix socket (default `~/.local/state/herdr-py/herdr-py.s
 {"id": "1", "result": {"name": "a", "state": "starting", ...}}
 ```
 
-Methods: `ping`, `agent.list`, `agent.get`, `agent.start` (`wait`, `fresh`), `agent.prompt` (`wait`, `timeout_s`), `agent.abort`,
-`agent.wait`, `agent.read`, `permission.list`, `permission.reply`, `events.subscribe`, `server.stop`. `agent.prompt`
+Methods: `ping`, `agent.list`, `agent.get`, `agent.start` (`wait`, `fresh`, `directory`, `deny`), `agent.prompt` (`wait`,
+`timeout_s`), `agent.abort`, `agent.wait`, `agent.read`, `permission.list`, `permission.reply`, `folder.list`,
+`events.subscribe`, `server.stop`. `agent.prompt`
 with `wait` returns when the turn it started has finished; if OpenCode shows no activity within 5 s it fails with
 `prompt_stalled` (the prompt may still arrive: read before resending). `--max-agents` and `--max-prompts` stop a runaway
 manager agent. The HTTP API behind the web page needs the token from `<state dir>/token`.
@@ -313,6 +324,11 @@ manager agent. The HTTP API behind the web page needs the token from `<state dir
 has finished. OpenCode compacts a long session at a moment nobody chooses (in one of our runs a drawer's reply after
 compaction was a summary instead of the JSON it was asked for), so a caller that puts everything a turn needs into the
 prompt can start every turn clean. Tokens, turns and decisions carry on; the old session's late events are ignored.
+
+`agent.start` with `directory` makes the session work in that folder instead of OpenCode's own (OpenCode's
+`?directory=`; its events come on OpenCode's `/global/event`, which the daemon follows), and `deny` lists permission
+kinds refused for that agent before the policy is asked (`["edit", "bash"]` for an agent that only reads).
+`folder.list` returns what OpenCode lists in a folder, an error when it cannot see it.
 
 ## RHEL 8 notes
 
@@ -338,7 +354,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 374 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 389 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

@@ -13,6 +13,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
+from herdr_py.client import ClientError  # noqa: E402
 from herdr_py.members import CommandMembers, DaemonMembers, MemberError, Members, parse_member, this_turn_reply  # noqa: E402
 
 
@@ -100,26 +101,36 @@ class CommandTest(unittest.TestCase):
 class FakeDaemon:
     """The daemon's socket API as DaemonMembers uses it: agent.list/start/prompt/get/read/abort."""
 
-    def __init__(self, replies, stuck=()):
+    def __init__(self, replies, stuck=(), unasked=(), names=None, tools=(), view=None):
         self.replies, self.stuck = list(replies), set(stuck)
         self.calls, self.agents, self.messages = [], {}, {}
+        self.unasked, self.names, self.tools = unasked, names, list(tools)  # names: what OpenCode lists in a folder
+        self.view = view or (lambda name: {})  # extra agent.get fields (provider_wait_s, a state that changes)
 
     def call(self, method, **p):
         self.calls.append((method, p))
         name = p.get("name")
+        if method == "ping":
+            return {"pong": True, "opencode_does_not_ask": None if self.unasked is None else list(self.unasked)}
+        if method == "folder.list":
+            if self.names is None:
+                raise ClientError("error", "OpenCode cannot list it: HTTP 500")
+            return {"names": self.names}
         if method == "agent.list":
-            return {"agents": [{"name": n} for n in self.agents]}
+            return {"agents": [dict({"name": n, "tokens": 42}, **{k: v for k, v in self.view(n).items() if k != "state"})
+                               for n in self.agents]}
         if method in ("agent.start", "agent.prompt"):
             if method == "agent.start" and (p.get("fresh") or name not in self.agents):
                 self.messages[name] = []
             self.agents[name] = "working" if name in self.stuck else "idle"
             self.messages[name].append({"role": "user", "kind": "text", "text": p.get("prompt") or p.get("text")})
             reply = self.replies.pop(0)
+            self.messages[name] += [{"role": "assistant", "kind": "tool", "tool": t} for t in self.tools]
             if reply:
                 self.messages[name].append({"role": "assistant", "kind": "text", "text": reply})
             return {}
         if method == "agent.get":
-            return {"state": self.agents[name], "followups_left": 0, "tokens": 42}
+            return dict({"state": self.agents[name], "followups_left": 0, "tokens": 42}, **self.view(name))
         if method == "agent.read":
             return {"messages": self.messages[name][-p["limit"]:]}
         if method == "agent.abort":
@@ -139,7 +150,7 @@ class DaemonTest(unittest.TestCase):
         sent = [(m, p.get("fresh")) for m, p in daemon.calls if m in ("agent.start", "agent.prompt")]
         self.assertEqual(sent, [("agent.start", False), ("agent.prompt", None), ("agent.start", True)])
         self.assertEqual([p.get("model") for m, p in daemon.calls if m == "agent.start"], ["ollama/x", None])
-        self.assertEqual(members.tokens("a"), 42)
+        self.assertEqual((members.tokens("a"), members.tokens("not-yet")), (42, 0))  # none yet is 0, not unknown
 
     def test_a_turn_without_words_does_not_return_the_last_turns_answer(self):
         daemon = FakeDaemon(["the old answer", ""])
@@ -153,6 +164,84 @@ class DaemonTest(unittest.TestCase):
         members = DaemonMembers(client=daemon, clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s))
         self.assertEqual(members.run_turn("a", "p", timeout=5)[1], "timeout")
         self.assertIn(("agent.abort", {"name": "a", "reason": "turn time limit"}), daemon.calls)
+
+    def test_a_turn_in_a_folder_is_a_new_session_there_with_its_refusals(self):
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        open(os.path.join(work, "deck.json"), "w").close()
+        daemon = FakeDaemon(["one", "two", "three"], names=["deck.json"])
+        members = DaemonMembers(client=daemon, sleep=lambda s: None)
+        members.run_turn("a", "p1", workdir=work, access="write")
+        members.run_turn("a", "p2", workdir=work, access="read")  # no forget(): a turn in a folder never continues one
+        members.run_turn("a", "p3", workdir=work)
+        starts = [p for m, p in daemon.calls if m == "agent.start"]
+        self.assertEqual([(p["fresh"], p["directory"], p["deny"]) for p in starts],
+                         [(False, work, ["external_directory"]), (True, work, ["external_directory", "edit", "bash"]),
+                          (True, work, ["external_directory"])])  # no access given: write
+        self.assertEqual(len([m for m, _ in daemon.calls if m == "ping"]), 1)  # OpenCode's config is read once
+
+    def test_a_folder_turn_is_refused_before_anything_starts_when_bounds_cannot_hold(self):
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        open(os.path.join(work, "deck.json"), "w").close()
+        cases = [(dict(unasked=None, names=["deck.json"]), "write", "could not read OpenCode's permission config"),
+                 (dict(unasked=["edit=unset"], names=["deck.json"]), "read", "does not ask before edit"),
+                 (dict(unasked=['bash="allow"'], names=["deck.json"]), "read", "does not ask before bash"),
+                 (dict(unasked=["external_directory=unset"], names=["deck.json"]), "write", "does not ask before external_directory"),
+                 (dict(unasked=[], names=None), "write", "OpenCode cannot see"),
+                 (dict(unasked=[], names=["deck.json", "other.txt"]), "write", "lists other files")]
+        for kw, access, says in cases:
+            daemon = FakeDaemon(["x"], **kw)
+            with self.assertRaises(MemberError) as caught:
+                DaemonMembers(client=daemon, sleep=lambda s: None).run_turn("a", "p", workdir=work, access=access)
+            self.assertIn(says, str(caught.exception))
+            self.assertFalse([m for m, _ in daemon.calls if m in ("agent.start", "agent.prompt")], says)
+        # edits not asked about only matter to a step that reads: a writing step's edits are its job
+        daemon = FakeDaemon(["fine"], unasked=["edit=unset", "bash=unset"], names=["deck.json"])
+        self.assertEqual(DaemonMembers(client=daemon, sleep=lambda s: None).run_turn("a", "p", workdir=work), ("fine", "idle"))
+
+    def test_this_turns_tool_calls_are_logged_once(self):
+        log = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, log, True)
+        daemon = FakeDaemon(["one", "two"], tools=["read"])
+        members = DaemonMembers(client=daemon, sleep=lambda s: None, log_dir=os.path.join(log, "opencode"))
+        members.run_turn("a", "p1")
+        members.run_turn("a", "p2")  # the same session: turn 1's call is in the transcript again
+        with open(os.path.join(log, "opencode", "events.jsonl")) as handle:
+            rows = [json.loads(line) for line in handle]
+        self.assertEqual([(r["agent"], r["event"]["tool"]) for r in rows], [("a", "read"), ("a", "read")])
+
+    def test_time_the_provider_lost_is_added_to_the_limit_up_to_one_more_limit(self):
+        now = [0.0]
+        clock, sleep = (lambda: now[0]), (lambda s: now.__setitem__(0, now[0] + s))
+
+        # 50 s lost to the provider: the member still has its 100 s, and finishes at 140 s
+        daemon = FakeDaemon(["done"], stuck={"a"}, view=lambda n: {"provider_wait_s": 50 if now[0] >= 30 else 0,
+                                                                     **({"state": "idle"} if now[0] >= 140 else {})})
+        self.assertEqual(DaemonMembers(client=daemon, clock=clock, sleep=sleep).run_turn("a", "p", timeout=100), ("done", "idle"))
+
+        # without the provider's 50 s the same member would have been stopped at 100 s
+        now[0] = 0.0
+        daemon = FakeDaemon(["late"], stuck={"a"}, view=lambda n: {"state": "idle"} if now[0] >= 140 else {})
+        self.assertEqual(DaemonMembers(client=daemon, clock=clock, sleep=sleep).run_turn("a", "p", timeout=100)[1], "timeout")
+
+        # a provider that eats everything: stopped after two limits, as a broken setup
+        now[0] = 0.0
+        daemon = FakeDaemon(["x"], stuck={"a"}, view=lambda n: {"provider_wait_s": now[0]})
+        reply, state = DaemonMembers(client=daemon, clock=clock, sleep=sleep).run_turn("a", "p", timeout=100)
+        self.assertEqual(state, "provider_stall")
+        self.assertTrue(200 < now[0] <= 202)
+        self.assertTrue(reply.startswith("(the model provider stalled:"))
+        self.assertIn("the model provider stalled", [p["reason"] for m, p in daemon.calls if m == "agent.abort"][0])
+
+    def test_only_this_turns_provider_time_counts_in_a_kept_session(self):
+        now = [0.0]
+        daemon = FakeDaemon(["one", "two"], view=lambda n: {"provider_wait_s": 500})  # lost in an earlier turn
+        members = DaemonMembers(client=daemon, clock=lambda: now[0], sleep=lambda s: now.__setitem__(0, now[0] + s))
+        members.run_turn("a", "p1")
+        daemon.stuck.add("a")
+        self.assertEqual(members.run_turn("a", "p2", timeout=100)[1], "timeout")  # not 500 s more
+        self.assertTrue(100 < now[0] <= 102)
 
     def test_the_reply_is_what_came_after_the_last_prompt(self):
         messages = [{"role": "user", "kind": "text", "text": "p1"}, {"role": "assistant", "kind": "text", "text": "a1"},

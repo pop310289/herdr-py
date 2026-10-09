@@ -65,17 +65,23 @@ class OpenCode:
             raise OpenCodeError(f"{method} {path} -> {exc}") from None
         return json.loads(data) if data else None
 
+    @staticmethod
+    def at(path, directory):
+        """path, with ?directory=... for a session that works in another folder than the server's (OpenCode 1.18:
+        a session made in a folder is reached through that folder; its events come only on /global/event)."""
+        return f"{path}?{urllib.parse.urlencode({'directory': directory})}" if directory else path
+
     # --- sessions -------------------------------------------------------
     def health(self):
         return self.call("GET", "/global/health", timeout=5)
 
-    def create_session(self, title):
-        return self.call("POST", "/session", {"title": title})
+    def create_session(self, title, directory=None):
+        return self.call("POST", self.at("/session", directory), {"title": title})
 
-    def session(self, session_id):
-        return self.call("GET", f"/session/{session_id}")
+    def session(self, session_id, directory=None):
+        return self.call("GET", self.at(f"/session/{session_id}", directory))
 
-    def prompt(self, session_id, text, model=None, agent=None, files=()):
+    def prompt(self, session_id, text, model=None, agent=None, files=(), directory=None):
         """files: [{"mime": "image/png", "url": "data:...", "filename": "x.png"}] (OpenCode's FilePartInput)."""
         body = {"parts": [{"type": "text", "text": text}] + [dict(f, type="file") for f in files]}
         if model:
@@ -83,50 +89,65 @@ class OpenCode:
             body["model"] = {"providerID": provider, "modelID": model_id}
         if agent:
             body["agent"] = agent
-        return self.call("POST", f"/session/{session_id}/prompt_async", body)
+        return self.call("POST", self.at(f"/session/{session_id}/prompt_async", directory), body)
 
-    def abort(self, session_id):
-        return self.call("POST", f"/session/{session_id}/abort")
+    def abort(self, session_id, directory=None):
+        return self.call("POST", self.at(f"/session/{session_id}/abort", directory))
 
-    def messages(self, session_id):
-        return self.call("GET", f"/session/{session_id}/message")
+    def files(self, path=".", directory=None):
+        """GET /file: the entries of `path` in the server's folder or in `directory`. OpenCode 1.18 answers a folder it
+        does not have (one not mounted in its container) with HTTP 500, an OpenCodeError here."""
+        query = {"path": path, **({"directory": directory} if directory else {})}
+        return self.call("GET", "/file?" + urllib.parse.urlencode(query)) or []
 
-    def statuses(self):
-        """{session_id: {"type": "idle"|"busy"|"retry", ...}} for sessions the server knows are not idle."""
-        return self.call("GET", "/session/status") or {}
+    def messages(self, session_id, directory=None):
+        return self.call("GET", self.at(f"/session/{session_id}/message", directory))
+
+    def statuses(self, directory=None):
+        """{session_id: {"type": "idle"|"busy"|"retry", ...}} for sessions the server knows are not idle (in one
+        folder: the server's, or `directory`)."""
+        return self.call("GET", self.at("/session/status", directory)) or {}
 
     # --- permissions and questions -------------------------------------
-    def pending_permissions(self):
-        return self.call("GET", "/permission") or []
+    def pending_permissions(self, directory=None):
+        return self.call("GET", self.at("/permission", directory)) or []
 
-    def reply_permission(self, request_id, reply, message=None):
+    def reply_permission(self, request_id, reply, message=None, directory=None):
         body = {"reply": reply}
         if message:
             body["message"] = message
-        return self.call("POST", f"/permission/{request_id}/reply", body)
+        return self.call("POST", self.at(f"/permission/{request_id}/reply", directory), body)
 
-    def pending_questions(self):
-        return self.call("GET", "/question") or []
+    def pending_questions(self, directory=None):
+        return self.call("GET", self.at("/question", directory)) or []
 
-    def reject_question(self, request_id):
-        return self.call("POST", f"/question/{request_id}/reject")
+    def reject_question(self, request_id, directory=None):
+        return self.call("POST", self.at(f"/question/{request_id}/reject", directory))
 
     # --- events ---------------------------------------------------------
-    def stream(self, on_event, stop, on_state=None, retry=1.0, max_retry=15.0):
-        """Read GET /event until `stop` is set, reconnecting with backoff.
+    event_path = "/global/event"
 
-        on_event(event_dict) is called for every event. on_state("connected"|"disconnected", detail) lets the
-        caller resynchronise after a reconnect (events sent while disconnected are not replayed by OpenCode).
+    def stream(self, on_event, stop, on_state=None, retry=1.0, max_retry=15.0):
+        """Read the event stream until `stop` is set, reconnecting with backoff.
+
+        GET /global/event carries the events of every folder the server works in, each wrapped as {"directory",
+        "project", "payload"}: on_event gets the payload with "directory" added. A server without it (404) is read
+        through GET /event, its own folder's events only. on_event(event_dict) is called for every event;
+        on_state("connected"|"disconnected", detail) lets the caller resynchronise after a reconnect (events sent
+        while disconnected are not replayed by OpenCode).
         """
         delay = retry
         while not stop.is_set():
             conn = None
             try:
                 conn = http.client.HTTPConnection(self.host, self.port, timeout=60)
-                conn.request("GET", "/event", headers={k: v for k, v in self.headers.items() if k != "Content-Type"})
+                conn.request("GET", self.event_path, headers={k: v for k, v in self.headers.items() if k != "Content-Type"})
                 resp = conn.getresponse()
+                if resp.status == 404 and self.event_path == "/global/event":
+                    self.event_path = "/event"  # an older server: one folder's events
+                    continue
                 if resp.status != 200:
-                    raise OpenCodeError(f"GET /event -> HTTP {resp.status}")
+                    raise OpenCodeError(f"GET {self.event_path} -> HTTP {resp.status}")
                 if on_state:
                     on_state("connected", "")
                 delay = retry
@@ -144,6 +165,8 @@ class OpenCode:
                         except ValueError:
                             event = None
                         data = []
+                        if isinstance(event, dict) and isinstance(event.get("payload"), dict):
+                            event = dict(event["payload"], directory=event.get("directory"))
                         if event is not None:
                             on_event(event)
             except Exception as exc:  # network errors, timeouts, server restarts: report and reconnect

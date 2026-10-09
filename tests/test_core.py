@@ -74,6 +74,30 @@ class HubTest(unittest.TestCase):
         view = self.hub.get("a")
         self.assertEqual((view["turns"], self.hub.agents["a"].idles), (1, 1))
 
+    def test_time_lost_to_the_model_provider_is_counted_apart(self):
+        sid = self.start()
+        self.fake.emit("session.status", sessionID=sid, status={"type": "busy"})
+        wait_for(lambda: self.state() == "working")
+        lost = lambda: self.hub.get("a")["provider_wait_s"]  # noqa: E731
+        self.clock.now += 300  # the provider says nothing for 300 s, then OpenCode reports the failure and retries
+        self.fake.emit("session.status", sessionID=sid,
+                       status={"type": "retry", "attempt": 1, "message": "Provider response headers timed out after 300000ms"})
+        wait_for(lambda: lost() == 300.0, what="the silence before the retry")
+        self.clock.now += 2
+        self.fake.emit("session.status", sessionID=sid, status={"type": "retry", "attempt": 2, "message": "Rate limit exceeded"})
+        wait_for(lambda: lost() == 302.0, what="the second retry, counted once")
+        self.clock.now += 5
+        self.fake.emit("session.status", sessionID=sid, status={"type": "busy"})
+        wait_for(lambda: lost() == 307.0, what="the retry until working again")
+        self.clock.now += 100  # a slow model with no failure reported is the agent's own time
+        self.fake.emit("session.status", sessionID=sid, status={"type": "idle"})
+        wait_for(lambda: self.state() == "idle")
+        self.assertEqual(lost(), 307.0)
+        with open(os.path.join(self.tmp.name, "events.jsonl")) as handle:
+            rows = [json.loads(line) for line in handle if '"provider_retry"' in line]
+        self.assertEqual([(r["attempt"], r["provider_wait_s"]) for r in rows], [(1, 300.0), (2, 302.0)])
+        self.assertIn("timed out", rows[0]["message"])
+
     def test_policy_allows_denies_and_leaves_ask_for_a_human(self):
         sid = self.start()
         self.fake.emit("session.status", sessionID=sid, status={"type": "busy"})
@@ -261,3 +285,83 @@ class PolicyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FolderTest(unittest.TestCase):
+    """Agents whose sessions work in a folder of their own (a DAG step's clone), against a fake that behaves as
+    OpenCode 1.18 (checked on the real server): such a session is reached with ?directory= and its events come only on
+    GET /global/event."""
+
+    def setUp(self):
+        self.fake = FakeOpenCode(password="pw", global_events=True).start()
+        self.client = OpenCode(self.fake.url, password="pw")
+        self.tmp = tempfile.TemporaryDirectory()
+        rules = RULES + [{"permission": "edit", "action": "allow"}]
+        self.hub = Hub(self.client, Policy(rules, default="ask"), state_path=os.path.join(self.tmp.name, "state.json"),
+                       clock=Clock(), run=lambda fn: fn())
+        self.stop, _ = start_stream_thread(self.client, self.hub.on_event, self.hub.on_stream_state)
+        wait_for(lambda: self.fake.stream_count() == 1, what="event stream")
+
+    def tearDown(self):
+        self.stop.set()
+        self.fake.stop()
+        self.hub.close()
+        self.tmp.cleanup()
+
+    def calls(self, method, path):
+        return [d for m, p, d in self.fake.requests if m == method and p == path]
+
+    def test_an_agent_in_a_folder_is_reached_there_and_followed_on_the_global_stream(self):
+        sid = self.hub.start("a", "do it", directory="/work/step-1")["session_id"]
+        self.assertEqual(self.fake.sessions[sid]["directory"], "/work/step-1")
+        self.assertEqual(self.calls("POST", f"/session/{sid}/prompt_async"), ["/work/step-1"])
+        self.assertEqual(self.calls("GET", "/global/event"), [None])  # one stream for every folder
+        self.fake.turn(sid, "done")
+        wait_for(lambda: self.hub.get("a")["state"] == "idle", what="idle from the global stream")
+        self.assertEqual(self.hub.transcript("a")[-1]["text"], "done")
+        self.assertEqual(self.calls("GET", f"/session/{sid}/message"), ["/work/step-1"])
+        self.hub.abort("a")
+        self.assertEqual(self.calls("POST", f"/session/{sid}/abort"), ["/work/step-1"])
+        self.assertEqual(self.hub.get("a")["directory"], "/work/step-1")
+
+    def test_a_permission_in_a_folder_is_answered_there(self):
+        sid = self.hub.start("a", "do it", directory="/work/step-1")["session_id"]
+        rid = self.fake.ask_permission(sid, "bash", "ls")
+        wait_for(lambda: self.fake.replies, what="the policy's answer")
+        self.assertEqual(self.fake.replies[0][:2], (rid, "once"))
+        self.assertEqual(self.calls("POST", f"/permission/{rid}/reply"), ["/work/step-1"])
+
+    def test_denied_kinds_are_refused_before_the_policy_is_asked(self):
+        sid = self.hub.start("r", "look only", directory="/work/step-2", deny=["edit", "bash"])["session_id"]
+        rid = self.fake.ask_permission(sid, "edit", patterns=["deck.json"])  # the policy would allow this edit
+        wait_for(lambda: self.fake.replies, what="the refusal")
+        self.assertEqual(self.fake.replies[0][:2], (rid, "reject"))
+        self.assertIn("only reads", self.fake.replies[0][2])
+        self.assertEqual(self.hub.agent("r").decisions[-1][-1], "agent.deny")
+        other = self.hub.start("w", "write", directory="/work/step-3")["session_id"]
+        rid2 = self.fake.ask_permission(other, "edit", patterns=["deck.json"])
+        wait_for(lambda: len(self.fake.replies) == 2, what="the policy's answer")
+        self.assertEqual(self.fake.replies[1][:2], (rid2, "once"))  # without deny the policy decides
+
+    def test_resync_asks_every_folder_in_use(self):
+        home = self.hub.start("h", "here")["session_id"]
+        away = self.hub.start("f", "there", directory="/work/step-1")["session_id"]
+        self.fake.drop_streams()
+        self.fake.status[away] = {"type": "busy"}
+        rid = self.fake.ask_permission(away, "bash", "make", announce=False)  # asked while the stream was down
+        wait_for(lambda: self.fake.stream_count() == 1, what="reconnect")
+        wait_for(lambda: self.hub.get("f")["state"] == "blocked", what="the missed request")
+        self.assertIn("/work/step-1", self.calls("GET", "/session/status"))
+        self.assertIn(None, self.calls("GET", "/session/status"))
+        self.assertEqual([p["id"] for p in self.hub.pending("f")], [rid])
+        self.assertEqual(self.hub.get("h")["state"], "starting")  # the other folder's status did not touch it
+        self.assertNotEqual(home, away)
+
+    def test_the_state_file_keeps_each_agents_folder_and_refusals(self):
+        self.hub.start("r", "look only", directory="/work/step-2", deny=["edit"])
+        self.hub.save()
+        again = Hub(self.client, Policy(RULES), state_path=os.path.join(self.tmp.name, "state.json"), clock=Clock(), run=lambda fn: fn())
+        self.assertEqual(again.load(), 1)
+        view = again.get("r")
+        self.assertEqual((view["directory"], view["deny"]), ("/work/step-2", ["edit"]))
+        again.close()
