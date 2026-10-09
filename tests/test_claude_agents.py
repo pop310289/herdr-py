@@ -79,6 +79,19 @@ class ClaudeAgentsTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.team.run_turn("w1", "x", workdir=ws, access="admin")
 
+    def test_a_research_turn_reads_the_folder_and_may_only_use_the_web_tools(self):  # checked against the real CLI
+        ws = os.path.join(self.root, "ws2")
+        os.makedirs(ws)
+        self.team.run_turn("r1", "find facts", workdir=ws, access="research")
+        call = self.calls()[-1]
+        args = call["args"]
+        self.assertEqual(args[args.index("--permission-mode") + 1], "dontAsk")
+        self.assertEqual(call["tools"], ["Read", "Glob", "Grep", "WebSearch", "WebFetch"])
+        rules = json.loads(args[args.index("--settings") + 1])
+        self.assertEqual(rules, {"permissions": {"allow": ["WebSearch", "WebFetch"]}})  # without it dontAsk refused WebSearch
+        self.assertNotIn("--allowedTools", args)
+        self.assertEqual(call["cwd"], os.path.realpath(ws))
+
     def test_fresh_members_and_forget_start_a_new_conversation(self):
         team = ClaudeAgents(os.path.join(self.root, "team3"), claude=self.claude, fresh=True)
         self.addCleanup(team.close)

@@ -345,6 +345,17 @@ class EngineTest(Base):
         self.assertEqual([t["member"] for t in self.records("run.jsonl")], ["b", "a", "b"])
         self.assertGreater(self.summary()["idle_seconds"]["b"], 0.8)  # b waited for a's result before its second todo
 
+    def test_research_access_and_verified_results_as_files_on_the_board(self):
+        self.script(planner=[add("one"), add(done=True)], members={"a": [{"answer": "42", "board_after": True}]})
+        code, said, err = self.run_main("--turns", "1", "--member-access", "research", members=("a",))
+        self.assertEqual(code, 0, said + err)
+        self.assertEqual(self.read_log("a-01.where").split("\n")[1], "research")
+        entry = next(e for e in TeamKB(os.path.join(self.out, "kb")).entries() if e["status"] == "valid")
+        with open(os.path.join(self.out, "board", "artifacts", entry["id"] + ".txt")) as handle:
+            self.assertEqual(handle.read().strip(), "42")
+        with open(os.path.join(self.out, "board", "TEAM_BOARD.md")) as handle:
+            self.assertIn("artifacts/%s.txt: %s by a, score 42" % (entry["id"], entry["id"]), handle.read())
+
 
 class PartsTest(Base):
     def test_arguments_are_checked(self):

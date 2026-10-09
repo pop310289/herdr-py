@@ -127,7 +127,8 @@ class CommandMembers:
 # A turn in a given folder (a DAG step's clone): the session works there (OpenCode's ?directory=) and herdr-py refuses
 # its calls outside the folder and, for a step that only reads, every edit and command. herdr-py hears of a call only
 # when OpenCode asks about it, so OpenCode must ask about these kinds (README: Permission policy).
-REFUSED = {"write": ["external_directory"], "read": ["external_directory", "edit", "bash"]}
+REFUSED = {"write": ["external_directory"], "read": ["external_directory", "edit", "bash"],
+           "research": ["external_directory", "edit", "bash"]}  # web fetches are left to the daemon's policy
 
 
 class DaemonMembers:
@@ -167,7 +168,7 @@ class DaemonMembers:
                 raise MemberError("the daemon could not read OpenCode's permission config, so nothing shows that OpenCode "
                                   "asks before the calls an opencode member may not make outside its folder")
             self.unasked = {item.split("=")[0] for item in unasked}
-        loose = [kind for kind in REFUSED[access] if kind in self.unasked]
+        loose = [kind for kind in REFUSED[access] if kind in self.unasked]  # research: as read
         if loose:
             raise MemberError(f"OpenCode does not ask before {', '.join(loose)}, so herdr-py could not refuse those calls "
                               f"to an opencode member working in {workdir}: start OpenCode with OPENCODE_CONFIG_CONTENT "

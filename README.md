@@ -188,7 +188,11 @@ The run stops when the member turns are used up, the target score (`--target`) i
 its wakes are used up with nothing left to do, or `--patience` judged answers in a row did not beat the best.
 `summary.json` counts todos taken twice (must be 0), turns that can be traced to their todo, board version and prompt
 hash (must be all of them), each member's time free with nothing to take, the planner's share of the tokens, and how
-often members read the board (from the Codex, Claude and OpenCode logs; programs keep none).
+often members read the board (from the Codex, Claude and OpenCode logs; programs keep none). Every verified result is
+also a file in the board folder (`artifacts/<id>.txt`), so a teammate can open one too long for a prompt.
+`--member-access research` lets Claude members search the web as well (WebSearch and WebFetch, allowed by a settings
+rule and nothing else; checked with the real CLI: without the rule dontAsk refused WebSearch, and with it a read
+outside the folder was still refused). Codex members stay read-only.
 
 ## DAG dispatch: steps that wait for each other
 
@@ -403,7 +407,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 415 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 417 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

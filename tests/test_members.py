@@ -169,12 +169,14 @@ class DaemonTest(unittest.TestCase):
         work = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, work, True)
         open(os.path.join(work, "deck.json"), "w").close()
-        daemon = FakeDaemon(["one", "two", "three"], names=["deck.json"])
+        daemon = FakeDaemon(["one", "two", "three", "four"], names=["deck.json"])
         members = DaemonMembers(client=daemon, sleep=lambda s: None)
         members.run_turn("a", "p1", workdir=work, access="write")
         members.run_turn("a", "p2", workdir=work, access="read")  # no forget(): a turn in a folder never continues one
         members.run_turn("a", "p3", workdir=work)
-        starts = [p for m, p in daemon.calls if m == "agent.start"]
+        members.run_turn("a", "p4", workdir=work, access="research")  # as read: edits and commands refused
+        starts = [p for m, p in daemon.calls if m == "agent.start"][:3]
+        self.assertEqual([p for m, p in daemon.calls if m == "agent.start"][3]["deny"], ["external_directory", "edit", "bash"])
         self.assertEqual([(p["fresh"], p["directory"], p["deny"]) for p in starts],
                          [(False, work, ["external_directory"]), (True, work, ["external_directory", "edit", "bash"]),
                           (True, work, ["external_directory"])])  # no access given: write

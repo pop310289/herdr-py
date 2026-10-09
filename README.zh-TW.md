@@ -114,7 +114,7 @@ open /tmp/e-demo/view.html
 
 `view.html`（每個事件後重寫，執行中也能看）畫出：這次執行的數字標在迴圈上；時間由上往下的時間軸（planner 和每個成員各一欄，每個回合一根長條，每個喚醒 planner 的結果一條虛線）；最佳分數隨時間的變化；每條待辦從新增到結束；planner 的每一回合。沒有 JavaScript 時內容完整；有 JavaScript 時多一個播放器，從第一個事件重播到結束：拖曳時間，迴圈上正在工作的那一段會亮起、數字跟著時間變；點長條可以看那一回合的待辦、判定與分數。
 
-停止條件：成員回合用完、達到目標分數（`--target`）、planner 宣告完成、planner 的喚醒次數用完而且沒有待辦、或連續 `--patience` 個判定都沒有超過最佳分數。`summary.json` 會算：被領兩次的待辦數（必須是 0）、對得到待辦、看板版本與指令 hash 的回合比例（必須全部）、每個成員「有空卻沒有待辦可領」的時間、planner 占全部 token 的比例，以及成員讀看板的次數（從 Codex、Claude、OpenCode 的紀錄算；程式成員沒有紀錄）。
+停止條件：成員回合用完、達到目標分數（`--target`）、planner 宣告完成、planner 的喚醒次數用完而且沒有待辦、或連續 `--patience` 個判定都沒有超過最佳分數。`summary.json` 會算：被領兩次的待辦數（必須是 0）、對得到待辦、看板版本與指令 hash 的回合比例（必須全部）、每個成員「有空卻沒有待辦可領」的時間、planner 占全部 token 的比例，以及成員讀看板的次數（從 Codex、Claude、OpenCode 的紀錄算；程式成員沒有紀錄）。每個已驗證的結果也會變成看板資料夾裡的檔案（`artifacts/<id>.txt`），太長放不進指令的成果，隊友也能打開來看。`--member-access research` 讓 Claude 成員也能上網查資料（WebSearch、WebFetch，用 settings 規則只允許這兩個；真的 CLI 實測：沒有規則時不詢問模式會拒絕 WebSearch，有規則時讀資料夾外的檔案仍然被擋）。Codex 成員維持唯讀。
 
 ## DAG 分派：會互相等待的步驟
 
@@ -205,7 +205,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 415 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 417 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

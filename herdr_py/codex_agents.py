@@ -70,7 +70,8 @@ class CodexAgents:
         if not thread:
             folder = workdir or os.path.join(self.root, name)
             os.makedirs(folder, exist_ok=True)
-            sandbox = {"write": "workspace-write", "read": "read-only"}[access or "write"] if workdir else self.sandbox
+            # research is read-only here: Codex members get no web search (not checked with the real Codex CLI)
+            sandbox = {"write": "workspace-write", "read": "read-only", "research": "read-only"}[access or "write"] if workdir else self.sandbox
             out += ["-s", sandbox, "-C", folder]
         if model or self.model:
             out += ["-m", model or self.model]

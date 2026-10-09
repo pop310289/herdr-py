@@ -110,7 +110,7 @@ class EngineRun:
 
     def __init__(self, task, judge, members, names, planner, out, turns, planner_wakes=None, max_open=None, max_todos=None,
                  target=None, patience=0, about=None, results=3, failures=3, answer_bytes=6000, answer_name="answer.txt",
-                 turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2):
+                 turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2, member_access="read"):
         if not names:
             raise ValueError("no members")
         if planner in names:
@@ -126,6 +126,9 @@ class EngineRun:
         self.results, self.failures, self.answer_bytes, self.answer_name = results, failures, answer_bytes, answer_name
         self.turn_timeout, self.judge_name, self.stop_on_infra_error = turn_timeout, judge_name, stop_on_infra_error
         self.planner_tries = planner_tries
+        if member_access not in ("read", "research"):
+            raise ValueError("member_access: read or research")
+        self.member_access = member_access  # research: read the folder and search the web (Claude members)
         os.makedirs(out, exist_ok=True)
         self.kb = TeamKB(os.path.join(out, "kb"))
         self.board_dir = os.path.join(out, "board")
@@ -150,12 +153,27 @@ class EngineRun:
     def board_text(self):
         brief = self.kb.brief("(board)", self.results + 2, self.failures + 2, record=False)
         todos = self.kb.todo_list()[-30:]
-        lines = [f"Board version {self.kb.version}.", "", brief, "", "Todos:" if todos else "No todos yet."]
+        valid = sorted((e for e in self.kb.entries() if e["status"] == "valid" and e.get("artifact")),
+                       key=lambda e: (-e["score"], e["t"]))
+        files = [f"- artifacts/{e['id']}.txt: {e['id']} by {e['member']}, score {e['score']:.6g}: {one_line(e['summary'], 120)}"
+                 for e in valid[:40]]
+        lines = [f"Board version {self.kb.version}.", "", brief, ""]
+        if files:
+            lines += ["Every verified result is a file in artifacts/ (open it with your Read tool):"] + files + [""]
+        lines += ["Todos:" if todos else "No todos yet."]
         lines += [todo_line(t) for t in todos]
         return "\n".join(lines)
 
     def write_board(self):
         with self.board_lock:
+            files = os.path.join(self.board_dir, "artifacts")
+            os.makedirs(files, exist_ok=True)
+            for e in self.kb.entries():  # every verified result as a file members can open, however long it is
+                target = os.path.join(files, e["id"] + ".txt")
+                if e["status"] == "valid" and e.get("artifact") and not os.path.exists(target):
+                    with open(os.path.join(self.kb.folder, e["artifact"]), "rb") as src, open(target + ".tmp", "wb") as dst:
+                        dst.write(src.read())
+                    os.replace(target + ".tmp", target)
             path = os.path.join(self.board_dir, BOARD)
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as handle:
@@ -322,7 +340,7 @@ class EngineRun:
             before, start = self.tokens(name), time.time()
             try:
                 text, state = self.members.run_turn(name, prompt, timeout=self.turn_timeout, workdir=self.board_dir,
-                                                    access="read")
+                                                    access=self.member_access)
             except Exception as exc:  # a member backend that breaks fails its turn
                 text, state = f"({type(exc).__name__}: {exc})", "error"
             rec.update(state=state, seconds=round(time.time() - start, 2), tokens=used(before, self.tokens(name)))
@@ -541,6 +559,8 @@ def main(argv=None):
     ap.add_argument("--answer-name", default="answer.txt", help="the answer file's name (its extension matters to some judges)")
     ap.add_argument("--stop-on-infra-error", action="store_true",
                     help="stop when a member's backend or the judge breaks (exit code 3)")
+    ap.add_argument("--member-access", choices=["read", "research"], default="read",
+                    help="read (default): members read the board folder; research: and search the web (Claude members)")
     a = ap.parse_args(argv)
     problems = []
     if not a.member:
@@ -586,7 +606,8 @@ def main(argv=None):
         run = EngineRun(task, judge, members, names, planner, a.out, turns, planner_wakes=a.planner_wakes, max_open=a.max_open,
                         target=a.target, patience=a.patience, about=about, results=a.show_results,
                         failures=a.show_failures, answer_bytes=a.answer_bytes, answer_name=a.answer_name,
-                        turn_timeout=a.turn_timeout, stop_on_infra_error=a.stop_on_infra_error)
+                        turn_timeout=a.turn_timeout, stop_on_infra_error=a.stop_on_infra_error,
+                        member_access=a.member_access)
         summary = run.run()
     finally:
         members.close()

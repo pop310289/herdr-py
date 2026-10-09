@@ -27,7 +27,10 @@ Claude Code 2.1.294 on 2026-10-09 against a local stand-in that played fixed too
   Glob and Grep outside it, and a Write through "../", are refused; there is no Bash;
 - read: --permission-mode dontAsk with Read, Glob, Grep: inside works, outside is refused;
 - do not use --allowedTools for this: dontAsk with --allowedTools Read,Edit,Write let the member write and read
-  anywhere on the machine, and dontAsk without it refused Write and Edit even inside the folder.
+  anywhere on the machine, and dontAsk without it refused Write and Edit even inside the folder;
+- research (read, plus the web): --permission-mode dontAsk with Read, Glob, Grep, WebSearch, WebFetch and a settings
+  rule that allows only the two web tools. Checked with the real Claude Code on 2026-10-09: with the tools listed
+  but no rule, dontAsk refused WebSearch; with the rule it searched; a Read of /etc/hosts was still refused.
 agents.json (for view.py) holds each member's state, tokens and last words; events.jsonl keeps every event.
 """
 import json
@@ -38,7 +41,9 @@ import threading
 import time
 
 ISOLATION = ["--safe-mode", "--permission-mode", "dontAsk"]
-WORKSPACE = {"write": ("acceptEdits", "Read,Edit,Write,Glob,Grep"), "read": ("dontAsk", "Read,Glob,Grep")}
+WORKSPACE = {"write": ("acceptEdits", "Read,Edit,Write,Glob,Grep"), "read": ("dontAsk", "Read,Glob,Grep"),
+             "research": ("dontAsk", "Read,Glob,Grep,WebSearch,WebFetch")}
+WEB_ONLY = json.dumps({"permissions": {"allow": ["WebSearch", "WebFetch"]}})  # research: these two, nothing else
 # set by a Claude Code session for the commands it runs (seen in 2.1.283): a member started from inside such a session
 # (an agent running the experiment) must not look like a part of that session
 PARENT_SESSION = ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION",
@@ -97,7 +102,7 @@ class ClaudeAgents:
             self._publish()
 
     def args(self, name, prompt, model=None, files=(), access=None):
-        """access "write" or "read": a turn in a workspace (see WORKSPACE); None: no tools, as everywhere else."""
+        """access "write", "read" or "research": a turn in a workspace (see WORKSPACE); None: no tools, as everywhere else."""
         session = None if (self.fresh or access) else self.sessions.get(name)  # a workspace turn is always a new conversation
         isolation = self.isolation
         if access:
@@ -112,6 +117,8 @@ class ClaudeAgents:
         paths = [os.path.abspath(path) for path in files]
         if access:
             out += ["--tools", tools]
+            if access == "research":
+                out += ["--settings", WEB_ONLY]
             if paths:
                 out += ["--add-dir"] + sorted({os.path.dirname(path) for path in paths})
                 prompt += "\n\nOpen each image with the Read tool before you answer:\n" + "\n".join(
@@ -126,8 +133,8 @@ class ClaudeAgents:
 
     def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None):
         """workdir: run this turn in that folder with file tools (access "write", the default there, or "read")."""
-        if access not in (None, "write", "read"):
-            raise ValueError("access: write or read")
+        if access not in (None, "write", "read", "research"):
+            raise ValueError("access: write, read or research")
         argv = self.args(name, prompt, model, files, access=(access or "write") if workdir else None)
         folder = workdir or os.path.join(self.root, name)
         os.makedirs(folder, exist_ok=True)

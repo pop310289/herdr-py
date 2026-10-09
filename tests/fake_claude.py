@@ -20,7 +20,8 @@ import time
 import uuid
 
 FLAGS = {"-p", "--print", "--verbose", "--safe-mode", "--no-session-persistence", "--bare"}
-VALUE = {"--output-format", "--model", "--resume", "-r", "--permission-mode", "--session-id", "--input-format", "--effort"}
+VALUE = {"--output-format", "--model", "--resume", "-r", "--permission-mode", "--session-id", "--input-format", "--effort",
+         "--settings"}
 MANY = {"--tools", "--add-dir", "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools", "--mcp-config"}
 MODES = ("acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan", "default")
 DEFAULT_TOOLS = ["Bash", "Edit", "Read", "Write", "WebFetch"]
