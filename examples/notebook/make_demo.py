@@ -10,6 +10,8 @@ The tasks:
   for a person to review run 2.
 - 26 circles in a square (examples/coop): run 2 goes on from run 1; a person picked the best packing and accepted it.
 - a calculator in five DAG steps (examples/dag): one step fails twice and blocks another; attached, and on hold.
+- a library visitors report, twice over: one brings the museum report's skills as reference material (its "from"),
+  the other starts from scratch; the first reaches a full page in fewer member turns (definitions P30).
 - a draft that waits for approval, and a request for a new task that waits for Claude to draft it.
 Every task, file and name in it is made up.
 """
@@ -102,6 +104,21 @@ def main(folder, lang):
     notebook.attach(nb.page("calculator"), os.path.join(runs, "calculator-1"), "claude", note="made by examples/dag/make_demo.py")
     nb.page("calculator").append("hold", BY, why="div keeps failing; decide what to do with it later")
 
+    print("library reports: with the museum's skills, and from scratch", flush=True)
+    for pid, icon, title, bring in (("library-report", "L", "Library visitors report (with the museum's skills)",
+                                     [{"page": "museum-report", "kinds": ["skill"]}]),
+                                    ("library-report-plain", "L0", "Library visitors report (from scratch)", None)):
+        d = {"id": pid, "icon": icon, "title": title, "day": today, "goal": "a one-page report with a bar chart of a made-up library's visitors",
+             "cwd": HERE, "task": "library_task.md", "judge": [PY, "report_judge.py"],
+             "team": {"planner": f"plan=command:{PY} report_planner.py",
+                      "members": [f"{m}=command:{PY} report_member.py" for m in members], "about": members},
+             "budget": {"turns": 5, "planner_wakes": 6}, "carry": ["data", "skill"], "outputs": ["page"]}
+        if bring:
+            d["from"] = bring
+        make_page(nb, d)
+        notebook.approve(nb.page(pid), BY)
+        run(nb, pid)
+
     print("a draft and a request", flush=True)
     make_page(nb, {
         "id": "circles-bigger-team", "title": "26 circles, a bigger team", "icon": "C4", "day": today, "goal": "beat the circles task with four members",
@@ -109,7 +126,8 @@ def main(folder, lang):
         "team": {"planner": f"plan=command:{PY} examples/engine/planner.py",
                  "members": [f"{m}=command:{PY} examples/coop/packing_member.py --seed {i} --steps 30000" for i, m in enumerate("abcd", 1)]},
         "budget": {"turns": 8, "planner_wakes": 9}})
-    nb.ask("A reading list for a rainy weekend: five short books, a line on why each.", BY, title="Weekend reading list")
+    nb.ask("A reading list for a rainy weekend: five short books, a line on why each.", BY, title="Weekend reading list",
+           bring=[{"page": "museum-report", "bring": ["skills"]}])
     print(f"\nnotebook: {nb_dir}\n  python3 -m herdr_py.notebook {nb_dir} view --out {os.path.join(folder, 'site')} --runs {runs}"
           f"\n  python3 -m herdr_py.notebook {nb_dir} serve --runs {runs}")
 

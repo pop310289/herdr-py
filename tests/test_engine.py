@@ -661,9 +661,24 @@ class PartsTest(Base):
         self.assertEqual(self.records("engine.jsonl")[0]["seeded"]["carried"], [])  # only skills carry on: these were numbers
         self.assertEqual(self.records("engine.jsonl")[0]["seeded"]["left_out"], {"other kind": 2})
 
+    def test_a_picked_entry_is_carried_whatever_its_kind_or_run(self):
+        self.script([add("give a number"), add(done=True)], {"a": [{"answer": "5"}]})
+        self.assertEqual(self.run_main("--turns", "1", members=("a",))[0], 0)
+        first, picked = self.out, next(e["id"] for e in TeamKB(os.path.join(self.out, "kb")).entries())
+        for name, extra, want_picked in (("kept", ["--seed-from", first, "--carry", "skill", "--seed-keep", picked], []),
+                                         ("other run", ["--seed-entry", first, picked], [picked])):
+            self.out = os.path.join(self.dir, name)
+            shutil.rmtree(self.log)
+            self.script([add("give a number"), add(done=True)], {"a": [{"answer": "6"}]})
+            code, _, err = self.run_main("--turns", "1", *extra, members=("a",))
+            self.assertEqual(code, 0, err)
+            seeded = self.records("engine.jsonl")[0]["seeded"]
+            self.assertEqual((seeded["carried"], seeded["picked"]), ([picked], want_picked), name)
+
     def test_seeding_is_checked(self):
         self.script([add(done=True)], {})
-        for extra in (["--carry", "skill"], ["--seed-skip", "k123"], ["--seed-from", os.path.join(self.dir, "nowhere")]):
+        for extra in (["--carry", "skill"], ["--seed-skip", "k123"], ["--seed-keep", "k123"], ["--seed-from", os.path.join(self.dir, "nowhere")],
+                      ["--seed-entry", os.path.join(self.dir, "nowhere"), "k123"]):
             code, _, err = self.run_main("--turns", "1", *extra)
             self.assertEqual(code, 2, extra)
             self.assertIn("seed", err)

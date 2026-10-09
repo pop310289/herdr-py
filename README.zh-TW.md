@@ -128,7 +128,11 @@ python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3
 目標、任務檔、評分程式、團隊、每次執行的預算、哪些種類延續到下一次、哪些種類是成果）、每一次執行，以及人的決定（附加在這頁的
 `history.jsonl`，記下誰、什麼時候）。草稿不會執行：定義或任務在上次核准後改過，`run` 就拒絕。每次執行從這頁最近一次延續
 （或 `--from N`、`--fresh`）：引擎從那次通過的條目裡、這頁要帶的種類起步，不帶人排除的條目（`engine --seed-from`），
-還沒被用過的批註加進這次的任務。每種成果的每一版都留著，由人選定現行版。等人處理的事由紀錄算出，不另外存：要核准的草稿、
+還沒被用過的批註加進這次的任務。每種成果的每一版都留著，由人選定現行版；下一次執行從現行版接著改（選定的版本不論種類都帶入，任務裡寫明從它改起）。一頁也可以從
+其他頁帶參考資料：`"from": [{"page": "museum-report", "kinds": ["skill"], "current": true}]` 會在每次執行前，把那一頁最近一次
+（或 `"run": N`）通過評分的指定條目複製到成員資料夾（`reference/<頁>/<條目>.txt`，清單在 `reference/INDEX.md`），並寫進任務。
+它們不算新頁已驗證的成果，也不沿用舊分數：那一頁的評分標準不同。示意筆記本裡，帶入博物館報表 skill 的圖書館報表用 4 個成員回合
+做出滿分網頁，從零開始的同一份報表用了 5 個。等人處理的事由紀錄算出，不另外存：要核准的草稿、
 結束後還沒人看過的執行（批註、選版、排除、驗收、擱置或完成都算看過）、沒有結束紀錄而且 15 分鐘沒寫東西的執行。
 
 ```
@@ -266,7 +270,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 478 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 485 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

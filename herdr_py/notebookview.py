@@ -59,6 +59,16 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "ag_wake_line": ("wake {w}: {a} todos added, {d} dropped", "第 {w} 次：加 {a} 個待辦、刪 {d} 個"),
     "ag_turn_line": ("run {r}, turn {k}: {what}", "第 {r} 次 · 回合 {k}：{what}"),
     "close": ("close", "關閉"),
+    "refs": ("Reference material from other tasks", "參考資料（來自其他 task）"),
+    "refs_note": ("Not this task's verified results; their old scores do not apply here.", "不算這個 task 已驗證的成果，舊分數不適用。"),
+    "refs_line": ("reference material: {items}", "參考資料：{items}"),
+    "refs_item": ("{title}, run {n}: {k}", "{title} 第 {n} 次 {k} 條"),
+    "picks_line": ("went on from the current versions: {ids}", "帶入現行版：{ids}"),
+    "from_run": ("from {title}, run {n}", "來自 {title} 第 {n} 次"),
+    "bring_h": ("Bring from earlier tasks (optional)", "從舊 task 帶過來（可不選）"),
+    "bring_skills": ("skills", "skill"), "bring_knowledge": ("knowledge", "知識"), "bring_current": ("current versions", "現行版"),
+    "bring_note": ("They come as reference material: the members can read them, but they do not count as the new task's results.",
+                   "帶過去的只當參考資料：成員讀得到，但不算新 task 的成果。"),
     "kb_search": ("search the knowledge…", "搜尋知識庫…"), "kb_all": ("all", "全部"), "kb_graph": ("Knowledge graph", "知識圖"),
     "config": ("Run settings and the raw commands", "執行設定與原始指令"),
     "outputs_now": ("Outputs", "成果"), "details": ("Every agent's details", "每個 Agent 的詳情"),
@@ -295,6 +305,10 @@ iframe.replay { width:100%; height:78vh; min-height:520px; border:1px solid var(
 .form input, .form textarea { font:inherit; font-size:16px; background:var(--bg); color:var(--ink); border:1px solid var(--line);
   border-radius:8px; padding:8px 10px; width:100%; }
 .form textarea { min-height:5em; resize:vertical; }
+.bring { border:1px solid var(--line); border-radius:var(--r2); padding:8px 12px; margin:0; min-width:0; }
+.bring legend { font-size:var(--fs-2); color:var(--muted); padding:0 6px; }
+.bring li { gap:6px 14px; } .bring label { display:inline-flex; flex-direction:row; align-items:center; gap:4px; }
+.bring input[type=checkbox] { width:auto; accent-color:var(--ice); }
 .dag svg { width:100% !important; max-width:100% !important; height:auto !important; }
 .dag .box { fill:none; stroke:none; } .dag .box rect { fill:var(--inset); stroke:var(--wire); stroke-width:1; }
 .dag .box.passed rect { fill:var(--ok-bg); stroke:var(--ok); } .dag .box.failed rect { fill:var(--bad-bg); stroke:var(--bad); }
@@ -458,7 +472,12 @@ SCRIPT = r"""(function () {
     var phrase = el.getAttribute("data-say") || "";
     if (act === "note") { body.text = field(el, "text"); if (!body.text) { return; } phrase += body.text; }
     if (act === "new") { body.goal = field(el, "goal"); body.title = field(el, "title"); if (!body.goal) { return; }
-      phrase += body.goal + (body.title ? " (" + body.title + ")" : ""); }
+      var form = el.closest("form"), picked = {};
+      all("input[name=bring]:checked", form || document).forEach(function (c) {
+        var v = c.value.split(":"); (picked[v[0]] = picked[v[0]] || []).push(v[1]); });
+      body.bring = Object.keys(picked).map(function (k) { return { page: k, bring: picked[k] }; });
+      var said = body.bring.map(function (b) { return b.page + ": " + b.bring.join(", "); }).join("; ");
+      phrase += body.goal + (body.title ? " (" + body.title + ")" : "") + (said ? (D.words.bring || " ") + said : ""); }
     if (D.live && token) { send(el, act === "new" ? "api/new" : "api/act", body); } else { copy(el, phrase); }
   });
 })();"""
@@ -911,6 +930,7 @@ def rail_html(nb, pages, lang, root, current, waiting):
 def app(nb, pages, lang, root, current, title, main, live, page_id=None):
     waiting = sum(len(p.state()[1]) for p in pages) + sum(1 for r in nb.requests() if r["state"] == "open")
     words = {k: t(lang, k) for k in ("copied", "sent", "refused", "no_server")}
+    words["bring"] = " Bring: " if lang != "zh-TW" else "（帶入）"
     data = json.dumps({"live": bool(live), "page": page_id, "words": words}, ensure_ascii=False).replace("</", "<\\/")
     extra = nb.extra_style()
     extra = f"\n<style>\n{extra}</style>" if extra else ""
@@ -1021,15 +1041,26 @@ def home_main(nb, pages, lang, root, roots, live):
 
 def new_main(nb, lang, live):
     requests = nb.requests()
+    pages = nb.pages()
+    bring = ""
+    if pages:
+        rows = "".join(f'<li class="row" data-bring="{esc(p.id)}"><b>{esc(p.d.get("title") or p.id)}</b>'
+                       + "".join(f'<label class="faint"><input type="checkbox" name="bring" value="{esc(p.id)}:{w}"> {esc(t(lang, "bring_" + w))}</label>'
+                                 for w in ("skills", "knowledge", "current")) + "</li>" for p in pages)
+        bring = (f'<fieldset class="bring"><legend>{esc(t(lang, "bring_h"))}</legend><ul class="hist">{rows}</ul>'
+                 f'<div class="faint">{esc(t(lang, "bring_note"))}</div></fieldset>')
+    def wants(r):
+        return "; ".join(f"{ref_title_nb(nb, b['page'])}: " + ", ".join(t(lang, "bring_" + w) for w in b["bring"]) for b in r.get("bring") or [])
     rows = "".join(f'<li><span class="mono">{esc(r["id"])}</span> <b>{esc(r.get("title") or "")}</b> {esc(r["goal"])} '
-                   f'<span class="faint">· {esc(r.get("by"))} · {esc(local(r.get("t")))} · {esc(r["state"])}'
+                   + (f'<span class="faint">({esc(t(lang, "refs"))}: {esc(wants(r))})</span> ' if r.get("bring") else "")
+                   + f'<span class="faint">· {esc(r.get("by"))} · {esc(local(r.get("t")))} · {esc(r["state"])}'
                    + (f' → <a href="p/{esc(r["page"])}/">{esc(r["page"])}</a>' if r.get("page") else "") + "</span></li>"
                    for r in reversed(requests))
     phrase = t(lang, "say_new")
     form = (f'<form class="form panel" data-said onsubmit="return false"><h2>{esc(t(lang, "new_task"))}</h2>'
             f'<div class="muted">{esc(t(lang, "new_how"))}</div>'
             f'<label>{esc(t(lang, "new_goal"))}<textarea name="goal" maxlength="2000" required></textarea></label>'
-            f'<label>{esc(t(lang, "new_title"))}<input name="title" maxlength="200"></label>'
+            f'<label>{esc(t(lang, "new_title"))}<input name="title" maxlength="200"></label>{bring}'
             f'<div><button type="submit" class="act go" data-act="new" data-say="{esc(phrase)}">{esc(t(lang, "act_new"))}</button> '
             f'<span class="said"></span></div>'
             f'<details><summary>{esc(t(lang, "cli"))}</summary>{cmd_html(nb, "request", "…")}</details></form>')
@@ -1067,12 +1098,57 @@ def run_card(page, r, lang, rel):
         lines.append(f"DAG {f.get('plan') or ''}: " + steps_text(lang, f))
     if f.get("stopped"):
         lines.append(say(lang, "stopped", why=f["stopped"]))
+    if r.get("picks"):
+        lines.append(t(lang, "picks_line", ids=", ".join(r["picks"])))
+    if r.get("references"):
+        lines.append(t(lang, "refs_line", items="; ".join(
+            t(lang, "refs_item", title=ref_title(page, x["page"]), n=x["run"], k=len(x["entries"])) for x in r["references"])))
     if r.get("notes"):
         lines.append(say(lang, "notes_used", ids=", ".join(r["notes"])))
     if r.get("note"):
         lines.append(r["note"])
     link = f' · <a href="{esc(rel)}">{esc(say(lang, "replay"))}</a>' if rel else ""
     return f'<li><div class="row">{" ".join(head)}{link}</div>' + "".join(f'<div class="muted">{esc(x)}</div>' for x in lines) + "</li>"
+
+
+def ref_title_nb(nb, pid):
+    try:
+        return nb.page(pid).d.get("title") or pid
+    except NotebookError:
+        return pid
+
+
+def ref_title(page, pid):
+    try:
+        return page.notebook.page(pid).d.get("title") or pid
+    except NotebookError:
+        return pid
+
+
+def references_html(page, lang):
+    """The reference material the latest run brought from other pages, each linked to the file on its own page."""
+    runs = [r for r in page.runs() if r.get("references")]
+    if not runs:
+        return ""
+    rows = []
+    for ref in runs[-1]["references"]:
+        try:
+            src = page.notebook.page(ref["page"])
+        except NotebookError:
+            continue
+        entries = src.entries()
+        for eid in ref["entries"]:
+            e = entries.get(eid)
+            if e is None:
+                continue
+            _, ext = artifact_body(e)
+            link = f' <a href="../{esc(src.id)}/files/{esc(eid + ext)}">{esc(say(lang, "open"))}</a>' if ext else ""
+            rows.append(f'<li><span class="kbadge">{esc(e["kind"])}</span> <b>{esc(fit(e.get("name") or e.get("summary") or eid, 520, 13))}</b> '
+                        f'<span class="faint">{esc(t(lang, "from_run", title=src.d.get("title") or src.id, n=e["run"]))} · {esc(e["member"])}</span>{link}</li>')
+    if not rows:
+        return ""
+    return (f'<h2 style="margin-top:16px">{esc(t(lang, "refs"))} · {esc(say(lang, "run_n", n=runs[-1]["n"]))}</h2>'
+            f'<div class="faint">{esc(t(lang, "refs_note"))}</div><ul class="hist">{"".join(rows)}</ul>')
 
 
 def debug_html(page, lang):
@@ -1261,6 +1337,10 @@ def definition_html(page, lang):
         kv.append((say(lang, "carry"), ", ".join(d.get("carry") or []) or say(lang, "carry_all")))
     if d.get("outputs"):
         kv.append((say(lang, "outputs"), ", ".join(d["outputs"])))
+    for ref in d.get("from") or []:
+        what = ", ".join(x for x in [", ".join(ref.get("kinds") or []), ", ".join(ref.get("entries") or []),
+                                      t(lang, "bring_current") if ref.get("current") else ""] if x)
+        kv.append((t(lang, "refs"), f"{ref_title(page, ref.get('page'))}" + (f" ({say(lang, 'run_n', n=ref['run'])})" if ref.get("run") else "") + f": {what}"))
     task = ""
     if d.get("task"):
         try:
@@ -1428,6 +1508,7 @@ def overview_html(nb, page, lang, needs, agents, outs):
                     f'<span class="faint">{esc(say(lang, "run_n", n=v["run"]))} · {esc(v["member"])} · {esc(score_text(v["score"]))}</span>{link}</li>')
     if rows:
         out.append(f'<h2 style="margin-top:16px">{esc(t(lang, "outputs_now"))}</h2><ul class="hist">{"".join(rows)}</ul>')
+    out.append(references_html(page, lang))
     if agents:
         out.append(f'<div class="agent-details"><h2 style="margin-top:16px">{esc(t(lang, "details"))}</h2>'
                    + "".join(f'<section class="agent-detail" id="agent-{esc(a["name"])}">{agent_detail(page, a, lang)}</section>' for a in agents)
@@ -1718,7 +1799,9 @@ def serve(folder, host="127.0.0.1", port=8790, token=None, roots=(), ready=None)
             nb = Notebook(folder)
             try:
                 if path.endswith("/api/new"):
-                    event = nb.ask(str(body.get("goal") or ""), BY_WEB, title=str(body.get("title") or "") or None)
+                    bring = body.get("bring") if isinstance(body.get("bring"), list) else []
+                    event = nb.ask(str(body.get("goal") or ""), BY_WEB, title=str(body.get("title") or "") or None,
+                                   bring=[b for b in bring if isinstance(b, dict)])
                 elif path.endswith("/api/act"):
                     event = act(nb, body)
                 else:

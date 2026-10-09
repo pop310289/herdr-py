@@ -169,20 +169,53 @@ class TeamKB:
         return sha, rel
 
     # ---- starting from an earlier run
-    def seed(self, source, kinds=None, skip=(), origin=None):
+    def seed(self, source, kinds=None, skip=(), origin=None, keep=()):
         """Start this knowledge base, which must have no events yet, from the verified entries of another one (the
         folder source, e.g. an earlier run's kb/): every entry whose latest verdict is valid is copied with that verdict
         and its artifact, keeping its id, author and time, and marked seeded_from (origin, or the folder). kinds: copy
         only entries whose artifact names one of these kinds on its first line (or whose entry kind is one of them);
-        skip: entry ids never copied (a person excluded them). A parent that is not copied is left out, so no copied
-        entry points at one this base does not have; an artifact whose bytes changed since its verdict is not copied.
-        The source is only read. Returns what was copied and how many were left out, by reason."""
+        keep: entry ids copied whatever their kind (a person picked them as the current version); skip: entry ids never
+        copied (a person excluded them). A parent that is not copied is left out, so no copied entry points at one this
+        base does not have; an artifact whose bytes changed since its verdict is not copied. The source is only read.
+        Returns what was copied and how many were left out, by reason."""
         kinds = {k.lower() for k in kinds} if kinds else None
-        skip, origin = set(skip or ()), origin or os.path.abspath(source)
+        skip, keep = set(skip or ()), set(keep or ())
+        with self.lock:
+            self._catch_up()
+            if self.version:
+                raise TeamKBError("seed: this knowledge base already has events; seed a new one")
+
+        def choose(eid, kind):
+            if eid in skip:
+                return "excluded"
+            if kinds is not None and kind not in kinds and eid not in keep:
+                return "other kind"
+            return None
+        return self._copy(source, choose, origin)
+
+    def add_from(self, source, ids, origin=None):
+        """Copy these entries of another knowledge base (the folder source) into this one, which may already hold
+        events, as seed() copies: only entries whose latest verdict is valid and whose file has not changed since; an
+        entry already here is not copied again; a parent this base does not have is left out. For a version a person
+        picked in a run that is not the one this run goes on from."""
+        ids = set(ids or ())
+
+        def choose(eid, kind):
+            if eid not in ids:
+                return "not asked for"
+            if eid in self.proposals:
+                return "already here"
+            return None
+        out = self._copy(source, choose, origin)
+        out["left_out"].pop("not asked for", None)
+        return out
+
+    def _copy(self, source, choose, origin=None):
+        origin = origin or os.path.abspath(source)
         proposals, verdicts = collections.OrderedDict(), {}
         path = os.path.join(source, "events.jsonl")
         if not os.path.isfile(path):
-            raise TeamKBError(f"seed: no knowledge base at {source} (no events.jsonl)")
+            raise TeamKBError(f"no knowledge base at {source} (no events.jsonl)")
         with open(path, encoding="utf-8", errors="replace") as handle:
             for line in handle:
                 try:
@@ -195,17 +228,10 @@ class TeamKB:
                     verdicts[event["id"]] = event
         out = {"from": origin, "carried": [], "kinds": collections.Counter(), "parents_dropped": 0,
                "left_out": collections.Counter()}
-        with self.lock:
-            self._catch_up()
-            if self.version:
-                raise TeamKBError("seed: this knowledge base already has events; seed a new one")
         for eid, p in proposals.items():
             v = verdicts.get(eid)
             if not v or v.get("status") != "valid":
                 out["left_out"]["not valid"] += 1
-                continue
-            if eid in skip:
-                out["left_out"]["excluded"] += 1
                 continue
             data, kind = None, (p.get("kind") or "").lower()
             if p.get("artifact"):
@@ -220,12 +246,15 @@ class TeamKB:
                     continue
                 named = TAG.match(data[:200].decode("utf-8", "replace").split("\n", 1)[0])
                 kind = named.group(2).lower() if named else kind
-            if kinds is not None and kind not in kinds:
-                out["left_out"]["other kind"] += 1
+            why = choose(eid, kind)
+            if why:
+                out["left_out"][why] += 1
                 continue
             if data is not None:
                 self._store(data, p["artifact"])
-            parents = [q for q in p.get("parents") or [] if q in out["carried"]]
+            with self.lock:
+                self._catch_up()
+                parents = [q for q in p.get("parents") or [] if q in self.proposals]
             out["parents_dropped"] += len(p.get("parents") or []) - len(parents)
             self._write(dict(p, parents=parents, seeded_from=origin))
             self._write(dict(v, seeded_from=origin))

@@ -380,6 +380,25 @@ class SeedTest(Base):
         self.assertEqual(got["left_out"], {"not valid": 3, "artifact changed": 1})
         self.assertEqual(dst.entries()[0]["parents"], [])  # neither parent came along
 
+    def test_a_picked_version_is_carried_whatever_its_kind(self):
+        src, ids = self.source()
+        dst = TeamKB(os.path.join(self.dir, "dst"))
+        got = dst.seed(src.folder, kinds=["skill"], keep=[ids["page"]])
+        self.assertEqual(got["carried"], [ids["skill"], ids["page"]])
+        self.assertEqual(got["left_out"], {"not valid": 2, "other kind": 1})  # the data stays: not a skill, not picked
+        self.assertEqual(dst.entries()[1]["parents"], [])  # the page's parents (the bad page, the data) did not come
+
+    def test_entries_from_another_run_are_added_once_and_only_if_valid(self):
+        src, ids = self.source()
+        dst = TeamKB(os.path.join(self.dir, "dst"))
+        dst.seed(src.folder, kinds=["skill"])
+        got = dst.add_from(src.folder, [ids["data"], ids["bad"], "k000000000000"], origin="run 1")
+        self.assertEqual((got["carried"], got["left_out"]), ([ids["data"]], {"not valid": 2}))  # the bad page and the note
+        self.assertEqual([e["parents"] for e in dst.entries() if e["id"] == ids["data"]], [[ids["skill"]]])  # its skill is here
+        again = dst.add_from(src.folder, [ids["data"]])
+        self.assertEqual((again["carried"], again["left_out"]), ([], {"not valid": 2, "already here": 1}))
+        self.assertEqual(len(dst.entries()), 2)
+
     def test_only_a_new_knowledge_base_is_seeded_and_the_source_must_exist(self):
         src, _ = self.source()
         with self.assertRaises(TeamKBError):

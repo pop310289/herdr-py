@@ -57,6 +57,7 @@ ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 KINDS = ("engine", "dag", "other")
 BUDGET = ("turns", "planner_wakes", "time_limit", "max_open", "turn_timeout")
 SHOW = ("results", "failures", "answer_bytes")
+BRING = ("skills", "knowledge", "current")  # what a request may ask a new task to bring from another page
 LOOKED = ("approve", "note", "pick", "exclude", "include", "accept", "hold", "done")  # someone looked at the page
 QUIET = 15 * 60  # a run with no end that has written nothing for this long is stuck
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the folder herdr_py is in, for the engine's process
@@ -155,6 +156,15 @@ S = {  # (English, 繁體中文)
     "ev_exclude": ("excluded {entry}: {why}", "排除 {entry}：{why}"), "ev_include": ("included {entry} again", "取消排除 {entry}"),
     "ev_accept": ("accepted: {why}", "驗收：{why}"), "ev_hold": ("put on hold: {why}", "擱置：{why}"),
     "ev_done": ("marked done: {why}", "完成：{why}"), "ev_reopen": ("reopened: {why}", "重新打開：{why}"),
+    "picks_head": ("## The current versions (the person this page is for picked them: improve on them)",
+                   "## 現行版（頁主人選定的版本，這次從它接著改）"),
+    "refs_head": ("## Reference material from other tasks (not this task's verified results; their old scores do not apply here)",
+                  "## 參考資料（來自其他 task；不是這個 task 已驗證的成果，舊分數不適用）"),
+    "refs_where": ("In your folder, under reference/ (listed in reference/INDEX.md):", "在你的資料夾 reference/ 底下（清單在 reference/INDEX.md）："),
+    "refs_index": ("# Reference material from other tasks\n\nNot this task's verified results, and their old scores do not apply here: "
+                   "that task was judged by another rule. Read them, follow them where they help; your answers are judged here.",
+                   "# 參考資料（來自其他 task）\n\n這些不是這個 task 已驗證的成果，也不沿用原本的分數：那個 task 的評分標準不同。"
+                   "可以讀、可以照著做；你的答案要在這裡重新評分。"),
     "notes_head": ("## Notes from the person this page is for (written after the earlier runs; follow them)",
                    "## 頁主人的批註（看過前面的執行後寫的，這次要照做）"),
     "t_todos": ("todos", "待辦"), "t_answers": ("answers", "答案"),
@@ -259,6 +269,24 @@ def check_definition(d):
     judge = d.get("judge")
     if not (isinstance(judge, list) and judge and all(isinstance(x, str) and x for x in judge)):
         problems.append("judge: the judge's command as a list of words ({kb} and {run} name this run's folders)")
+    refs = d.get("from", [])
+    if not isinstance(refs, list) or not all(isinstance(r, dict) for r in refs):
+        problems.append("from: a list of {page, run, kinds, entries, current}")
+        refs = []
+    for i, r in enumerate(refs, 1):
+        if not ID.match(str(r.get("page", ""))):
+            problems.append(f"from {i}: page is the id of another page of the notebook")
+        elif r.get("page") == d.get("id"):
+            problems.append(f"from {i}: a page's own runs carry on by themselves; name another page")
+        if "run" in r and not (isinstance(r["run"], int) and not isinstance(r["run"], bool) and r["run"] >= 1):
+            problems.append(f"from {i}: run is a run number (1 or more); leave it out for the latest run")
+        for key in ("kinds", "entries"):
+            if key in r and not (isinstance(r[key], list) and all(isinstance(x, str) and x for x in r[key])):
+                problems.append(f"from {i}: {key} is a list")
+        if "current" in r and not isinstance(r["current"], bool):
+            problems.append(f"from {i}: current is true or false")
+        if not (r.get("kinds") or r.get("entries") or r.get("current")):
+            problems.append(f"from {i}: say what to bring (kinds, entries or current)")
     if "icon" in d and not (isinstance(d["icon"], str) and 1 <= len(d["icon"].strip()) <= 3):
         problems.append("icon: one to three characters for the rail")
     if "asked" in d and not (isinstance(d["asked"], str) and d["asked"].strip()):
@@ -342,13 +370,21 @@ class Notebook:
                 out[e["request"]].update(state=e["kind"], page=e.get("page"))
         return list(out.values())
 
-    def ask(self, goal, by, title=None, at=None):
-        """Record a request for a new task (the + of the view): Claude drafts its page, a person approves it."""
+    def ask(self, goal, by, title=None, at=None, bring=()):
+        """Record a request for a new task (the + of the view): Claude drafts its page, a person approves it. bring:
+        [{page, bring: [skills, knowledge, current]}], what the new task should bring from other pages (its "from")."""
         if not isinstance(goal, str) or not goal.strip():
             raise NotebookError("a new task needs its goal in a line")
+        ids, wanted = set(self.ids()), []
+        for b in bring or ():
+            what = [x for x in (b.get("bring") or []) if x in BRING]
+            if b.get("page") not in ids:
+                raise NotebookError(f"bring: no page {b.get('page')!r} in this notebook")
+            if what:
+                wanted.append({"page": b["page"], "bring": what})
         rid = f"r{len(self.requests()) + 1}"
         return self._append("requests.jsonl", dict(kind="request", id=rid, goal=goal.strip()[:2000],
-                                                    title=(title or "").strip()[:200] or None), by, at)
+                                                    title=(title or "").strip()[:200] or None, bring=wanted), by, at)
 
     def _append(self, name, event, by, at=None):
         event = dict(event, by=by, t=now())
@@ -690,16 +726,90 @@ def approve(page, by, at=None):
     return page.append("approve", by, at=at, digest=page.digest(), definition=page.d)
 
 
-def task_with_notes(page, notes):
+def task_with_notes(page, notes, picks=(), refs=()):
+    """The task a run reads: the page's task, then the notes no run has used yet, the current versions it goes on from
+    and the reference material it brings from other pages."""
+    lang, parts = page.notebook.lang, []
+    if notes:
+        parts.append("\n".join([say(lang, "notes_head")] + [f"- ({local(n['t'])}, {n['by']}) {n['text']}" for n in notes]))
+    if picks:
+        parts.append("\n".join([say(lang, "picks_head")] + [f"- {p['kind']}: {p['entry']} ({say(lang, 'run_n', n=p['run'])})"
+                                                           for p in picks]))
+    lines = [f"- {ref_file(r, e)}: {e['kind']} {e.get('name') or one_line(e.get('summary') or '', 80)} "
+             f"({r['title']}, {say(lang, 'run_n', n=e.get('run') or r['run'])}, {e['member']})" for r in refs for e in r["entries"]]
+    if lines:
+        parts.append("\n".join([say(lang, "refs_head"), say(lang, "refs_where")] + lines))
     task = read_text(page.task_path())
-    if not notes:
-        return task
-    lines = [say(page.notebook.lang, "notes_head")]
-    lines += [f"- ({local(n['t'])}, {n['by']}) {n['text']}" for n in notes]
-    return task.rstrip("\n") + "\n\n" + "\n".join(lines) + "\n"
+    return task.rstrip("\n") + "".join("\n\n" + x for x in parts) + "\n" if parts else task
 
 
-def run_argv(page, folder, task_file, source=None):
+def one_line(text, n):
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def picked_entries(page):
+    """The current versions a person picked, to carry on: [{entry, kind, run, folder}]; an excluded one stays out."""
+    runs, excluded = {r["n"]: r for r in page.runs()}, page.excluded()
+    return [{"entry": ev.get("entry"), "kind": kind, "run": ev.get("run"), "folder": runs[ev.get("run")]["folder"]}
+            for kind, ev in sorted(page.picks().items()) if ev.get("entry") not in excluded and ev.get("run") in runs]
+
+
+def references(page):
+    """What the page's "from" asks for, as the records are now: [{page, title, run, entries}]: the verified entries of
+    the kinds or ids named (and the source page's current versions, with current), never one that page excluded."""
+    out = []
+    for ref in page.d.get("from") or []:
+        try:
+            src = page.notebook.page(ref["page"])
+        except NotebookError:
+            raise NotebookError(f"from: no page {ref['page']!r} in this notebook")
+        runs = src.runs()
+        run = next((r for r in runs if r["n"] == ref["run"]), None) if ref.get("run") else (runs[-1] if runs else None)
+        if run is None:
+            raise NotebookError(f"from: {ref['page']} has no run" + (f" {ref['run']}" if ref.get("run") else ""))
+        f = src.facts(run["n"])
+        kinds, ids = {k.lower() for k in ref.get("kinds") or []}, set(ref.get("entries") or [])
+        if ref.get("current"):
+            ids |= {p.get("entry") for p in src.picks().values()}
+        pool = [dict(e, folder=run["folder"], run=run["n"]) for e in (f.get("carried") or []) + (f.get("made") or [])]
+        pool += [e for eid, e in src.entries().items() if eid in ids]  # a picked or named entry may be from any run
+        chosen, seen, excluded = [], set(), src.excluded()
+        for e in pool:
+            if e["id"] in seen or e["id"] in excluded or e["status"] != "valid" or not (e["kind"] in kinds or e["id"] in ids):
+                continue
+            chosen.append(e)
+            seen.add(e["id"])
+        out.append({"page": src.id, "title": src.d.get("title") or src.id, "run": run["n"], "entries": chosen})
+    return out
+
+
+def ref_file(ref, entry):
+    return f"reference/{ref['page']}/{entry['id']}.txt"
+
+
+def write_references(folder, refs, lang):
+    """Copy the reference material into the run's board folder (members read it there), with an index."""
+    board = os.path.join(folder, "board")
+    rows = []
+    for r in refs:
+        for e in r["entries"]:
+            src = os.path.join(e["folder"], "kb", e["artifact"]) if e.get("artifact") else None
+            if not src or not os.path.isfile(src):
+                continue
+            path = os.path.join(board, ref_file(r, e))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(src, "rb") as handle, open(path, "wb") as copy:
+                copy.write(handle.read())
+            rows.append(f"| {ref_file(r, e)} | {e['kind']} | {one_line(e.get('name') or e.get('summary') or '', 80)} | "
+                        f"{r['title']} ({say(lang, 'run_n', n=e.get('run') or r['run'])}) | {e['member']} |")
+    if rows:
+        with open(os.path.join(board, "reference", "INDEX.md"), "w", encoding="utf-8") as handle:
+            handle.write(say(lang, "refs_index") + "\n\n| file | kind | name | from | by |\n|---|---|---|---|---|\n" + "\n".join(rows) + "\n")
+    return len(rows)
+
+
+def run_argv(page, folder, task_file, source=None, picks=(), source_n=None):
     d, team, budget = page.d, page.d["team"], page.d.get("budget") or {}
     judge = [w.replace("{kb}", os.path.join(folder, "kb")).replace("{run}", folder) for w in d["judge"]]
     argv = [sys.executable, "-m", "herdr_py.engine", "--task", task_file, "--judge", " ".join(shlex.quote(w) for w in judge),
@@ -725,6 +835,10 @@ def run_argv(page, folder, task_file, source=None):
             argv += ["--carry", kind]
         for eid in sorted(page.excluded()):
             argv += ["--seed-skip", eid]
+        for p in picks:  # the current versions, whatever their kind; one made in another run comes from that run
+            argv += ["--seed-keep", p["entry"]]
+            if p["run"] != source_n:
+                argv += ["--seed-entry", p["folder"], p["entry"]]
     return argv
 
 
@@ -756,9 +870,11 @@ def start_run(page, by, source_n=None, fresh=False, dry=False, detach=False, out
     n = max((r["n"] for r in runs), default=0) + 1
     folder = os.path.join(page.dir, "runs", str(n))
     notes = [x for x in page.notes() if x["used_by"] is None]
-    task = task_with_notes(page, notes)
+    picks = picked_entries(page) if source else []
+    refs = references(page)
+    task = task_with_notes(page, notes, picks, refs)
     task_file = os.path.join(folder, "task.md")
-    argv = run_argv(page, folder, task_file, source["folder"] if source else None)
+    argv = run_argv(page, folder, task_file, source["folder"] if source else None, picks, source["n"] if source else None)
     if dry:
         out.write(f"run {n} of {page.id}" + (f", going on from run {source['n']}" if source else ", from nothing") + "\n")
         out.write("$ " + " ".join(shlex.quote(a) for a in argv) + f"\n(in {page.cwd()})\n\n--- the task\n{task}")
@@ -768,8 +884,11 @@ def start_run(page, by, source_n=None, fresh=False, dry=False, detach=False, out
     os.makedirs(folder)
     with open(task_file, "w", encoding="utf-8") as handle:
         handle.write(task)
+    write_references(folder, refs, page.notebook.lang)
     page.append("run", by, n=n, dir=os.path.join("runs", str(n)), digest=page.digest(), notes=[x["id"] for x in notes],
-                budget=page.d.get("budget"), **{"from": source["n"] if source else None})
+                budget=page.d.get("budget"), picks=[p["entry"] for p in picks],
+                references=[{"page": r["page"], "run": r["run"], "entries": [e["id"] for e in r["entries"]]} for r in refs],
+                **{"from": source["n"] if source else None})
     env = dict(os.environ, PYTHONPATH=os.pathsep.join([ROOT] + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p]))
     if detach:
         with open(os.path.join(folder, "console.log"), "ab") as log:
@@ -896,6 +1015,8 @@ def main(argv=None):
     ap.add_argument("--out", help="view: the folder to write")
     ap.add_argument("--request", help="draft: the request (r1, r2, ...) this page answers")
     ap.add_argument("--title", help="request: a title for the new task")
+    ap.add_argument("--bring", action="append", default=[], metavar="PAGE=WHAT",
+                    help="request: what the new task brings from that page: skills, knowledge, current (comma separated)")
     ap.add_argument("--host", default="127.0.0.1", help="serve: the address to listen on (default: this machine only)")
     ap.add_argument("--port", type=int, default=8790, help="serve: the port (default 8790)")
     ap.add_argument("--runs", action="append", default=[], metavar="DIR", help="view: list the run folders under DIR no page holds")
@@ -914,7 +1035,13 @@ def main(argv=None):
         elif a.command == "status":
             print(status_text(nb))
         elif a.command == "request":
-            e = nb.ask(a.args[0], a.by, title=a.title, at=at)
+            bring = []
+            for item in a.bring:
+                pid, sep, what = item.partition("=")
+                if not sep:
+                    raise NotebookError(f"--bring {item!r}: PAGE=skills,knowledge,current")
+                bring.append({"page": pid, "bring": [w.strip() for w in what.split(",") if w.strip()]})
+            e = nb.ask(a.args[0], a.by, title=a.title, at=at, bring=bring)
             print(f"request {e['id']}: Claude drafts the page; it runs after a person approves it")
         elif a.command == "serve":
             from . import notebookview

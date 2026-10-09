@@ -25,8 +25,9 @@ within a quarter second, and recorded in engine.jsonl. Records: kb/ (entries, ve
 turn: its todo, the board version and the hash of the prompt it was given, state, seconds, tokens, verdict),
 engine.jsonl (every planner turn: why it was woken, what it changed or why it was sent back) and summary.json.
 A run can start from an earlier one: --seed-from RUN_DIR copies that run's verified entries (with their verdicts and
-files; --carry KIND keeps only artifacts that name one of these kinds on their first line, --seed-skip ID leaves one
-out) into this run's knowledge base before the first prompt (TeamKB.seed), so the team starts with what it already
+files; --carry KIND keeps only artifacts that name one of these kinds on their first line, --seed-keep ID carries one
+whatever its kind, --seed-skip ID leaves one out; --seed-entry RUN_DIR ID also carries one verified entry of another
+run) into this run's knowledge base before the first prompt (TeamKB.seed, TeamKB.add_from), so the team starts with what it already
 found and the skills it wrote; carried entries keep their ids and are marked seeded_from, the start record says what was
 carried, and the summary counts only this run's answers.
 Exit codes: 0 a valid answer was found, 1 none, 2 bad arguments, 3 stopped because the setup broke
@@ -744,6 +745,10 @@ def main(argv=None):
     ap.add_argument("--carry", action="append", default=[], metavar="KIND",
                     help="with --seed-from: carry only artifacts of this kind (repeat; default: every verified entry)")
     ap.add_argument("--seed-skip", action="append", default=[], metavar="ENTRY", help="with --seed-from: never carry this entry")
+    ap.add_argument("--seed-keep", action="append", default=[], metavar="ENTRY",
+                    help="with --seed-from: carry this entry whatever its kind (a version a person picked)")
+    ap.add_argument("--seed-entry", action="append", default=[], nargs=2, metavar=("RUN_DIR", "ENTRY"),
+                    help="also carry this verified entry of that run (a picked version made in an earlier run)")
     ap.add_argument("--member-access", choices=["read", "research"], default="read",
                     help="read (default): members read the board folder; research: and search the web (Claude members)")
     a = ap.parse_args(argv)
@@ -788,20 +793,34 @@ def main(argv=None):
                        if os.path.isfile(os.path.join(d, "events.jsonl"))), None)
         if source is None:
             problems.append(f"--seed-from: no knowledge base in {a.seed_from} (neither kb/events.jsonl nor events.jsonl)")
-    elif a.carry or a.seed_skip:
-        problems.append("--carry and --seed-skip go with --seed-from")
+    elif a.carry or a.seed_skip or a.seed_keep:
+        problems.append("--carry, --seed-skip and --seed-keep go with --seed-from")
+    for run_dir, _ in a.seed_entry:
+        if not os.path.isfile(os.path.join(run_dir, "kb", "events.jsonl")):
+            problems.append(f"--seed-entry: no knowledge base in {run_dir} (kb/events.jsonl)")
     if problems:
         print("herdr-py engine: " + "; ".join(problems), file=sys.stderr)
         return 2
     seeded = None
-    if source is not None:
+    if source is not None or a.seed_entry:
+        kb = TeamKB(os.path.join(a.out, "kb"))
         try:
-            seeded = TeamKB(os.path.join(a.out, "kb")).seed(source, kinds=a.carry or None, skip=a.seed_skip,
-                                                         origin=os.path.abspath(a.seed_from))
+            seeded = (kb.seed(source, kinds=a.carry or None, skip=a.seed_skip, keep=a.seed_keep, origin=os.path.abspath(a.seed_from))
+                      if source is not None else {"from": None, "carried": [], "kinds": {}, "parents_dropped": 0, "left_out": {}})
+            picked = collections.OrderedDict()
+            for run_dir, eid in a.seed_entry:
+                picked.setdefault(os.path.abspath(run_dir), []).append(eid)
+            seeded["picked"] = []
+            for run_dir, ids in picked.items():
+                more = kb.add_from(os.path.join(run_dir, "kb"), ids, origin=run_dir)
+                seeded["picked"] += more["carried"]
+                seeded["carried"] += more["carried"]
+                for k, n in more["kinds"].items():
+                    seeded["kinds"][k] = seeded["kinds"].get(k, 0) + n
         except TeamKBError as exc:
             print(f"herdr-py engine: --seed-from: {exc}", file=sys.stderr)
             return 2
-        print(f"carried {len(seeded['carried'])} verified entries from {a.seed_from}"
+        print(f"carried {len(seeded['carried'])} verified entries from {a.seed_from or 'earlier runs'}"
               + (f" ({', '.join(f'{n} {k}' for k, n in sorted(seeded['kinds'].items()))})" if seeded["kinds"] else "")
               + (f"; left out {', '.join(f'{n} {k}' for k, n in sorted(seeded['left_out'].items()))}" if seeded["left_out"] else ""),
               flush=True)

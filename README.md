@@ -238,7 +238,13 @@ appended to the page's `history.jsonl` with who and when. A draft never runs: `r
 task changed since it was last approved. A run goes on from the page's latest run (or `--from N`, or `--fresh`): the
 engine starts from that run's verified entries of the kinds the page carries, without the entries a person excluded
 (`engine --seed-from`), and the notes no run has used yet are added to its task. Every version of every output is
-kept, and a person picks the current one. What waits for a person is worked out from the records, never stored: a
+kept, and a person picks the current one; the next run goes on from it (a picked version carries on whatever its
+kind, and the task names it as the version to improve on). A page can also bring reference material from other
+pages: `"from": [{"page": "museum-report", "kinds": ["skill"], "current": true}]` copies, before each run, the chosen
+verified entries of that page's latest run (or `"run": N`) into the members' folder (`reference/<page>/<entry>.txt`,
+listed in `reference/INDEX.md`), and the task says so. They are not the new page's verified results and keep no
+score: the other page was judged by another rule. In the demo, a library report that brings the museum report's
+skills reaches a full page in 4 member turns; the same report from scratch takes 5. What waits for a person is worked out from the records, never stored: a
 draft to approve, a run that ended and that nobody has looked at since (a note, a pick, an exclusion, accept, hold or
 done), and a run with no end that has written nothing for 15 minutes.
 
@@ -526,7 +532,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 478 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 485 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

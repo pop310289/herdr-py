@@ -221,6 +221,81 @@ class PageTest(Base):
         self.draft(goal="the highest number, and say why")
         self.assertEqual(self.page().state(), ("draft", [("approve", None)]))  # the next run needs the new version approved
 
+    def test_the_current_version_is_where_the_next_run_starts(self):
+        self.draft(carry=["skill"])  # numbers do not carry on by kind: only a pick brings one along
+        notebook.approve(self.page(), "person")
+        self.script([add("give a number"), add(done=True)], {"a": [{"answer": "5"}]})
+        self.run_page()
+        five = self.page().facts(1)["made"][0]["id"]
+        self.script([add("give a number"), add(done=True)], {"a": [{"answer": "7"}]})
+        self.run_page()
+        notebook.pick(self.page(), five, "person")  # the person prefers run 1's answer
+        _, dry = self.run_page(dry=True)
+        self.assertIn(f"--seed-keep {five}", dry)
+        self.assertIn(f"--seed-entry {self.page().runs()[0]['folder']} {five}", dry)  # made in run 1; run 3 goes on from run 2
+        self.assertIn("The current versions", dry)
+        self.assertIn(f"result: {five} (run 1)", dry)
+        self.script([add("give a number"), add(done=True)], {"a": [{"answer": "9"}]})
+        self.run_page()
+        run3 = self.page().runs()[-1]
+        self.assertEqual(first_line(os.path.join(run3["folder"], "engine.jsonl"))["seeded"]["picked"], [five])
+        self.assertEqual(run3["picks"], [five])
+        self.assertIn(five, [e["id"] for e in self.page().facts(3)["carried"]])
+        self.cli("exclude", "p1", five, "--why", "not this one after all")
+        self.assertNotIn("--seed-keep", self.run_page(dry=True)[1])  # an excluded pick stays out
+
+    def test_a_new_task_brings_reference_material_but_not_as_its_results(self):
+        self.draft()
+        skill = "ARTIFACT: skill\n---\nname: count-up\n---\n1. one"
+        notebook.attach(self.page(), self.engine_run("outside", answers=(skill, "5", "8")), "claude")
+        made = {e["kind"]: e["id"] for e in self.page().facts(1)["made"][:2]}
+        eight = self.page().facts(1)["made"][2]["id"]  # a result nobody picked: not a skill, not current, so not brought
+        notebook.pick(self.page(), made["result"], "person")
+        self.draft(id="p2", title="Second", **{"from": [{"page": "p1", "kinds": ["skill"], "current": True}]})
+        notebook.approve(self.page("p2"), "person")
+        self.script([add("give a number"), add(done=True)], {"a": [{"answer": "3"}]})
+        out = io.StringIO()
+        notebook.start_run(self.page("p2"), "tester", out=out)
+        run = self.page("p2").runs()[-1]
+        board = os.path.join(run["folder"], "board")
+        for eid in (made["skill"], made["result"]):  # copied as files the members can read, as they were
+            self.assertTrue(os.path.isfile(os.path.join(board, "reference", "p1", eid + ".txt")), eid)
+        stored = next(e for e in self.page().facts(1)["made"] if e["id"] == made["skill"])["artifact"]
+        self.assertEqual(read(os.path.join(board, "reference", "p1", made["skill"] + ".txt")),
+                         read(os.path.join(self.page().runs()[0]["folder"], "kb", stored)))  # byte for byte what was judged
+        index = read(os.path.join(board, "reference", "INDEX.md"))
+        self.assertIn("Not this task's verified results", index)
+        self.assertIn(f"reference/p1/{made['skill']}.txt", index)
+        task = read(os.path.join(run["folder"], "task.md"))
+        self.assertIn("Reference material from other tasks", task)
+        self.assertIn(f"reference/p1/{made['result']}.txt", task)
+        self.assertEqual(run["references"], [{"page": "p1", "run": 1, "entries": [made["skill"], made["result"]]}])
+        self.assertFalse(os.path.exists(os.path.join(board, "reference", "p1", eight + ".txt")))
+        facts = self.page("p2").facts(1)
+        self.assertEqual((facts["carried"], facts["seeded"]), ([], None))  # not in its knowledge base: not its results
+        self.assertIn(f"reference/p1/{made['skill']}.txt", read(os.path.join(self.log, "a-01.prompt")))  # the member is told
+        self.cli("exclude", "p1", made["skill"], "--why", "wrong")
+        dry = self.dry("p2")
+        self.assertNotIn(made["skill"], dry)  # what its own page excluded is not brought
+        self.assertIn(made["result"], dry)
+
+    def dry(self, pid):
+        out = io.StringIO()
+        notebook.start_run(self.page(pid), "tester", dry=True, out=out)
+        return out.getvalue()
+
+    def test_what_a_page_brings_is_checked(self):
+        d = self.definition
+        for refs, problem in (([{"page": "p1", "kinds": ["skill"]}], "own runs carry on"), ([{"page": "p0"}], "say what to bring"),
+                              ([{"page": "Bad Id", "current": True}], "page is the id"), ([{"page": "p0", "run": 0, "current": True}], "run is"),
+                              ("p0", "from: a list")):
+            got = notebook.check_definition(d(**{"from": refs}))
+            self.assertTrue(any(problem in p for p in got), (refs, got))
+        self.draft(**{"from": [{"page": "nowhere", "kinds": ["skill"]}]})
+        notebook.approve(self.page(), "person")
+        with self.assertRaisesRegex(NotebookError, "no page 'nowhere'"):
+            self.dry("p1")
+
     def test_fresh_and_from_choose_where_a_run_starts(self):
         self.draft()
         notebook.approve(self.page(), "person")
@@ -514,6 +589,29 @@ class ViewTest(Base):
             json.dump({"title": "Test notebook", "lang": "en", "style": "missing.css"}, handle)
         self.assertEqual(self.cli("view", "--out", out)[0], 0)  # a style that cannot be read adds nothing
 
+    def test_the_view_shows_what_a_run_brought_and_the_plus_asks_what_to_bring(self):
+        self.draft()
+        skill = "ARTIFACT: skill\n---\nname: count-up\n---\n1. one"
+        notebook.attach(self.page(), self.engine_run("outside", answers=(skill,)), "claude")
+        sid = self.page().facts(1)["made"][0]["id"]
+        self.draft(id="p2", title="Second", **{"from": [{"page": "p1", "kinds": ["skill"]}]})
+        notebook.approve(self.page("p2"), "person")
+        self.script([add("give a number"), add(done=True)], {"a": [{"answer": "3"}]})
+        notebook.start_run(self.page("p2"), "tester", out=io.StringIO())
+        self.assertEqual(self.cli("request", "a third report", "--bring", "p1=skills,current", "--bring", "p2=knowledge")[0], 0)
+        self.assertEqual(self.nb.requests()[0]["bring"], [{"page": "p1", "bring": ["skills", "current"]}, {"page": "p2", "bring": ["knowledge"]}])
+        self.assertEqual(self.cli("request", "x", "--bring", "nowhere=skills")[0], 2)
+        out = os.path.join(self.dir, "site")
+        self.cli("view", "--out", out)
+        p2 = read(os.path.join(out, "p", "p2", "index.html"))
+        self.assertIn("reference material: A page, run 1: 1", p2)  # the run card
+        self.assertIn(f'href="../p1/files/{sid}.txt"', p2)  # the overview links each one to its own page
+        self.assertIn("count-up", p2.split('id="overview"')[1].split('<section class="panel tab"')[0])
+        new = read(os.path.join(out, "new.html"))
+        self.assertIn('value="p1:skills"', new)
+        self.assertIn('value="p2:current"', new)
+        self.assertIn("A page: skills, current versions", new)  # the request lists what it asked to bring
+
     def test_a_dag_run_cut_off_shows_where_it_stopped(self):
         self.draft(kind="dag")
         folder = os.path.join(self.dir, "dag")
@@ -606,8 +704,10 @@ class ServeTest(Base):
         code, body, _ = self.fetch("/api/act", {"command": "approve", "page": "p1", "digest": self.page().digest()}, token="tok")
         self.assertEqual(code, 200, body)
         self.assertEqual(self.fetch("/api/act", {"command": "explode", "page": "p1"}, token="tok")[0], 409)
-        self.assertEqual(self.fetch("/api/new", {"goal": "a list of five books"}, token="tok")[0], 200)
-        self.assertEqual([r["goal"] for r in self.nb.requests()], ["a list of five books"])
+        self.assertEqual(self.fetch("/api/new", {"goal": "a list of five books", "bring": [{"page": "p1", "bring": ["skills", "nonsense"]}]},
+                                    token="tok")[0], 200)
+        self.assertEqual([(r["goal"], r["bring"]) for r in self.nb.requests()], [("a list of five books", [{"page": "p1", "bring": ["skills"]}])])
+        self.assertEqual(self.fetch("/api/new", {"goal": "x", "bring": [{"page": "nowhere", "bring": ["skills"]}]}, token="tok")[0], 409)
         self.assertIn("a list of five books", self.fetch("/new.html")[1])
 
     def test_the_teams_files_run_in_a_sandbox_and_nothing_else_is_served(self):
@@ -633,7 +733,21 @@ class DemoTest(unittest.TestCase):
         nb = Notebook(os.path.join(out, "notebook"))
         states = {pg.id: pg.state() for pg in nb.pages()}
         self.assertEqual(states, {"museum-report": ("review", [("review", 2)]), "circles": ("approved", []),
-                                  "calculator": ("hold", []), "circles-bigger-team": ("draft", [("approve", None)])})
+                                  "calculator": ("hold", []), "circles-bigger-team": ("draft", [("approve", None)]),
+                                  "library-report": ("review", [("review", 1)]), "library-report-plain": ("review", [("review", 1)])})
+
+        def turns_to_full_page(pid):  # member turns until a page scored 100, as the run recorded them
+            for i, x in enumerate(nb.page(pid).facts(1)["turn_list"], 1):
+                if x.get("kind") == "result" and x.get("status") == "valid" and x.get("score") == 100:
+                    return i
+            return None
+        with_skills, plain = turns_to_full_page("library-report"), turns_to_full_page("library-report-plain")
+        self.assertIsNotNone(plain)
+        self.assertLess(with_skills, plain)  # P30, on made-up members: the borrowed skill saved a turn
+        borrowed = nb.page("library-report").runs()[0]["references"]
+        self.assertEqual([r["page"] for r in borrowed], ["museum-report"])
+        self.assertIn("reference/museum-report/", next(e["summary"] for e in nb.page("library-report").facts(1)["made"] if e["kind"] == "skill"))
+        self.assertEqual(nb.page("library-report").facts(1)["carried"], [])  # brought as reference material, not as its results
         museum = nb.page("museum-report")
         second = museum.facts(2)
         self.assertEqual(sorted(e["kind"] for e in second["carried"]), ["data", "data", "skill"])
