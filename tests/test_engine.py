@@ -451,6 +451,108 @@ class EngineTest(Base):
         self.assertEqual(code, 0, said + err)
         self.assertEqual(self.summary()["planner_wakes"], 1)  # a was free after its turn, but no turns were left to give it
 
+    def takes(self):
+        path = os.path.join(self.out, "kb", "events.jsonl")
+        if not os.path.exists(path):
+            return 0
+        with open(path) as handle:
+            return sum(1 for line in handle if '"op": "take"' in line)
+
+    def steer(self, *commands):
+        """Send (delay, command, value[, until]) in a thread once the run has begun; until(): wait for it first."""
+        import threading
+        def go():
+            deadline = time.time() + 10
+            while not os.path.exists(os.path.join(self.out, "engine.jsonl")) and time.time() < deadline:
+                time.sleep(0.02)
+            for delay, command, value, *until in commands:
+                time.sleep(delay)
+                while until and not until[0]() and time.time() < deadline + 10:
+                    time.sleep(0.02)
+                if command == "garbage":
+                    with open(os.path.join(self.out, "control.jsonl"), "a") as handle:
+                        handle.write("not json\n")
+                else:
+                    engine.send_control(self.out, command, value, by="test")
+        threading.Thread(target=go, daemon=True).start()
+
+    def test_a_person_can_pause_resume_and_stop_a_run(self):
+        self.script(planner=[add(*["t%d" % i for i in range(6)]), add()],
+                    members={"a": [{"answer": "1", "sleep": 0.8}], "b": [{"answer": "2", "sleep": 0.8}]})
+        # pause once a todo is taken (the turns already taken finish), resume 1.5 s later, stop once work went on
+        before = []
+        self.steer((0.0, "garbage", None, lambda: self.takes() >= 1), (0.0, "pause", None),
+                   (1.5, "resume", None, lambda: before.append(self.takes()) or True),
+                   (0.0, "stop", None, lambda: self.takes() > before[0]))
+        code, said, err = self.run_main("--turns", "12", "--max-open", "6")
+        s = self.summary()
+        self.assertEqual(s["stopped"], "stopped by a person")
+        controls = [e for e in self.records("engine.jsonl") if e["kind"] == "control"]
+        self.assertEqual([c["command"] for c in controls], [None, "pause", "resume", "stop"])
+        self.assertIn("not a command", controls[0]["refused"])
+        paused, resumed = controls[1]["t"], controls[2]["t"]
+        turns = self.records("run.jsonl")
+        self.assertFalse([t["turn"] for t in turns if paused < t["start"] < resumed])  # nothing started while paused
+        self.assertTrue([t for t in turns if t["start"] >= resumed])  # work went on (taken in the same millisecond, too)
+        self.assertGreater(s["paused_seconds"], 1.0)
+        self.assertLess(s["turns"], 12)
+        self.assertTrue(all(v < s["seconds"] - 1.0 for v in s["idle_seconds"].values()), s)  # paused time is not waiting
+
+    def test_a_pause_stops_the_waiting_clock_of_a_free_member(self):
+        import types
+        now = {"t": 100.0}
+        engine.time = types.SimpleNamespace(time=time.time, monotonic=lambda: now["t"], sleep=time.sleep,
+                                            strftime=time.strftime, localtime=time.localtime)
+        self.addCleanup(setattr, engine, "time", time)
+        run = engine.EngineRun("t", None, None, ["a", "b"], "plan", self.out, 4)
+        self.addCleanup(run.elog.close)
+        self.addCleanup(run.log.close)
+        run.free, run.idle_since, run.idle = {"a": True, "b": False}, {"a": 90.0, "b": None}, {"a": 0.0, "b": 0.0}
+        engine.send_control(self.out, "pause")
+        run.read_control()  # at 100 s: a has waited 10 s for work; b works
+        self.assertEqual((run.paused, run.idle["a"], run.idle_since["a"]), (True, 10.0, None))
+        now["t"] = 160.0
+        engine.send_control(self.out, "resume")
+        run.read_control()  # the 60 s paused are not waiting: a's clock starts again now
+        self.assertEqual((run.paused, run.paused_seconds, run.idle["a"], run.idle_since["a"]), (False, 60.0, 10.0, 160.0))
+        self.assertEqual(run.idle_since["b"], None)  # b was busy all along: untouched
+
+    def test_a_person_can_change_the_turns_and_the_time_limit(self):
+        self.script(planner=[add(*["t%d" % i for i in range(6)]), add()],
+                    members={"a": [{"answer": "1", "sleep": 0.3}], "b": [{"answer": "2", "sleep": 0.3}]})
+        self.steer((0.0, "turns", 3))
+        self.run_main("--turns", "12", "--max-open", "6")
+        s = self.summary()
+        self.assertEqual((s["turn_budget"], s["turns"], s["stopped"]), (3, 3, "the member turns are used up"))
+        shutil.rmtree(self.out)
+        shutil.rmtree(self.log)
+        self.steer((0.0, "time_limit", 0.5))
+        started = time.time()
+        self.run_main("--turns", "12", "--max-open", "6")
+        self.assertEqual(self.summary()["stopped"], "the time limit of 0.5 s was reached")
+        self.assertLess(time.time() - started, 4)
+
+    def test_commands_are_checked_and_can_be_sent_from_the_command_line(self):
+        os.makedirs(self.out)
+        with open(os.path.join(self.out, "engine.jsonl"), "w") as handle:
+            handle.write(json.dumps({"t": 1.0, "kind": "start", "members": ["a"], "planner": "plan", "turns": 3}) + "\n")
+        for args, why in ((("jump",), "command: one of"), (("turns",), "turns: give a number"), (("turns", "0"), "more than 0"),
+                          (("pause", "3"), "pause takes no value")):
+            with self.assertRaises(ValueError) as caught:
+                engine.send_control(self.out, *args)
+            self.assertIn(why, str(caught.exception))
+        with self.assertRaises(ValueError):
+            engine.send_control(os.path.join(self.dir, "no-run-here"), "pause")
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):
+            self.assertEqual(engine.main(["--control", self.out, "time-limit", "30"]), 0)
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(engine.main(["--control", self.out, "jump"]), 2)
+        with open(os.path.join(self.out, "control.jsonl")) as handle:
+            rows = [json.loads(line) for line in handle]
+        self.assertEqual([(r["command"], r["value"]) for r in rows], [("time_limit", 30.0)])
+        self.assertTrue(rows[0]["by"].startswith("cli:"))
+
     def test_a_wall_clock_that_jumps_back_does_not_bend_the_durations(self):
         # seen on RHEL in a VM: the guest's clock was stepped back mid-run and b's waiting time came out as -1.0 s
         import threading
@@ -756,6 +858,52 @@ class ViewTest(Base):
         col_w = (340 - 8) / 2
         x = float(re.search(r'<title>t1 [^<]*</title><rect class="under" x="([\d.]+)"', svg).group(1))
         self.assertAlmostEqual(x, 4 + col_w + 3, places=1)  # in b's lane, where it was meant to go
+
+    def test_the_served_page_takes_a_persons_commands_only_with_the_token(self):
+        import threading
+        import urllib.error
+        import urllib.request
+        os.makedirs(self.out)
+        with open(os.path.join(self.out, "engine.jsonl"), "w") as handle:
+            handle.write(json.dumps({"t": 100.0, "kind": "start", "members": ["a"], "planner": "plan", "turns": 3}) + "\n")
+            handle.write(json.dumps({"t": 101.0, "kind": "control", "command": "pause", "value": None, "by": "web"}) + "\n")
+        got = {}
+        ready = threading.Event()
+        def up(server, token):
+            got.update(server=server, token=token)
+            ready.set()
+        threading.Thread(target=engineview.serve, args=(self.out,), kwargs={"port": 0, "ready": up}, daemon=True).start()
+        self.assertTrue(ready.wait(5))
+        self.addCleanup(got["server"].shutdown)
+        base = "http://127.0.0.1:%d" % got["server"].server_address[1]
+        def post(body, token=None, raw=None):
+            req = urllib.request.Request(base + "/control", data=raw if raw is not None else json.dumps(body).encode(), method="POST",
+                                         headers={"Content-Type": "application/json", **({"Authorization": "Bearer " + token} if token else {})})
+            try:
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as exc:
+                return exc.code, json.loads(exc.read())
+        with urllib.request.urlopen(base + "/", timeout=5) as r:
+            page = r.read().decode()
+        self.assertIn('id="controls"', page)
+        self.assertIn('"live": true', page)
+        self.assertIn("paused by a person", page)
+        self.assertIn("Commands from people", page)
+        self.assertNotIn('id="controls"', engineview.render(self.out))  # a page opened as a file cannot reach the run
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(base + "/elsewhere", timeout=5)
+        self.assertEqual(caught.exception.code, 404)
+        self.assertEqual(post({"command": "stop"})[0], 403)
+        self.assertEqual(post({"command": "stop"}, token="wrong")[0], 403)
+        code, said = post({"command": "jump"}, token=got["token"])
+        self.assertEqual((code, "command: one of" in said["error"]), (400, True))
+        self.assertEqual(post(None, token=got["token"], raw=b"x" * 5000)[0], 413)
+        self.assertEqual(post({"command": "turns", "value": 5}, token=got["token"])[0], 200)
+        with open(os.path.join(self.out, "control.jsonl")) as handle:
+            rows = [json.loads(line) for line in handle]
+        self.assertEqual([(r["command"], r["value"], r["by"]) for r in rows], [("turns", 5, "web")])
+        self.assertEqual(engineview.main([os.path.join(self.dir, "nothing")]), 2)
 
     def test_a_run_still_going_is_drawn_from_what_is_there(self):
         os.makedirs(os.path.join(self.out, "kb"))

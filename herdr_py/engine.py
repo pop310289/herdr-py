@@ -18,7 +18,10 @@ read-only. Only the judge's verdicts enter the shared state: the planner's todos
 
 The run stops when the member turns are used up, the time limit is reached, the target score is reached, the
 planner says done (running turns finish first), the planner's wakes are used up with nothing left to do, or --patience judged answers in a row did not
-beat the best score. Records: kb/ (entries, verdicts and todos: python3 -m herdr_py.teamkb), run.jsonl (every member
+beat the best score. A person can steer a run that goes on: `python3 -m herdr_py.engine --control RUN_DIR pause` (no new
+todo is taken and the planner is not woken; running turns finish), `resume`, `stop`, `turns N` or `time_limit S`
+(engineview --serve offers the same as buttons); each command is appended to RUN_DIR/control.jsonl, read by the run
+within a quarter second, and recorded in engine.jsonl. Records: kb/ (entries, verdicts and todos: python3 -m herdr_py.teamkb), run.jsonl (every member
 turn: its todo, the board version and the hash of the prompt it was given, state, seconds, tokens, verdict),
 engine.jsonl (every planner turn: why it was woken, what it changed or why it was sent back) and summary.json.
 Exit codes: 0 a valid answer was found, 1 none, 2 bad arguments, 3 stopped because the setup broke
@@ -41,6 +44,30 @@ from .members import BROKEN, MemberError, Members, parse_member
 from .teamkb import MAX_SUMMARY, TeamKB, TeamKBError, one_line
 
 BOARD = "TEAM_BOARD.md"
+CONTROL = "control.jsonl"
+COMMANDS = ("pause", "resume", "stop", "turns", "time_limit")
+
+
+def send_control(out, command, value=None, by="cli"):
+    """Append a person's command for the run in `out`: pause, resume, stop, turns N (the member turns in all, never
+    fewer than used), time_limit S (seconds from the start). Raises ValueError for anything else."""
+    if command not in COMMANDS:
+        raise ValueError(f"command: one of {', '.join(COMMANDS)}, not {command!r}")
+    if command in ("turns", "time_limit"):
+        try:
+            value = int(value) if command == "turns" else float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{command}: give a number") from None
+        if value <= 0:
+            raise ValueError(f"{command}: more than 0")
+    elif value is not None:
+        raise ValueError(f"{command} takes no value")
+    if not os.path.isfile(os.path.join(out, "engine.jsonl")):
+        raise ValueError(f"{out} holds no run (engine.jsonl)")
+    rec = {"t": round(time.time(), 3), "command": command, "value": value, "by": str(by)[:40]}
+    with open(os.path.join(out, CONTROL), "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(rec) + "\n")
+    return rec
 
 PLANNER = """You plan the work of a team of {n} members on the task below. You do not do the task yourself: you keep \
 the team's shared todo list. A program judges every answer (it is not a person); only its verdicts count.
@@ -158,6 +185,7 @@ class EngineRun:
         self.wake_reasons = ["the run started"]  # wake now: the start, or no todo left with nobody working
         self.ended_since_wake = []  # todos ended since the planner was last woken: a wake when someone is free, or a whole lap
         self.time_limit, self.started = time_limit, time.monotonic()
+        self.paused, self.paused_at, self.paused_seconds, self.control_at = False, None, 0.0, 0  # a person's commands
         self.said_done, self.stopping, self.broken = False, None, []
         self.best, self.since_best, self.progress = None, 0, []
         self.turn_records, self.wake_records = [], []
@@ -431,7 +459,7 @@ class EngineRun:
                 self.view()
                 with self.cond:
                     self.free[name] = True
-                    self.idle_since[name] = time.monotonic()
+                    self.idle_since[name] = None if self.paused else time.monotonic()
                     self.running -= 1
                     if rec.get("state") in BROKEN:
                         self.broken.append(f"{name} turn {turn}: the backend ended {rec['state']}")
@@ -447,6 +475,47 @@ class EngineRun:
                     self.cond.notify_all()
 
     # ---- the engine
+    def read_control(self):
+        """Called with the condition held: apply the commands appended to control.jsonl since the last call, and record
+        each in engine.jsonl. A line that is not a known command is recorded as refused."""
+        path = os.path.join(self.out, CONTROL)
+        if not os.path.isfile(path) or os.path.getsize(path) <= self.control_at:
+            return
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            handle.seek(self.control_at)
+            chunk = handle.read()
+        done = chunk[:chunk.rfind("\n") + 1]  # a line still being written waits for the next call
+        self.control_at += len(done.encode("utf-8"))
+        for line in done.splitlines():
+            try:
+                cmd = json.loads(line)
+                command, value = cmd["command"], cmd.get("value")
+            except (ValueError, KeyError, TypeError):
+                cmd, command, value = {}, None, None
+            now = time.monotonic()
+            rec = {"t": round(time.time(), 3), "kind": "control", "command": command, "value": value, "by": cmd.get("by")}
+            if command == "pause" and not self.paused:
+                self.paused, self.paused_at = True, now
+                for name in self.names:  # time spent paused is not time a member waited for work
+                    if self.free[name] and self.idle_since[name] is not None:
+                        self.idle[name] += now - self.idle_since[name]
+                        self.idle_since[name] = None
+            elif command == "resume" and self.paused:
+                self.paused, self.paused_seconds = False, self.paused_seconds + now - self.paused_at
+                for name in self.names:
+                    if self.free[name]:
+                        self.idle_since[name] = now
+            elif command == "stop":
+                self.stopping = self.stopping or "stopped by a person"
+            elif command == "turns" and isinstance(value, int) and value > 0:
+                self.turns = max(value, self.turns_used)
+                rec["applied"] = self.turns
+            elif command == "time_limit" and isinstance(value, (int, float)) and value > 0:
+                self.time_limit = float(value)
+            elif command not in ("pause", "resume"):
+                rec["refused"] = "not a command: " + line[:120]
+            self.record(self.elog, self.wake_records, rec)
+
     def nothing_to_take(self):
         """With nobody working: None when some member can take a todo now; otherwise why not, in a few words (then
         nothing changes until the planner adds or drops todos)."""
@@ -469,6 +538,8 @@ class EngineRun:
             return "the planner says the task is done"
         if self.turns_used >= self.turns:
             return "the member turns are used up"
+        if self.paused:
+            return None  # a person holds the run: nothing is a stall until it resumes
         why = None if self.running or self.planner_running or self.wake_reasons else self.nothing_to_take()
         if why:
             if self.wakes >= self.planner_wakes:
@@ -482,13 +553,15 @@ class EngineRun:
         self.write_board()
         self.record(self.elog, self.wake_records, {"t": round(started, 3), "kind": "start", "members": self.names,
                                                   "planner": self.planner, "turns": self.turns,
-                                                  "planner_wakes": self.planner_wakes, "max_open": self.max_open})
+                                                  "planner_wakes": self.planner_wakes, "max_open": self.max_open,
+                                                  "time_limit": self.time_limit})
         threads = []
         with self.cond:
             while True:
+                self.read_control()
                 if self.stopping is None:
                     self.stopping = self.why_stop()
-                if self.stopping is None:
+                if self.stopping is None and not self.paused:
                     for name in self.names:
                         if not self.free[name] or self.turns_used >= self.turns:
                             continue
@@ -500,7 +573,7 @@ class EngineRun:
                         self.idle[name] += time.monotonic() - self.idle_since[name]
                         threads.append(threading.Thread(target=self.member_turn, args=(name, todo, self.turns_used), daemon=True))
                         threads[-1].start()
-                if self.stopping is None and not self.planner_running and self.wakes < self.planner_wakes:
+                if self.stopping is None and not self.paused and not self.planner_running and self.wakes < self.planner_wakes:
                     # wake the planner for the start or a stall, or when todos have ended and someone is free with
                     # nothing to take (or a whole lap of todos has ended): not after every single result
                     starving = [n for n in self.names if self.free[n]]  # (once the turns are used up the run is stopping)
@@ -517,18 +590,21 @@ class EngineRun:
                         threads[-1].start()
                 if self.stopping is not None and self.running == 0 and not self.planner_running:
                     break
-                if self.stopping is None and not self.planner_running and self.running == 0 and self.wakes >= self.planner_wakes:
+                if self.stopping is None and not self.paused and not self.planner_running and self.running == 0 \
+                        and self.wakes >= self.planner_wakes:
                     why = self.nothing_to_take()
                     if why:
                         self.stopping = f"the planner's wakes are used up and {why}"
                         continue
-                self.cond.wait(timeout=1.0)
+                self.cond.wait(timeout=0.25)  # a person's command (control.jsonl) is read within a quarter second
         for t in threads:
             t.join()
         ended, took = time.time(), time.monotonic() - self.started
         for name in self.names:  # time a member spent free with nothing to take, up to the end
-            if self.free[name]:
+            if self.free[name] and self.idle_since[name] is not None:
                 self.idle[name] += time.monotonic() - self.idle_since[name]
+        if self.paused:
+            self.paused_seconds += time.monotonic() - self.paused_at
         self.record(self.elog, self.wake_records, {"t": round(ended, 3), "kind": "stop", "why": self.stopping})
         self.write_board()
         self.log.close()
@@ -584,7 +660,7 @@ class EngineRun:
                 "tokens": total, "tokens_members": sum(member_tokens) if member_tokens else None,
                 "tokens_planner": sum(planner_tokens) if planner_tokens else None,
                 "planner_share": ratio(sum(planner_tokens), total) if total else None,
-                "board_reads": self.board_reads(), "adoption_rate": s["adoption_rate"],
+                "board_reads": self.board_reads(), "adoption_rate": s["adoption_rate"], "paused_seconds": round(self.paused_seconds, 1),
                 "duplicate_rate": s["duplicate_rate"], "stopped": self.stopping, "broken": self.broken}
 
 
@@ -607,7 +683,25 @@ def report(s, out):
     return "\n".join(lines)
 
 
+def control_main(argv):
+    """--control RUN_DIR pause|resume|stop|turns N|time_limit S"""
+    if len(argv) not in (2, 3):
+        print("usage: python3 -m herdr_py.engine --control RUN_DIR pause|resume|stop|turns N|time_limit S", file=sys.stderr)
+        return 2
+    try:
+        rec = send_control(argv[0], argv[1].replace("-", "_"), argv[2] if len(argv) == 3 else None, by=f"cli:{os.getpid()}")
+    except ValueError as exc:
+        print(f"herdr-py engine: {exc}", file=sys.stderr)
+        return 2
+    print(f"sent {rec['command']}" + (f" {rec['value']}" if rec["value"] is not None else "")
+          + f" to {argv[0]} (the run reads it within a quarter second; engine.jsonl records it)")
+    return 0
+
+
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv[:1] == ["--control"]:
+        return control_main(argv[1:])
     ap = argparse.ArgumentParser(prog="python3 -m herdr_py.engine", description=__doc__.split("\n\n")[0])
     ap.add_argument("--task", required=True, metavar="FILE", help="the task, as text the members read")
     ap.add_argument("--judge", required=True, metavar="COMMAND", help="the judge; the answer file is added as its last argument")

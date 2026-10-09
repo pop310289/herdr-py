@@ -13,13 +13,25 @@ The page is complete without JavaScript (a phone app's preview runs none): it sh
 JavaScript a player is added on top: replay the run from the first event to the end, drag the time, tap a bar for its
 details; the loop's boxes light up while that stage works and its counts follow the time. While the run goes on the
 page reloads itself every few seconds. Data is escaped, never written into the page as markup.
+
+    python3 -m herdr_py.engineview runs/e1 --serve [--port 8780] [--host 127.0.0.1]
+
+serves the page as it is at each request, with buttons for a person while the run goes on (pause, resume, stop, the
+member turns, the time limit: engine.send_control). It prints a link with a token after "#"; a command without that
+token is refused. It listens on this machine only unless --host says otherwise. A page opened as a file has no
+buttons: it cannot reach the run.
 """
+import hmac
 import html
+import http.server
 import json
 import os
 import re
+import secrets
+import socketserver
 import sys
 import time
+import urllib.parse
 
 
 TAG = re.compile(r"^\W*(artifact|kind)\s*:\s*([A-Za-z][\w-]*)", re.I)
@@ -655,6 +667,18 @@ def todo_list(todos, t0):
     return f'<ul class="cards" id="todos">{"".join(rows) or "<li>no todos yet</li>"}</ul>'
 
 
+def control_list(controls, t0):
+    if not controls:
+        return ""
+    rows = []
+    for c in controls:
+        what = (c.get("command") or "?") + (f" {c['value']}" if c.get("value") is not None else "")
+        rows.append(f'<li data-s="{c.get("t") or 0}"><div><b>{esc(what)}</b> · {rel(c.get("t"), t0)} · by {esc(c.get("by") or "?")}</div>'
+                    + (f'<div class="said">refused: {esc(c["refused"])}</div>' if c.get("refused") else "")
+                    + (f'<div class="muted">the member turns are now {esc(c["applied"])}</div>' if c.get("applied") else "") + "</li>")
+    return '<section class="panel"><h2>Commands from people</h2><ul class="cards" id="controls-sent">' + "".join(rows) + "</ul></section>"
+
+
 def wake_list(wakes, t0):
     rows = []
     for w in wakes:
@@ -674,7 +698,7 @@ def wake_list(wakes, t0):
     return f'<ul class="cards" id="wakes">{"".join(rows) or "<li>the planner has not been woken yet</li>"}</ul>'
 
 
-SCRIPT = '(function () {\n  "use strict";\n  var el = document.getElementById("run-data"), svg = document.getElementById("timeline");\n  if (!el || !svg) { return; }\n  var D;\n  try { D = JSON.parse(el.textContent); } catch (err) { return; }\n  var span = Math.max(D.t1 - D.t0, 1e-6), TOP = +svg.getAttribute("data-top"), PH = +svg.getAttribute("data-h");\n  function Y(t) { return TOP + (t - D.t0) / span * PH; }\n  function $(id) { return document.getElementById(id); }\n  function fmt(v) { return String(Math.round(v * 1e6) / 1e6); }\n  function all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }\n  var texts = ["s-events", "s-planner", "s-todos", "s-members", "s-judge", "a-wake", "a-todo", "a-take", "a-answer"];\n  var original = {};\n  texts.forEach(function (id) { if ($(id)) { original[id] = $(id).textContent; } });\n  var bars = all(".bar", svg), lines = all(".timed"), now = $("now");\n  var todoCards = all("#todos li[data-added], #gather li[data-added]"), wakeCards = all("#wakes li[data-s]");\n  var agentRows = all("#agents li[data-role]"), flows = ["f-wake", "f-todo", "f-take", "f-answer"];\n  bars.forEach(function (g) {\n    var r = g.querySelector("rect");\n    g._y = +r.getAttribute("y"); g._h = +r.getAttribute("height");\n    g._s = +g.getAttribute("data-s"); g._e = +g.getAttribute("data-e");\n    g.style.cursor = "pointer";\n    g.addEventListener("click", function () { show(g.getAttribute("data-i")); });\n  });\n  var slot = $("player");\n  slot.innerHTML = \'<button type="button" id="play">▶ Replay</button>\' +\n    \'<input type="range" id="scrub" min="0" max="1000" step="1" value="1000" aria-label="time in the run">\' +\n    \'<span id="clock" class="muted"></span>\';\n  var play = $("play"), scrub = $("scrub"), clock = $("clock"), detail = $("detail");\n  var playing = false, t = D.t1, last = 0, rate = Math.max(1, span / 24);\n  function setText(id, text) { var n = $(id); if (n) { n.textContent = text.length > 40 ? text.slice(0, 39) + "\u2026" : text; } }\n  function setOn(id, on) { var n = $(id); if (n) { n.classList.toggle("on", !!on); } }\n  function count(list, test) { var n = 0; list.forEach(function (x) { if (test(x)) { n += 1; } }); return n; }\n  function at(time) {\n    t = time;\n    bars.forEach(function (g) {\n      var r = g.querySelector("rect");\n      if (time < g._s) { g.style.opacity = "0"; return; }\n      g.style.opacity = "1";\n      r.setAttribute("height", (time >= g._e ? g._h : Math.max(3, Y(time) - g._y)).toFixed(1));\n      g.classList.toggle("live", time < g._e);\n    });\n    lines.forEach(function (l) { l.style.opacity = +l.getAttribute("data-t") <= time ? "1" : "0"; });\n    now.setAttribute("y1", Y(time).toFixed(1)); now.setAttribute("y2", Y(time).toFixed(1));\n    now.style.opacity = "1";\n    var flash = Math.max(0.6, span / 60);\n    var planning = D.wakes.some(function (w) { return w.s <= time && time < w.e; });\n    var working = D.turns.filter(function (m) { return m.s <= time && time < m.e; });\n    var ended = D.turns.filter(function (m) { return m.e <= time; });\n    var judged = ended.some(function (m) { return time - m.e < flash; });\n    setOn("n-planner", planning); setOn("n-members", working.length > 0); setOn("n-judge", judged);\n    setOn("n-events", judged || D.wakes.some(function (w) { return w.s <= time && time - w.s < flash; }));\n    var woke = {};\n    D.wakes.forEach(function (w) { if (w.s <= time) { woke[w.wake] = 1; } });\n    var back = count(D.wakes, function (w) { return w.e <= time && w.kind === "planback"; });\n    var added = count(D.todos, function (x) { return x.added <= time; });\n    var dropped = count(D.todos, function (x) { return x.state === "dropped" && x.ended <= time; });\n    var taken = count(D.todos, function (x) { return x.taken && x.taken <= time; });\n    var done = count(D.todos, function (x) { return x.state === "done" && x.ended <= time; });\n    var failed = count(D.todos, function (x) { return x.state === "failed" && x.ended <= time; });\n    var answers = count(ended, function (m) { return m.kind === "result"; });\n    var valid = ended.filter(function (m) { return m.status === "valid"; });\n    var invalid = count(ended, function (m) { return m.status === "invalid"; });\n    var best = null;\n    valid.forEach(function (m) { if (best === null || m.score > best) { best = m.score; } });\n    setOn("f-wake", planning); setOn("f-todo", D.wakes.some(function (w) { return w.e <= time && time - w.e < flash; }));\n    setOn("f-take", D.turns.some(function (m) { return m.s <= time && time - m.s < flash; })); setOn("f-answer", judged);\n    agentRows.forEach(function (li) {\n      var role = li.getAttribute("data-role"), name = li.getAttribute("data-agent"), k = "idle";\n      if (role === "planner") { k = planning ? "run" : "idle"; }\n      else if (role === "judge") { k = valid.length ? "ok" : "idle"; }\n      else if (working.some(function (m) { return m.member === name; })) { k = "run"; }\n      else {\n        var mine = ended.filter(function (m) { return m.member === name; }), o = mine[mine.length - 1];\n        if (o) { k = o.status === "valid" ? "ok" : (o.status === "invalid" || o.kind === "failure" || ["error", "aborted", "provider_stall"].indexOf(o.state) >= 0 ? "bad" : "idle"); }\n      }\n      li.querySelector(".led").className = "led " + k;\n    });\n    var nw = Object.keys(woke).length;\n    setText("a-wake", "woke the planner " + nw + (nw === 1 ? " time" : " times") + (back ? " (" + back + " sent back)" : ""));\n    setText("a-todo", added + " todos added, " + dropped + " dropped");\n    setText("a-take", taken + " todos taken");\n    setText("a-answer", answers + " answers" + (ended.length > answers ? ", " + (ended.length - answers) + " without one" : ""));\n    setText("s-todos", (added - taken - dropped) + " open · " + (taken - done - failed) + " taken · " + done + " done · " + failed + " failed");\n    setText("s-members", working.length ? "working now: " + working.map(function (m) { return m.member; }).join(", ") : "waiting for a todo");\n    setText("s-planner", planning ? "planning now" : original["s-planner"]);\n    setText("s-judge", valid.length + " valid, " + invalid + " invalid; " + (best === null ? "no valid answer yet" : "best " + fmt(best)));\n    todoCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-added") > time); });\n    wakeCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-s") > time); });\n    clock.textContent = (time - D.t0).toFixed(1) + " s of " + span.toFixed(0) + " s";\n    scrub.value = String(Math.round((time - D.t0) / span * 1000));\n  }\n  function rest() {\n    bars.forEach(function (g) { g.style.opacity = "1"; g.classList.remove("live"); g.querySelector("rect").setAttribute("height", g._h.toFixed(1)); });\n    lines.forEach(function (l) { l.style.opacity = "1"; });\n    now.style.opacity = "0";\n    ["n-events", "n-planner", "n-todos", "n-members", "n-judge"].concat(flows).forEach(function (id) { setOn(id, false); });\n    agentRows.forEach(function (li) { li.querySelector(".led").className = "led " + li.getAttribute("data-led"); });\n    Object.keys(original).forEach(function (id) { setText(id, original[id]); });\n    todoCards.concat(wakeCards).forEach(function (li) { li.classList.remove("future"); });\n    clock.textContent = span.toFixed(0) + " s in all" + (D.finished ? "" : " so far");\n    scrub.value = "1000";\n    t = D.t1;\n  }\n  function stop() { playing = false; play.textContent = "▶ Replay"; }\n  function frame(ts) {\n    if (!playing) { return; }\n    var next = t + (last ? (ts - last) / 1000 : 0) * rate;\n    last = ts;\n    if (next >= D.t1) { stop(); rest(); return; }\n    at(next);\n    window.requestAnimationFrame(frame);\n  }\n  play.addEventListener("click", function () {\n    if (playing) { stop(); return; }\n    playing = true; last = 0; play.textContent = "❚❚ Pause";\n    if (t >= D.t1) { at(D.t0); }\n    window.requestAnimationFrame(frame);\n  });\n  scrub.addEventListener("input", function () {\n    stop();\n    var v = +scrub.value;\n    if (v >= 1000) { rest(); } else { at(D.t0 + v / 1000 * span); }\n  });\n  function show(key) {\n    var item = key.charAt(0) === "w" ? D.wakes[+key.slice(1)] : D.turns[+key.slice(1)];\n    if (!item) { return; }\n    var out = [];\n    if (key.charAt(0) === "w") {\n      out.push("planner wake " + item.wake + ", attempt " + item.attempt + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("woken because: " + item.reason);\n      if (item.added && item.added.length) { out.push("added " + item.added.join(", ")); }\n      if (item.dropped && item.dropped.length) { out.push("dropped " + item.dropped.join(", ")); }\n      if (item.problems && item.problems.length) { out.push("sent back: " + item.problems.join("; ")); }\n      if (item.done) { out.push("said the task is done"); }\n      if (item.why) { out.push(item.why); }\n    } else {\n      var todo = D.todos.filter(function (x) { return x.id === item.todo; })[0] || {};\n      out.push(item.member + ", turn " + item.turn + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("todo " + item.todo + ": " + (todo.text || ""));\n      out.push((item.status || item.state || "") + (typeof item.score === "number" ? " · score " + fmt(item.score) : "") + (item.entry ? " · entry " + item.entry : ""));\n      if (item.problem) { out.push(item.problem); }\n      var web = [], got = [], read = [];\n      (item.tools || []).forEach(function (c) { var n = (c[0] || "").toLowerCase(); if (n === "websearch") { web.push(c[1]); } else if (n === "webfetch") { got.push(c[1]); } else { read.push(c[1]); } });\n      if (web.length) { out.push("searched: " + web.join("; ")); }\n      if (got.length) { out.push("fetched: " + got.join(", ")); }\n      if (read.length) { out.push("read: " + read.join(", ")); }\n    }\n    detail.textContent = "";\n    out.forEach(function (line) { var d = document.createElement("div"); d.textContent = line; detail.appendChild(d); });\n    detail.hidden = false;\n  }\n  rest();\n  if (!D.finished) {\n    window.setTimeout(function again() {\n      if (!playing && +scrub.value >= 1000) { window.location.reload(); } else { window.setTimeout(again, 4000); }\n    }, 5000);\n  }\n})();'
+SCRIPT = '(function () {\n  "use strict";\n  var el = document.getElementById("run-data"), svg = document.getElementById("timeline");\n  if (!el || !svg) { return; }\n  var D;\n  try { D = JSON.parse(el.textContent); } catch (err) { return; }\n  var span = Math.max(D.t1 - D.t0, 1e-6), TOP = +svg.getAttribute("data-top"), PH = +svg.getAttribute("data-h");\n  function Y(t) { return TOP + (t - D.t0) / span * PH; }\n  function $(id) { return document.getElementById(id); }\n  function fmt(v) { return String(Math.round(v * 1e6) / 1e6); }\n  function all(sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); }\n  var texts = ["s-events", "s-planner", "s-todos", "s-members", "s-judge", "a-wake", "a-todo", "a-take", "a-answer"];\n  var original = {};\n  texts.forEach(function (id) { if ($(id)) { original[id] = $(id).textContent; } });\n  var bars = all(".bar", svg), lines = all(".timed"), now = $("now");\n  var todoCards = all("#todos li[data-added], #gather li[data-added]"), wakeCards = all("#wakes li[data-s]");\n  var agentRows = all("#agents li[data-role]"), flows = ["f-wake", "f-todo", "f-take", "f-answer"];\n  bars.forEach(function (g) {\n    var r = g.querySelector("rect");\n    g._y = +r.getAttribute("y"); g._h = +r.getAttribute("height");\n    g._s = +g.getAttribute("data-s"); g._e = +g.getAttribute("data-e");\n    g.style.cursor = "pointer";\n    g.addEventListener("click", function () { show(g.getAttribute("data-i")); });\n  });\n  var slot = $("player");\n  slot.innerHTML = \'<button type="button" id="play">▶ Replay</button>\' +\n    \'<input type="range" id="scrub" min="0" max="1000" step="1" value="1000" aria-label="time in the run">\' +\n    \'<span id="clock" class="muted"></span>\';\n  var play = $("play"), scrub = $("scrub"), clock = $("clock"), detail = $("detail");\n  var playing = false, t = D.t1, last = 0, rate = Math.max(1, span / 24);\n  function setText(id, text) { var n = $(id); if (n) { n.textContent = text.length > 40 ? text.slice(0, 39) + "…" : text; } }\n  function setOn(id, on) { var n = $(id); if (n) { n.classList.toggle("on", !!on); } }\n  function count(list, test) { var n = 0; list.forEach(function (x) { if (test(x)) { n += 1; } }); return n; }\n  function at(time) {\n    t = time;\n    bars.forEach(function (g) {\n      var r = g.querySelector("rect");\n      if (time < g._s) { g.style.opacity = "0"; return; }\n      g.style.opacity = "1";\n      r.setAttribute("height", (time >= g._e ? g._h : Math.max(3, Y(time) - g._y)).toFixed(1));\n      g.classList.toggle("live", time < g._e);\n    });\n    lines.forEach(function (l) { l.style.opacity = +l.getAttribute("data-t") <= time ? "1" : "0"; });\n    now.setAttribute("y1", Y(time).toFixed(1)); now.setAttribute("y2", Y(time).toFixed(1));\n    now.style.opacity = "1";\n    var flash = Math.max(0.6, span / 60);\n    var planning = D.wakes.some(function (w) { return w.s <= time && time < w.e; });\n    var working = D.turns.filter(function (m) { return m.s <= time && time < m.e; });\n    var ended = D.turns.filter(function (m) { return m.e <= time; });\n    var judged = ended.some(function (m) { return time - m.e < flash; });\n    setOn("n-planner", planning); setOn("n-members", working.length > 0); setOn("n-judge", judged);\n    setOn("n-events", judged || D.wakes.some(function (w) { return w.s <= time && time - w.s < flash; }));\n    var woke = {};\n    D.wakes.forEach(function (w) { if (w.s <= time) { woke[w.wake] = 1; } });\n    var back = count(D.wakes, function (w) { return w.e <= time && w.kind === "planback"; });\n    var added = count(D.todos, function (x) { return x.added <= time; });\n    var dropped = count(D.todos, function (x) { return x.state === "dropped" && x.ended <= time; });\n    var taken = count(D.todos, function (x) { return x.taken && x.taken <= time; });\n    var done = count(D.todos, function (x) { return x.state === "done" && x.ended <= time; });\n    var failed = count(D.todos, function (x) { return x.state === "failed" && x.ended <= time; });\n    var answers = count(ended, function (m) { return m.kind === "result"; });\n    var valid = ended.filter(function (m) { return m.status === "valid"; });\n    var invalid = count(ended, function (m) { return m.status === "invalid"; });\n    var best = null;\n    valid.forEach(function (m) { if (best === null || m.score > best) { best = m.score; } });\n    setOn("f-wake", planning); setOn("f-todo", D.wakes.some(function (w) { return w.e <= time && time - w.e < flash; }));\n    setOn("f-take", D.turns.some(function (m) { return m.s <= time && time - m.s < flash; })); setOn("f-answer", judged);\n    agentRows.forEach(function (li) {\n      var role = li.getAttribute("data-role"), name = li.getAttribute("data-agent"), k = "idle";\n      if (role === "planner") { k = planning ? "run" : "idle"; }\n      else if (role === "judge") { k = valid.length ? "ok" : "idle"; }\n      else if (working.some(function (m) { return m.member === name; })) { k = "run"; }\n      else {\n        var mine = ended.filter(function (m) { return m.member === name; }), o = mine[mine.length - 1];\n        if (o) { k = o.status === "valid" ? "ok" : (o.status === "invalid" || o.kind === "failure" || ["error", "aborted", "provider_stall"].indexOf(o.state) >= 0 ? "bad" : "idle"); }\n      }\n      li.querySelector(".led").className = "led " + k;\n    });\n    var nw = Object.keys(woke).length;\n    setText("a-wake", "woke the planner " + nw + (nw === 1 ? " time" : " times") + (back ? " (" + back + " sent back)" : ""));\n    setText("a-todo", added + " todos added, " + dropped + " dropped");\n    setText("a-take", taken + " todos taken");\n    setText("a-answer", answers + " answers" + (ended.length > answers ? ", " + (ended.length - answers) + " without one" : ""));\n    setText("s-todos", (added - taken - dropped) + " open · " + (taken - done - failed) + " taken · " + done + " done · " + failed + " failed");\n    setText("s-members", working.length ? "working now: " + working.map(function (m) { return m.member; }).join(", ") : "waiting for a todo");\n    setText("s-planner", planning ? "planning now" : original["s-planner"]);\n    setText("s-judge", valid.length + " valid, " + invalid + " invalid; " + (best === null ? "no valid answer yet" : "best " + fmt(best)));\n    todoCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-added") > time); });\n    wakeCards.forEach(function (li) { li.classList.toggle("future", +li.getAttribute("data-s") > time); });\n    clock.textContent = (time - D.t0).toFixed(1) + " s of " + span.toFixed(0) + " s";\n    scrub.value = String(Math.round((time - D.t0) / span * 1000));\n  }\n  function rest() {\n    bars.forEach(function (g) { g.style.opacity = "1"; g.classList.remove("live"); g.querySelector("rect").setAttribute("height", g._h.toFixed(1)); });\n    lines.forEach(function (l) { l.style.opacity = "1"; });\n    now.style.opacity = "0";\n    ["n-events", "n-planner", "n-todos", "n-members", "n-judge"].concat(flows).forEach(function (id) { setOn(id, false); });\n    agentRows.forEach(function (li) { li.querySelector(".led").className = "led " + li.getAttribute("data-led"); });\n    Object.keys(original).forEach(function (id) { setText(id, original[id]); });\n    todoCards.concat(wakeCards).forEach(function (li) { li.classList.remove("future"); });\n    clock.textContent = span.toFixed(0) + " s in all" + (D.finished ? "" : " so far");\n    scrub.value = "1000";\n    t = D.t1;\n  }\n  function stop() { playing = false; play.textContent = "▶ Replay"; }\n  function frame(ts) {\n    if (!playing) { return; }\n    var next = t + (last ? (ts - last) / 1000 : 0) * rate;\n    last = ts;\n    if (next >= D.t1) { stop(); rest(); return; }\n    at(next);\n    window.requestAnimationFrame(frame);\n  }\n  play.addEventListener("click", function () {\n    if (playing) { stop(); return; }\n    playing = true; last = 0; play.textContent = "❚❚ Pause";\n    if (t >= D.t1) { at(D.t0); }\n    window.requestAnimationFrame(frame);\n  });\n  scrub.addEventListener("input", function () {\n    stop();\n    var v = +scrub.value;\n    if (v >= 1000) { rest(); } else { at(D.t0 + v / 1000 * span); }\n  });\n  function show(key) {\n    var item = key.charAt(0) === "w" ? D.wakes[+key.slice(1)] : D.turns[+key.slice(1)];\n    if (!item) { return; }\n    var out = [];\n    if (key.charAt(0) === "w") {\n      out.push("planner wake " + item.wake + ", attempt " + item.attempt + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("woken because: " + item.reason);\n      if (item.added && item.added.length) { out.push("added " + item.added.join(", ")); }\n      if (item.dropped && item.dropped.length) { out.push("dropped " + item.dropped.join(", ")); }\n      if (item.problems && item.problems.length) { out.push("sent back: " + item.problems.join("; ")); }\n      if (item.done) { out.push("said the task is done"); }\n      if (item.why) { out.push(item.why); }\n    } else {\n      var todo = D.todos.filter(function (x) { return x.id === item.todo; })[0] || {};\n      out.push(item.member + ", turn " + item.turn + " · " + (item.e - item.s).toFixed(1) + " s");\n      out.push("todo " + item.todo + ": " + (todo.text || ""));\n      out.push((item.status || item.state || "") + (typeof item.score === "number" ? " · score " + fmt(item.score) : "") + (item.entry ? " · entry " + item.entry : ""));\n      if (item.problem) { out.push(item.problem); }\n      var web = [], got = [], read = [];\n      (item.tools || []).forEach(function (c) { var n = (c[0] || "").toLowerCase(); if (n === "websearch") { web.push(c[1]); } else if (n === "webfetch") { got.push(c[1]); } else { read.push(c[1]); } });\n      if (web.length) { out.push("searched: " + web.join("; ")); }\n      if (got.length) { out.push("fetched: " + got.join(", ")); }\n      if (read.length) { out.push("read: " + read.join(", ")); }\n    }\n    detail.textContent = "";\n    out.forEach(function (line) { var d = document.createElement("div"); d.textContent = line; detail.appendChild(d); });\n    detail.hidden = false;\n  }\n  rest();\n  var ctl = $("controls"), token = (window.location.hash.match(/token=([A-Za-z0-9_-]+)/) || [])[1];\n  if (ctl && D.live && token && !D.finished) {\n    ctl.innerHTML = \'<button type="button" data-c="\' + (D.paused ? "resume" : "pause") + \'">\' + (D.paused ? "\\u25B6 Resume" : "\\u275A\\u275A Pause") + "</button>" +\n      \'<button type="button" class="warn" data-c="stop">\\u25A0 Stop</button>\' +\n      \'<label>turns <input id="c-turns" type="number" min="1" step="1"></label><button type="button" data-c="turns">Set</button>\' +\n      \'<label>time limit (s) <input id="c-time" type="number" min="1" step="1"></label><button type="button" data-c="time_limit">Set</button>\' +\n      \'<span id="c-said" class="muted"></span>\';\n    $("c-turns").value = D.turns || ""; $("c-time").value = D.time_limit || "";\n    ctl.hidden = false;\n    ctl.addEventListener("click", function (ev) {\n      var b = ev.target, c = b && b.getAttribute ? b.getAttribute("data-c") : null;\n      if (!c) { return; }\n      if (c === "stop" && !b.getAttribute("data-sure")) { b.setAttribute("data-sure", "1"); b.textContent = "Stop the run? Tap again"; return; }\n      var value = c === "turns" ? +$("c-turns").value : (c === "time_limit" ? +$("c-time").value : null);\n      $("c-said").textContent = "sending " + c + "\\u2026";\n      fetch("control", { method: "POST", headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },\n                         body: JSON.stringify({ command: c, value: value }) })\n        .then(function (r) { return r.json().then(function (j) {\n          $("c-said").textContent = r.ok ? "sent " + c + "; the run reads it within a quarter second" : "refused: " + (j.error || r.status); }); })\n        .catch(function () { $("c-said").textContent = "the run\'s server did not answer"; });\n    });\n  }\n  if (!D.finished) {\n    window.setTimeout(function again() {\n      var typing = document.activeElement && ctl && ctl.contains(document.activeElement);\n      if (!playing && +scrub.value >= 1000 && !typing) { window.location.reload(); } else { window.setTimeout(again, 4000); }\n    }, 5000);\n  }\n})();'
 
 
 PAGE = """<!doctype html>
@@ -771,6 +795,12 @@ h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:up
 .player input {{ flex:1 1 150px; min-width:0; accent-color:var(--ice); }}
 .detail {{ background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:.86rem;
   overflow-wrap:anywhere; margin-top:10px; }}
+.controls {{ display:flex; flex-wrap:wrap; align-items:center; gap:8px; padding:10px; background:var(--inset);
+  border:1px solid var(--line); border-radius:10px; font-size:.85rem; }}
+.controls[hidden] {{ display:none; }}
+.controls button {{ font:inherit; padding:5px 12px; border-radius:999px; border:1px solid var(--line); background:var(--panel);
+  color:var(--ink); box-shadow:inset 0 1px 0 var(--hi); }} .controls button.warn {{ border-color:rgba(239,68,68,.5); color:#F3A6A6; }}
+.controls input {{ width:5.5em; font:inherit; background:var(--bg); color:var(--ink); border:1px solid var(--line); border-radius:6px; padding:3px 6px; }}
 @media (prefers-reduced-motion:reduce) {{ .led.run, .flowg.on .pulse {{ animation:none; }} }}
 </style></head>
 <body><main>
@@ -779,6 +809,7 @@ h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:up
 <h1>{name}</h1>
 <div class="state"><i class="led {state}"></i>{when}</div>
 <div class="chips">{chips}</div>
+{controls}
 </header>
 <div class="player" id="player"></div>
 <div class="grid2">
@@ -819,6 +850,7 @@ h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:up
 {todos}</section>
 <section class="panel"><h2>Every planner turn</h2>
 {wakes}</section>
+{sent}
 </main>
 <script type="application/json" id="run-data">{data}</script>
 <script>{script}</script>
@@ -826,9 +858,15 @@ h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:up
 """
 
 
-def render(out):
+def render(out, live=False):
+    """The page; live=True (served by serve()) adds the room for a person's buttons, which only its script fills."""
     engine, turns, todos, summary, made, tools = load(out)
     start = next((e for e in engine if e.get("kind") == "start"), {})
+    controls = [e for e in engine if e.get("kind") == "control"]
+    paused = next((c["command"] == "pause" for c in reversed(controls) if c.get("command") in ("pause", "resume")), False)
+    budget = next((c["applied"] for c in reversed(controls) if c.get("applied")), start.get("turns"))
+    limit = next((c["value"] for c in reversed(controls) if c.get("command") == "time_limit" and not c.get("refused")),
+                 start.get("time_limit"))
     stop = next((e for e in engine if e.get("kind") == "stop"), None)
     wakes = [e for e in engine if e.get("kind") == "wake"]
     members = start.get("members") or sorted({t.get("member") for t in turns if t.get("member")})
@@ -849,6 +887,10 @@ def render(out):
             chips.append(f'<span class="chip">{summary["tokens"]:,} tokens' if isinstance(summary["tokens"], int)
                          else f'<span class="chip">{esc(summary["tokens"])} tokens'
                          + (f", planner {share:.0%}" if isinstance(share, (int, float)) else "") + "</span>")
+    if paused and not stop:
+        chips.append('<span class="chip bad">paused by a person</span>')
+    if summary and summary.get("paused_seconds"):
+        chips.append(f'<span class="chip">paused {summary["paused_seconds"]:g} s</span>')
     if stop:
         chips.append(f'<span class="chip bad">stopped: {esc(stop.get("why"))}</span>')
     when = (("finished" if stop else "still running (written after every event)") + f" · {clock(t1 - t0)}"
@@ -856,7 +898,8 @@ def render(out):
     name = os.path.basename(os.path.abspath(out))
     title = esc(f"Event-driven team {name}")
     state = "run" if not stop else ("ok" if scores else "bad")
-    data = {"t0": t0, "t1": t1, "finished": bool(stop), "planner": planner, "members": members,
+    data = {"t0": t0, "t1": t1, "finished": bool(stop), "planner": planner, "members": members, "live": bool(live),
+            "paused": paused, "turns": budget, "time_limit": limit,
             "wakes": [{"wake": w.get("wake"), "attempt": w.get("attempt"), "reason": w.get("reason"),
                        "s": w.get("start") or (w.get("t", t0) - (w.get("seconds") or 0)), "e": w.get("end") or w.get("t", t0),
                        "kind": "plan" if w.get("state") == "idle" and not w.get("problems") else "planback",
@@ -873,6 +916,8 @@ def render(out):
     reads = artifact_reads(tools)
     skills = skills_list(made, reads)
     return PAGE.format(title=title, name=esc(name), state=state, when=when, chips="".join(chips), data=blob, script=SCRIPT,
+                       controls='<div class="controls" id="controls" hidden></div>' if live else "",
+                       sent=control_list(controls, t0),
                        agents=agents_panel(wakes, turns, todos, summary, members, planner, bool(stop), made, reads),
                        division=division_svg(t0, t1, todos, made, members), knowledge=knowledge_svg(made, reads, members, t0),
                        health=health_panel(start, wakes, turns, summary),
@@ -881,6 +926,60 @@ def render(out):
                        lineage=lineage_svg(made), skills=f'<section class="panel">{skills}</section>' if skills else "",
                        gather=gather_list(turns, tools, t0),
                        best=best_svg(t0, t1, turns), todos=todo_list(todos, t0), wakes=wake_list(wakes, t0))
+
+
+class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):  # ThreadingHTTPServer is Python 3.7+
+    daemon_threads = True
+
+
+def serve(out, host="127.0.0.1", port=8780, token=None, ready=None):
+    """Serve the run's page (drawn again for every request) and take a person's commands for it (POST /control with
+    "Authorization: Bearer <token>"). ready(server, token) is called once it listens (tests stop it with shutdown())."""
+    from .engine import send_control  # engine imports this module; this one needs engine only here
+    token = token or secrets.token_urlsafe(18)
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def send(self, code, body, kind="application/json"):
+            data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self):
+            if urllib.parse.urlparse(self.path).path not in ("/", "/index.html"):
+                return self.send(404, {"error": "not found"})
+            return self.send(200, render(out, live=True).encode("utf-8"), "text/html; charset=utf-8")
+
+        def do_POST(self):
+            if urllib.parse.urlparse(self.path).path != "/control":
+                return self.send(404, {"error": "not found"})
+            if not hmac.compare_digest(self.headers.get("Authorization") or "", "Bearer " + token):
+                return self.send(403, {"error": "this needs the token from the link the server printed"})
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > 4096:
+                return self.send(413, {"error": "too long"})
+            try:
+                body = json.loads(self.rfile.read(length) or b"{}")
+                rec = send_control(out, body.get("command"), body.get("value"), by="web")
+            except (ValueError, AttributeError) as exc:
+                return self.send(400, {"error": str(exc)})
+            return self.send(200, {"ok": True, "sent": rec})
+
+    server = _Server((host, port), Handler)
+    if ready:
+        ready(server, token)
+    else:
+        print(f"serving {os.path.abspath(out)} at http://{host}:{server.server_address[1]}/#token={token}  (Ctrl-C stops)", flush=True)
+    try:
+        server.serve_forever(poll_interval=0.2)
+    finally:
+        server.server_close()
 
 
 def save(out):
@@ -892,7 +991,26 @@ def save(out):
     return os.path.join(out, "view.html")
 
 
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(prog="python3 -m herdr_py.engineview", description="Draw (or serve) a run's page.")
+    ap.add_argument("run", metavar="RUN_FOLDER")
+    ap.add_argument("--serve", action="store_true", help="serve the page with a person's buttons instead of writing view.html")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8780)
+    a = ap.parse_args(argv)
+    if not os.path.isfile(os.path.join(a.run, "engine.jsonl")):
+        print(f"herdr-py engineview: {a.run} holds no run (engine.jsonl)", file=sys.stderr)
+        return 2
+    if a.serve:
+        try:
+            serve(a.run, host=a.host, port=a.port)
+        except KeyboardInterrupt:
+            pass
+        return 0
+    print(save(a.run))
+    return 0
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        sys.exit("usage: python3 -m herdr_py.engineview RUN_FOLDER")
-    print(save(sys.argv[1]))
+    sys.exit(main())

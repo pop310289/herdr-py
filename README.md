@@ -153,7 +153,11 @@ free. A todo can come after others ("after": an id, or "#2" for the second todo 
 taken until they have ended. A todo with "review": true is never given to whoever made what it reviews (the members
 of its parents, and whoever did the todos it comes after), so nobody reviews their own work; a review meant for its own
 author is sent back, and when nobody can take the open todos the planner is woken (the run stops once its wakes are
-used up). `--time-limit S` starts no new work after S seconds. Any backend can plan or work; a planner's turn only
+used up). `--time-limit S` starts no new work after S seconds. A person can steer a run
+that goes on: `python3 -m herdr_py.engine --control RUN_DIR pause` (no new todo is taken and the planner is not woken;
+running turns finish), `resume`, `stop`, `turns N`, `time_limit S`; or `python3 -m herdr_py.engineview RUN_DIR --serve`
+for the page with those as buttons (it listens on this machine and takes a command only with the token in the link it
+prints). Each command is recorded in engine.jsonl and listed on the page; time paused is not counted as members waiting. Any backend can plan or work; a planner's turn only
 answers: a claude planner gets no tools (`--tools ""`), an opencode planner gets OpenCode's per-message tool switches
 all off (`{"*": false}`; checked with OpenCode 1.18.32, where the same prompt with the tools left on called webfetch).
 A member that is free takes the oldest open todo meant for it or for anyone, so a fast member never waits for a slow
@@ -196,7 +200,10 @@ python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3
 `view.html` (rewritten after every event, so it can be watched while the run goes on; one dark look, two columns on a
 wide screen and one on a phone) draws the loop with this run's numbers, every agent with a status light (its last
 turn: green passed, red failed; white while it works) and the run's numbers (turns, wakes that added no todo, replies
-sent back, the median turn, the time members were free, tokens), all from the records, a timeline with time running down the page (a column for the planner and one for each member, every
+sent back, the median turn, the time members were free, tokens), all from the records, who did which todo (a column
+per member, a line to each todo it had to wait for or build on), the knowledge base as a flow (who wrote each entry,
+skills first and by name, and who built on it or opened its file; each agent's row says which skills it wrote and
+read), a timeline with time running down the page (a column for the planner and one for each member, every
 turn a bar, every result that woke the planner a dotted line), the best verified score over time, every todo from
 added to ended and every planner turn. It is complete without JavaScript; with JavaScript a player replays the run
 from the first event to the end: drag the time, and the loop lights up the stage that is working while its counts
@@ -431,7 +438,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 441 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 448 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
