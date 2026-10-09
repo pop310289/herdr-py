@@ -83,6 +83,39 @@ python3 -m herdr_py.teamkb runs/c1/kb     # 每一筆：分數、誰接了誰的
 - **知識庫**（`herdr_py/teamkb.py`：只能新增的事件紀錄，答案依內容 hash 存放）保存每個答案、失敗和判定。同一個答案重送只記一次、不重評；成員只能把「簡報裡給它看過的條目」列為父條目；提交後被換掉的答案檔不會被當成原檔評分；多個程序可以同時寫入。指標：採用率、採用後進步率、重複率。
 - 每一輪記在 `run.jsonl`（狀態、秒數、token、條目、判定，以及沒交出東西的原因）；逾時或出錯的回合不會貢獻答案。`summary.json` 有總計和每輪結束時的最佳分數。
 
+## 事件驅動的團隊：共享待辦清單，planner 被事件喚醒
+
+`python3 -m herdr_py.engine` 把 coop 的「一輪一輪」換成「事件」（definitions §23）。planner（任何一種成員後端都可以）在團隊知識庫裡維護一份共享待辦清單。每當有答案被評分、或有待辦結束，planner 就被喚醒：程式從紀錄組出團隊目前的狀態給它，它回覆要新增或撤下哪些待辦，或宣告完成；回覆裡寫了不存在的成員或條目、或開了太多待辦，就附上全部理由退回。成員一有空就領一條指定給自己或不指定的最舊待辦，所以快的成員不必等慢的；同一條待辦不會被兩個成員領走（在知識庫的檔案鎖底下挑選並寫入）。成員做事時，資料夾裡的 `TEAM_BOARD.md`（唯讀）顯示最新的已驗證結果、失敗與待辦，每次事件後由程式重寫。和 coop 一樣，只有評分程式的判定會被共享；planner 的待辦只是安排，不是事實。
+
+```
+ 團隊知識庫：條目、判定、待辦（只增不改）
+    │ 有答案被評分、有待辦結束
+    ▼
+ 喚醒 planner → 新增或撤下待辦（程式先檢查）
+    ▼
+ 有空的成員領待辦 → 作答 → 評分 → 寫回
+    │（做事時 TEAM_BOARD.md 隨時是最新狀態）
+    └────→ 下一個事件
+```
+
+```sh
+python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3 examples/coop/packing_judge.py" \
+    --planner plan=claude --member a=claude --member b=claude --turns 4 --out runs/e1
+python3 -m herdr_py.teamkb runs/e1/kb     # 條目、判定與待辦
+
+# 完全不用模型：planner 和成員都是程式（約 20 秒）
+python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3 examples/coop/packing_judge.py" \
+    --planner 'plan=command:python3 examples/engine/planner.py' \
+    --member 'a=command:python3 examples/coop/packing_member.py --seed 1 --steps 40000' \
+    --member 'b=command:python3 examples/coop/packing_member.py --seed 2 --steps 120000' \
+    --member 'c=command:python3 examples/coop/packing_member.py --seed 3 --steps 300000' --turns 9 --out /tmp/e-demo
+open /tmp/e-demo/view.html
+```
+
+`view.html`（每個事件後重寫，執行中也能看）畫出：這次執行的數字標在迴圈上；時間由上往下的時間軸（planner 和每個成員各一欄，每個回合一根長條，每個喚醒 planner 的結果一條虛線）；最佳分數隨時間的變化；每條待辦從新增到結束；planner 的每一回合。沒有 JavaScript 時內容完整；有 JavaScript 時多一個播放器，從第一個事件重播到結束：拖曳時間，迴圈上正在工作的那一段會亮起、數字跟著時間變；點長條可以看那一回合的待辦、判定與分數。
+
+停止條件：成員回合用完、達到目標分數（`--target`）、planner 宣告完成、planner 的喚醒次數用完而且沒有待辦、或連續 `--patience` 個判定都沒有超過最佳分數。`summary.json` 會算：被領兩次的待辦數（必須是 0）、對得到待辦、看板版本與指令 hash 的回合比例（必須全部）、每個成員「有空卻沒有待辦可領」的時間、planner 占全部 token 的比例，以及成員讀看板的次數（從 Codex、Claude、OpenCode 的紀錄算；程式成員沒有紀錄）。
+
 ## DAG 分派：會互相等待的步驟
 
 `python3 -m herdr_py.dag` 執行一份**計畫**：每個步驟由一個成員在**自己的 git clone** 裡做，由**評分程式**判定過不過。一個步驟要等它需要的步驟全部通過才開始，而且只看得到那些步驟的成果。計畫是一個 JSON 檔，所以團隊怎麼組織（誰做什麼、誰等誰、誰看得到誰的成果）是可以修改、可以拿來比較的資料。
@@ -172,7 +205,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 394 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 415 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

@@ -10,7 +10,10 @@ content hash under FOLDER/artifacts, so:
 - the same entry sent twice (a member killed after submitting, then retried) gets the same id and is recorded once;
 - a verdict is bound to the artifact's hash: a file changed after it was proposed is not judged as if it were the same;
 - every brief records which entries it showed to whom, so adoption can be traced to what a member was shown;
-- entries can be private ("private" scope: only their author sees them), for teams whose members must not share.
+- entries can be private ("private" scope: only their author sees them), for teams whose members must not share;
+- a team can keep a shared todo list in the same log (engine.py): a todo is added, taken by one member at a time, then
+  ended (done or failed, with the entry it produced) or dropped; taking chooses and records under the file lock, so two
+  members never take the same todo.
 Several threads or processes may write at once: appends take a file lock and read what others wrote first.
 Standard library only; Python 3.6+.
 """
@@ -30,6 +33,7 @@ except ImportError:  # not POSIX: one process at a time
     fcntl = None
 
 KINDS = ("result", "method", "failure", "note")
+TODO_STATES = ("open", "taken", "done", "failed", "dropped")
 STATUSES = ("valid", "invalid", "infra_error")
 SCOPES = ("team", "private")
 MAX_SUMMARY = 4000
@@ -55,6 +59,9 @@ class TeamKB:
         self.proposals = collections.OrderedDict()  # id -> the proposal event
         self.verdicts = {}                           # id -> the latest verdict event
         self.reads = []                              # brief events: who was shown which entries
+        self.todos = collections.OrderedDict()       # todo id -> its current state (the todo events, applied in order)
+        self.version = 0                             # events applied so far: the state a prompt was built from
+        self.double_takes = 0                        # a todo taken while not open: must stay 0
         with self.lock:
             self._catch_up()
 
@@ -78,15 +85,38 @@ class TeamKB:
 
     def _apply(self, event):
         kind = event.get("type")
+        self.version += 1
         if kind == "propose" and event.get("id") not in self.proposals:
             self.proposals[event["id"]] = event
         elif kind == "verdict" and event.get("id") in self.proposals:
             self.verdicts[event["id"]] = event
         elif kind == "read":
             self.reads.append(event)
+        elif kind == "todo":
+            self._apply_todo(event)
+
+    def _apply_todo(self, event):
+        op, tid = event.get("op"), event.get("id")
+        todo = self.todos.get(tid)
+        if op == "add" and todo is None:
+            self.todos[tid] = {"id": tid, "text": event.get("text"), "for": event.get("for"), "parents": event.get("parents") or [],
+                               "by": event.get("by"), "t": event.get("t"), "state": "open", "taken_by": None, "takes": 0,
+                               "entry": None, "status": None, "score": None, "detail": None}
+        elif todo is None:
+            return
+        elif op == "take":
+            if todo["state"] != "open":
+                self.double_takes += 1
+            todo.update(state="taken", taken_by=event.get("member"), takes=todo["takes"] + 1, taken_t=event.get("t"))
+        elif op == "end" and todo["state"] == "taken":
+            todo.update(state="done" if event.get("outcome") == "done" else "failed", entry=event.get("entry"),
+                        status=event.get("status"), score=event.get("score"), detail=event.get("detail"), ended_t=event.get("t"))
+        elif op == "drop" and todo["state"] == "open":
+            todo.update(state="dropped", dropped_by=event.get("by"))
 
     def _write(self, event, unless=None):
-        """Append one event under the file lock, after reading what others appended; unless(): skip when it says so."""
+        """Append one event under the file lock, after reading what others appended; unless(): skip when it says so.
+        event may be a function: it is called under the lock, after catching up, and returns the event or None."""
         with self.lock:
             with open(self.lock_path, "a") as lock:
                 if fcntl:
@@ -95,13 +125,17 @@ class TeamKB:
                     self._catch_up()
                     if unless is not None and unless():
                         return False
+                    if callable(event):
+                        event = event()
+                        if event is None:
+                            return None
                     line = (json.dumps(event, ensure_ascii=False, sort_keys=True, allow_nan=False) + "\n").encode("utf-8")
                     with open(self.path, "ab") as handle:
                         handle.write(line)
                         handle.flush()
                         os.fsync(handle.fileno())
                     self._catch_up()
-                    return True
+                    return event
                 finally:
                     if fcntl:
                         fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
@@ -157,6 +191,54 @@ class TeamKB:
                      "scope": scope}
             self._write(event, unless=lambda: eid in self.proposals)
         return eid
+
+    # ---- the shared todo list (the program writes it: the planner's todos after checking them, members' takes and ends)
+    def add_todo(self, text, for_member=None, parents=(), by=None, wake=None):
+        """Add an open todo and return its id. parents: entries the todo builds on (they must exist)."""
+        if not isinstance(text, str) or not text.strip():
+            raise TeamKBError("todo: say what to do")
+        if len(text) > MAX_SUMMARY:
+            raise TeamKBError(f"todo: at most {MAX_SUMMARY} characters")
+        parents = list(parents or ())
+        with self.lock:
+            self._catch_up()
+            missing = [p for p in parents if p not in self.proposals]
+            if missing:
+                raise TeamKBError(f"parents: no entry {', '.join(missing)}")
+            tid = "t" + digest(f"{len(self.todos)}\0{text}\0{for_member}\0{round_t()}".encode("utf-8"))[:12]
+            self._write({"type": "todo", "op": "add", "id": tid, "t": round_t(), "text": text, "for": for_member,
+                         "parents": parents, "by": by, "wake": wake})
+        return tid
+
+    def take_todo(self, member, turn=None):
+        """Take the oldest open todo meant for this member or for anyone: chosen and recorded under the file lock, so
+        no two members take the same one. Returns the todo, or None when there is none."""
+        def choose():
+            for todo in self.todos.values():
+                if todo["state"] == "open" and todo["for"] in (None, member):
+                    return {"type": "todo", "op": "take", "id": todo["id"], "t": round_t(), "member": member, "turn": turn}
+            return None
+        event = self._write(choose)
+        return dict(self.todos[event["id"]]) if event else None
+
+    def end_todo(self, tid, member, outcome, entry=None, status=None, score=None, detail=None):
+        """End a taken todo: outcome "done" (a valid answer) or "failed" (anything else), with what it produced."""
+        if outcome not in ("done", "failed"):
+            raise TeamKBError("outcome: done or failed")
+        self._write({"type": "todo", "op": "end", "id": tid, "t": round_t(), "member": member, "outcome": outcome,
+                     "entry": entry, "status": status, "score": score, "detail": None if detail is None else str(detail)[:300]})
+
+    def drop_todo(self, tid, by=None):
+        """Drop an open todo (a taken one runs to its end). Returns whether it was dropped."""
+        def choose():
+            todo = self.todos.get(tid)
+            return {"type": "todo", "op": "drop", "id": tid, "t": round_t(), "by": by} if todo and todo["state"] == "open" else None
+        return bool(self._write(choose))
+
+    def todo_list(self):
+        with self.lock:
+            self._catch_up()
+            return [dict(t) for t in self.todos.values()]
 
     # ---- what only the program does
     def judge(self, eid, check, judge="check"):

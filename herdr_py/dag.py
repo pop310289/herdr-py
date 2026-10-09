@@ -42,7 +42,7 @@ commit and with the judge's words in the prompt. A step whose need failed is blo
 backend ends error or aborted, the judge fails, a clone cannot be made) no new step starts (--keep-going: only that
 step fails); --resume runs such a step again. Every dispatch, return, commit and verdict is written to events.jsonl as
 it happens; --resume rebuilds the state from it, and refuses when the plan, a task or a judge file changed.
-summary.json counts what the invariants need (agent-cluster definitions §21): dispatches made before every need had
+summary.json counts what the invariants need (definitions §21): dispatches made before every need had
 passed and passed steps dispatched again (both must be 0, worked out from events.jsonl alone), member tool events that
 name another step's workspace (must be 0 where a backend logs them: codex, claude), and how parallel the run was.
 Exit codes: 0 every step passed, 1 some did not, 2 a bad plan or arguments, 3 stopped because the setup broke.

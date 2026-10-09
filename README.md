@@ -141,6 +141,55 @@ python3 examples/self_improve/patch_judge.py --repo . --base HEAD --scenarios ex
 python3 examples/self_improve/make_task.py --repo . --base HEAD --scenarios examples/self_improve/scenarios --allow-pending > /tmp/task.md
 ```
 
+## Event-driven team: a shared todo list and a planner woken by events
+
+`python3 -m herdr_py.engine` replaces coop's rounds with events (definitions §23). A planner (any member backend)
+keeps a shared todo list in the team knowledge base. When an answer has been judged or a todo has ended, the planner
+is woken with the team's state, built by code from the records, and replies with todos to add or drop, or says the
+task is done; a reply that names an unknown member or entry, or opens too many todos, is sent back with every reason.
+A member that is free takes the oldest open todo meant for it or for anyone, so a fast member never waits for a slow
+one, and two members never take the same todo (the take is chosen and recorded under the knowledge base's file lock).
+While members work, `TEAM_BOARD.md` in their folder (read-only) shows the latest verified results, failures and todos,
+rewritten after every event. As in coop, only the judge's verdicts are shared: the planner's todos are plans, not facts.
+
+```
+ team knowledge base: entries, verdicts, todos (append-only)
+    | an answer judged, a todo ended
+    v
+ planner woken -> todos added or dropped (checked by the program)
+    v
+ a free member takes a todo -> answers -> judged -> written back
+    | (TEAM_BOARD.md shows the latest state while it works)
+    +----> the next event
+```
+
+```sh
+python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3 examples/coop/packing_judge.py" \
+    --planner plan=claude --member a=claude --member b=claude --turns 4 --out runs/e1
+python3 -m herdr_py.teamkb runs/e1/kb     # entries, verdicts and todos
+
+# no model at all: a planner and members that are programs (about 20 s)
+python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3 examples/coop/packing_judge.py" \
+    --planner 'plan=command:python3 examples/engine/planner.py' \
+    --member 'a=command:python3 examples/coop/packing_member.py --seed 1 --steps 40000' \
+    --member 'b=command:python3 examples/coop/packing_member.py --seed 2 --steps 120000' \
+    --member 'c=command:python3 examples/coop/packing_member.py --seed 3 --steps 300000' --turns 9 --out /tmp/e-demo
+open /tmp/e-demo/view.html
+```
+
+`view.html` (rewritten after every event, so it can be watched while the run goes on) draws the loop with this
+run's numbers, a timeline with time running down the page (a column for the planner and one for each member, every
+turn a bar, every result that woke the planner a dotted line), the best verified score over time, every todo from
+added to ended and every planner turn. It is complete without JavaScript; with JavaScript a player replays the run
+from the first event to the end: drag the time, and the loop lights up the stage that is working while its counts
+follow; tap a bar for its todo, verdict and score.
+
+The run stops when the member turns are used up, the target score (`--target`) is reached, the planner says done,
+its wakes are used up with nothing left to do, or `--patience` judged answers in a row did not beat the best.
+`summary.json` counts todos taken twice (must be 0), turns that can be traced to their todo, board version and prompt
+hash (must be all of them), each member's time free with nothing to take, the planner's share of the tokens, and how
+often members read the board (from the Codex, Claude and OpenCode logs; programs keep none).
+
 ## DAG dispatch: steps that wait for each other
 
 `python3 -m herdr_py.dag` runs a **plan**: steps, each done by one member in **its own git clone** and passed or
@@ -354,7 +403,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 394 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 415 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
