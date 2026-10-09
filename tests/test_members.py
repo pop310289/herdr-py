@@ -251,6 +251,30 @@ class DaemonTest(unittest.TestCase):
         self.assertEqual(this_turn_reply(messages[:4]), "")
         self.assertEqual(this_turn_reply(messages[3:]), "a2")  # the prompt scrolled out of the window: all of it is this turn
 
+    def test_a_long_turns_tool_calls_are_all_logged(self):
+        log = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, log, True)
+        daemon = FakeDaemon(["done"], tools=["read"] * 150)  # one turn, 150 tool calls
+        DaemonMembers(client=daemon, sleep=lambda s: None, log_dir=log).run_turn("a", "p")
+        with open(os.path.join(log, "events.jsonl")) as handle:
+            self.assertEqual(len(handle.readlines()), 150)
+
+    def test_a_compaction_in_the_middle_of_a_turn_does_not_start_a_new_turn(self):
+        # as OpenCode 1.18.32 wrote it when a step's session filled up: a compaction, its summary, then a synthetic prompt
+        messages = [{"role": "user", "kind": "text", "text": "the step's prompt"},
+                    {"role": "assistant", "kind": "tool", "tool": "read"}, {"role": "assistant", "kind": "tool", "tool": "grep"},
+                    {"role": "user", "kind": "compaction"}, {"role": "assistant", "kind": "text", "text": "## Objective ..."},
+                    {"role": "user", "kind": "text", "text": "Continue if you have next steps, or stop and ask for clarification "
+                     "if you are unsure how to proceed.", "synthetic": True},
+                    {"role": "assistant", "kind": "tool", "tool": "read"}, {"role": "assistant", "kind": "text", "text": "done"}]
+        self.assertEqual(this_turn_reply(messages), "done")
+        log = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, log, True)
+        members = DaemonMembers(client=FakeDaemon([]), log_dir=log)
+        members.note_tools("r", messages)
+        with open(os.path.join(log, "events.jsonl")) as handle:
+            self.assertEqual([json.loads(line)["event"]["tool"] for line in handle], ["read", "grep", "read"])
+
 
 class MixedTeamTest(unittest.TestCase):
     def setUp(self):

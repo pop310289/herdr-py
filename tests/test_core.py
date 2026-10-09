@@ -98,6 +98,30 @@ class HubTest(unittest.TestCase):
         self.assertEqual([(r["attempt"], r["provider_wait_s"]) for r in rows], [(1, 300.0), (2, 302.0)])
         self.assertIn("timed out", rows[0]["message"])
 
+    def test_provider_time_counts_from_the_prompt_not_from_the_last_turn(self):
+        sid = self.start()
+        self.fake.emit("session.status", sessionID=sid, status={"type": "busy"})
+        wait_for(lambda: self.state() == "working")
+        self.fake.emit("session.status", sessionID=sid, status={"type": "idle"})
+        wait_for(lambda: self.state() == "idle")
+        self.clock.now += 3600  # an hour between turns: not the provider's
+        self.hub.prompt("a", "next")
+        self.clock.now += 300  # no busy reported: the provider fails first
+        self.fake.emit("session.status", sessionID=sid, status={"type": "retry", "attempt": 1, "message": "Rate limit exceeded"})
+        wait_for(lambda: self.state() == "retry")
+        self.assertEqual(self.hub.get("a")["provider_wait_s"], 300.0)
+
+    def test_the_transcript_marks_what_opencode_wrote_itself(self):
+        sid = self.start()
+        self.fake.messages[sid] = [
+            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "do it"}]},
+            {"info": {"role": "user"}, "parts": [{"type": "compaction", "auto": True}]},
+            {"info": {"role": "assistant", "mode": "compaction", "summary": True}, "parts": [{"type": "text", "text": "## Objective"}]},
+            {"info": {"role": "user"}, "parts": [{"type": "text", "text": "Continue if you have next steps", "synthetic": True}]}]
+        got = [(m["role"], m["kind"], m.get("synthetic", False)) for m in self.hub.transcript("a")]
+        self.assertEqual(got, [("user", "text", False), ("user", "compaction", False), ("assistant", "text", False),
+                               ("user", "text", True)])
+
     def test_policy_allows_denies_and_leaves_ask_for_a_human(self):
         sid = self.start()
         self.fake.emit("session.status", sessionID=sid, status={"type": "busy"})

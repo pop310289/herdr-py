@@ -148,10 +148,9 @@ class DaemonMembers:
         claude backends keep theirs), so a DAG run can count calls that name another step's clone (dag.out_of_bounds)."""
         if not self.log:
             return
-        last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user" and m.get("kind") == "text"), default=-1)
         os.makedirs(os.path.dirname(self.log), exist_ok=True)
         with open(self.log, "a", encoding="utf-8") as handle:
-            for message in messages[last_user + 1:]:
+            for message in messages[turn_start(messages) + 1:]:
                 if message.get("kind") == "tool":
                     handle.write(json.dumps({"agent": name, "t": time.time(), "event": message}, ensure_ascii=False) + "\n")
 
@@ -217,7 +216,7 @@ class DaemonMembers:
                                  f"the model provider stalled {lost:.0f} s")
                 break
             self.sleep(self.poll_s)
-        messages = self.client.call("agent.read", name=name, limit=60)["messages"]
+        messages = self.client.call("agent.read", name=name, limit=2000)["messages"]  # a long turn has many messages
         self.note_tools(name, messages)
         reply = this_turn_reply(messages)
         if state == "provider_stall":
@@ -234,10 +233,16 @@ class DaemonMembers:
         return agents[name].get("tokens", 0) if name in agents else 0
 
 
+def turn_start(messages):
+    """Where this turn starts: the last user text OpenCode did not write itself (when a session fills up in the middle
+    of a turn, OpenCode compacts it and adds a synthetic "Continue if you have next steps ..."; that is not a prompt)."""
+    return max((i for i, m in enumerate(messages) if m.get("role") == "user" and m.get("kind") == "text"
+                and not m.get("synthetic")), default=-1)
+
+
 def this_turn_reply(messages):
-    """The last thing the assistant said after the last user message: never an earlier turn's answer."""
-    last_user = max((i for i, m in enumerate(messages) if m.get("role") == "user" and m.get("kind") == "text"), default=-1)
-    texts = [m["text"] for m in messages[last_user + 1:] if m.get("role") == "assistant" and m.get("kind") == "text"]
+    """The last thing the assistant said after the last prompt: never an earlier turn's answer."""
+    texts = [m["text"] for m in messages[turn_start(messages) + 1:] if m.get("role") == "assistant" and m.get("kind") == "text"]
     return texts[-1].strip() if texts else ""
 
 

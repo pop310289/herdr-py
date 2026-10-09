@@ -81,10 +81,10 @@ Task:
 {upstream}{retry}
 {place}
 Reply with a short summary of what you did and what the next steps should know."""
-PLACE_WRITE = ("Your folder is a git clone made for this step only, at commit {start} ({origin}). Change the files there. You do "
+PLACE_WRITE = ("Your folder, {folder}, is a git clone made for this step only, at commit {start} ({origin}). Change the files there. You do "
                "not need to commit: when your turn ends, everything in the folder is committed for you, and a judge "
                "program checks that commit. Only the judge's verdict counts.")
-PLACE_READ = ("Your folder is a git clone made for this step only, at commit {start} ({origin}). Read what you need there; changes "
+PLACE_READ = ("Your folder, {folder}, is a git clone made for this step only, at commit {start} ({origin}). Read what you need there; changes "
               "are not kept. A judge program checks your reply. Only the judge's verdict counts.")
 PLACE_TEXT = "Your reply is your result: a judge program checks it. Only the judge's verdict counts."
 
@@ -312,6 +312,10 @@ def make_workspace(repo, path, start, fetch=()):
         got = git("-C", path, "rev-parse", f"refs/dag/{ref}")
         if got != sha:
             raise WorkspaceError(f"{ref}: its clone is at {got[:12]}, the run recorded {sha[:12]}")
+    if fetch:  # git notes where it fetched from: no file in a clone may name another step's clone
+        fetch_head = os.path.join(path, git("-C", path, "rev-parse", "--git-path", "FETCH_HEAD"))
+        if os.path.exists(fetch_head):
+            os.remove(fetch_head)
     git("-C", path, "checkout", "--quiet", "-B", "dag-work", start)
 
 
@@ -496,7 +500,7 @@ class DagRun:
         if not workspace:
             place = PLACE_TEXT
         else:
-            place = (PLACE_WRITE if node["access"] == "write" else PLACE_READ).format(start=start[:12], origin=origin)
+            place = (PLACE_WRITE if node["access"] == "write" else PLACE_READ).format(start=start[:12], origin=origin, folder=workspace)
         return PROMPT.format(member=node["member"]["name"], node=nid, plan=self.plan["name"], position=position, task=task,
                              upstream=self.upstream_text(node, workspace), retry=retry, place=place)
 

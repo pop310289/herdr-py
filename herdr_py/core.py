@@ -373,7 +373,12 @@ class Hub:
             role = (message.get("info") or {}).get("role", "?")
             for part in message.get("parts") or []:
                 if part.get("type") == "text" and part.get("text"):
-                    out.append({"role": role, "kind": "text", "text": part["text"]})
+                    item = {"role": role, "kind": "text", "text": part["text"]}
+                    if part.get("synthetic"):  # written by OpenCode itself: after compacting a session in the middle of
+                        item["synthetic"] = True  # a turn it adds "Continue if you have next steps ...", not a prompt
+                    out.append(item)
+                elif part.get("type") == "compaction":
+                    out.append({"role": role, "kind": "compaction"})
                 elif part.get("type") == "tool":
                     state = part.get("state") or {}
                     out.append({"role": role, "kind": "tool", "tool": part.get("tool"), "status": state.get("status"),

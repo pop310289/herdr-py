@@ -474,6 +474,27 @@ if __name__ == "__main__":
 
 
 @unittest.skipUnless(HAVE_GIT, "git is not installed")
+class CloneContentsTest(Base):
+    def test_no_file_in_a_clone_names_another_steps_clone(self):
+        # git writes the folder it fetched from into FETCH_HEAD; a member that reads it would seem to touch that clone
+        self.script({"A": [{"write": {"a.txt": "A\n"}}], "B": [{"write": {"b.txt": "B\n"}}]})
+        out = os.path.join(self.dir, "run")
+        code, said, err = self.run_main(self.plan([{"id": "A"}, {"id": "B", "needs": ["A"]}]), "--out", out)
+        self.assertEqual(code, 0, said + err)
+        other = os.path.join(out, "workspaces", "A-1")
+        named = []
+        for root, _, files in os.walk(os.path.join(out, "workspaces", "B-1")):
+            for name in files:
+                with open(os.path.join(root, name), "rb") as handle:
+                    if other.encode() in handle.read():
+                        named.append(os.path.relpath(os.path.join(root, name), out))
+        self.assertEqual(named, [])
+        self.assertIn("Your folder, %s, is a git clone" % os.path.join(out, "workspaces", "B-1"), self.prompts("B")[0])
+        self.assertEqual(sh(os.path.join(out, "workspaces", "B-1"), "git", "rev-parse", "refs/dag/A"),
+                         self.summary(out)["nodes"]["A"]["sha"])  # the upstream output is still there
+
+
+@unittest.skipUnless(HAVE_GIT, "git is not installed")
 class OpenCodeStepsTest(Base):
     """opencode members through a real daemon and a fake OpenCode that behaves as 1.18 with folders: each step's
     session works in the step's clone, its events come on /global/event, and the scripted agent acts in that folder."""
