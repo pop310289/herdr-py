@@ -68,6 +68,7 @@ def load(out):
         tid, op = e.get("id"), e.get("op")
         if op == "add":
             todos[tid] = {"id": tid, "text": e.get("text") or "", "for": e.get("for"), "parents": e.get("parents") or [],
+                          "after": e.get("after") or [], "review": bool(e.get("review")),
                           "wake": e.get("wake"), "added": e.get("t"), "state": "open"}
         elif tid in todos:
             todo = todos[tid]
@@ -87,16 +88,18 @@ def load(out):
     made = []
     for eid, p in entries.items():
         v = verdicts.get(eid) or {}
-        kind = None
+        kind, name = None, None
         if p.get("artifact"):
             try:
                 with open(os.path.join(out, "kb", p["artifact"]), encoding="utf-8", errors="replace") as handle:
-                    head = handle.readline()
-                m = TAG.match(head)
+                    head = [handle.readline() for _ in range(30)]
+                m = TAG.match(head[0])
                 kind = m.group(2).lower() if m else None
+                if kind == "skill":  # a skill names itself in its frontmatter (name: ...)
+                    name = next((re.sub(r"^\s*name\s*:\s*", "", h).strip().strip('"') for h in head if re.match(r"^\s*name\s*:", h)), None)
             except OSError:
                 pass
-        made.append({"id": eid, "t": p.get("t"), "member": p.get("member"), "summary": p.get("summary") or "",
+        made.append({"id": eid, "t": p.get("t"), "member": p.get("member"), "summary": p.get("summary") or "", "name": name,
                      "parents": p.get("parents") or [], "kind": kind or p.get("kind"), "status": v.get("status", "unjudged"),
                      "score": v.get("score"), "detail": v.get("detail") or ""})
     tools = []
@@ -157,7 +160,7 @@ def median(values):
 LED = {"pass": "ok", "fail": "bad", "bad": "bad"}  # a turn's outcome -> the colour of its member's status light
 
 
-def agents_panel(wakes, turns, todos, summary, members, planner, finished):
+def agents_panel(wakes, turns, todos, summary, members, planner, finished, made=(), reads=()):
     """One row per agent: the planner, every member, the judge; what each did, from the records only. A member with a
     todo taken and not ended works now (only while the run goes on); otherwise its light shows its last turn."""
     rows = []
@@ -178,7 +181,13 @@ def agents_panel(wakes, turns, todos, summary, members, planner, finished):
         free = (f"free {idle[name]:.0f} s" + (f" ({idle[name] / span:.0%})" if span else "")) if name in idle else ""
         now = (f"works on {working[name]['id']}" if name in working else
                f"last: {last.get('todo')} {last.get('status') or last.get('kind') or last.get('state')}" if last else "no turn yet")
-        rows.append(("member", name, "member", light, line, " · ".join(x for x in (f"{used:,} tokens" if used else "", free, now) if x)))
+        skills = {e["id"] for e in made if (e["kind"] or "").lower() == "skill"}
+        wrote = [e["id"] for e in made if e["id"] in skills and e["member"] == name]
+        opened = sorted({eid for agent, eid, _ in reads if agent == name and eid in skills})
+        know = " · ".join(x for x in (f"wrote skill {', '.join(wrote)}" if wrote else "",
+                                       f"read skill {', '.join(opened)}" if opened else "") if x)
+        rows.append(("member", name, "member", light, line,
+                     " · ".join(x for x in (f"{used:,} tokens" if used else "", free, now, know) if x)))
     judged = [t for t in turns if t.get("status") in ("valid", "invalid")]
     scores = [t["score"] for t in judged if t.get("status") == "valid" and isinstance(t.get("score"), (int, float))]
     rows.append(("judge", "judge", "a program", "ok" if scores else "idle", f"{len(scores)} valid of {len(judged)} judged",
@@ -385,17 +394,171 @@ def lineage_svg(made):
             f'aria-label="what the team made, entry by entry, and what built on what">{"".join(parts)}</svg>')
 
 
-def skills_list(made):
+ART = re.compile(r"artifacts/(k[\w-]+?)\.txt")  # board/artifacts/<entry id>.txt (only ids the knowledge base has count)
+
+
+def artifact_reads(tools):
+    """Which agent opened which entry's file (board/artifacts/<id>.txt) and when, from the members' tool logs."""
+    out = []
+    for c in tools:
+        m = ART.search(c.get("what") or "") if tool_class(c.get("tool")) == "read" else None
+        if m and c.get("agent"):
+            out.append((c["agent"], m.group(1), c.get("t")))
+    return out
+
+
+def division_svg(t0, t1, todos, made, members):
+    """Who did which todo: a column for each member (and one for todos nobody took), each todo a box where and when it
+    was taken, coloured by how it ended and named by what it made; a solid arrow from a todo it had to wait for
+    ("after"), a dashed line from the todo that made an entry it was told to build on."""
+    if not todos:
+        return '<div class="muted">no todos yet</div>'
+    loose = any(not t.get("member") and t.get("for") not in members for t in todos)
+    lanes = list(members) + (["anyone"] if loose else [])
+    width, top, box_h = 340, 30, 28
+    col_w = (width - 8) / len(lanes)
+    span = max(t1 - t0, 1e-6)
+    plot_h = max(260, min(1400, 34 * len(todos)))
+    kind_of = {e["id"]: e["kind"] for e in made}
+    by_entry = {t.get("entry"): t for t in todos if t.get("entry")}
+    pos, parts, bottom = {}, [], {}
+    for name in lanes:
+        x = 4 + lanes.index(name) * col_w
+        parts.append(f'<text x="{x + col_w / 2:.1f}" y="{top - 12}" text-anchor="middle" class="ln">{esc(fit(name, col_w - 4, 12))}</text>'
+                     f'<line class="lane" x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top + plot_h}"/>')
+    for t in sorted(todos, key=lambda t: t.get("taken") or t.get("added") or 0):
+        lane = t.get("member") if t.get("member") in members else (t.get("for") if t.get("for") in members else "anyone")
+        x = 4 + lanes.index(lane) * col_w + 3
+        when = t.get("taken") or t.get("added") or t0
+        y = max(top + 4 + (when - t0) / span * (plot_h - box_h - 8), bottom.get(lane, 0) + 4)
+        bottom[lane] = y + box_h
+        pos[t["id"]] = (x, y)
+    height = max(bottom.values()) + 12
+    def link(cls, a, b, when):
+        """From the bottom of a's box to the top of b's; when b does not start below a's bottom (both were added at
+        once), a U under both boxes, from bottom to bottom, so the line is not hidden behind them."""
+        (x1, y1), (x2, y2) = pos[a], pos[b]
+        x1, x2 = x1 + col_w / 2 - 3, x2 + col_w / 2 - 3
+        if y2 >= y1 + box_h + 6:
+            d = f"M {x1:.1f} {y1 + box_h:.1f} C {x1:.1f} {y2 - 10:.1f}, {x2:.1f} {y1 + box_h + 10:.1f}, {x2:.1f} {y2 - 2:.1f}"
+        else:
+            low = max(y1, y2) + box_h + 16
+            d = f"M {x1:.1f} {y1 + box_h:.1f} C {x1:.1f} {low:.1f}, {x2:.1f} {low:.1f}, {x2:.1f} {y2 + box_h:.1f}"
+        return f'<path class="{cls} timed" data-t="{when}" d="{d}"/>'
+    for t in todos:  # lines first, boxes on top
+        for a in t.get("after") or []:
+            if a in pos and t["id"] in pos:
+                parts.append(link("dep", a, t["id"], t.get("added") or 0))
+        for p in t.get("parents") or []:
+            src = by_entry.get(p)
+            if src and src["id"] in pos and t["id"] in pos:
+                parts.append(link("uses", src["id"], t["id"], t.get("added") or 0))
+    for t in todos:
+        x, y = pos[t["id"]]
+        state = t["state"]
+        made_kind = kind_of.get(t.get("entry"))
+        first = {"done": made_kind or "done", "failed": "failed", "dropped": "dropped", "open": "waiting", "taken": "working"}.get(state, state)
+        second = (f"{t['score']:.3g}" if isinstance(t.get("score"), (int, float)) and state == "done" else t["id"][1:6])
+        if t.get("review"):
+            second = "review " + second
+        cls = {"done": "pass", "failed": "fail", "dropped": "drop", "open": "wait", "taken": "work"}.get(state, "wait")
+        tip = (f"{t['id']} ({state}) for {t.get('for') or 'anyone'}" + (f", taken by {t['member']}" if t.get("member") else "")
+               + f": {t['text']}" + (f" | after {', '.join(t['after'])}" if t.get("after") else "")
+               + (f" | builds on {', '.join(t['parents'])}" if t.get("parents") else ""))
+        w = col_w - 6
+        parts.append(f'<g class="td {cls} timed" data-t="{t.get("taken") or t.get("added") or 0}"><title>{esc(tip)}</title>'
+                     f'<rect class="under" x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{box_h}" rx="5"/>'
+                     f'<rect x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{box_h}" rx="5"/>'
+                     f'<text x="{x + w / 2:.1f}" y="{y + 12:.1f}" text-anchor="middle">{esc(fit(first, w - 4, 9.5))}</text>'
+                     f'<text x="{x + w / 2:.1f}" y="{y + 23:.1f}" text-anchor="middle" class="ax">{esc(fit(second, w - 4, 9))}</text></g>')
+    return (f'<svg viewBox="0 0 {width} {height:.0f}" width="{width}" height="{height:.0f}" role="img" aria-label="who did which todo, '
+            f'when, and which todos waited for or built on others">{"".join(parts)}</svg>')
+
+
+def knowledge_svg(made, reads, members, t_start):
+    """The team knowledge base as a flow: who wrote each entry (left), the entries by kind with skills first (middle),
+    and who read the entry's file or built on it (right). Entries from before this run (a seeded knowledge base) have
+    a dashed edge."""
+    if not made:
+        return '<div class="muted">nothing in the knowledge base yet</div>'
+    kinds = sorted({e["kind"] or "?" for e in made}, key=lambda k: (k != "skill", k))
+    rows = []
+    for k in kinds:
+        rows.append(("kind", k))
+        rows += [("entry", e) for e in sorted((e for e in made if (e["kind"] or "?") == k), key=lambda e: e.get("t") or 0)]
+    width, row_h, top = 340, 19, 22
+    left_w, right_x = 62, 278
+    mid_x, mid_w = 92, 162
+    by_id = {e["id"]: e for e in made}
+    used = {}
+    for e in made:
+        for p in e["parents"]:
+            if p in by_id and e["member"]:
+                used.setdefault(p, {}).setdefault(e["member"], set()).add("built on")
+    for agent, eid, _ in reads:
+        if eid in by_id:
+            used.setdefault(eid, {}).setdefault(agent, set()).add("read")
+    agents = list(members) + sorted({e["member"] for e in made if e["member"] and e["member"] not in members})
+    height = top + len(rows) * row_h + 10
+    a_gap = max(row_h, (height - top - 10) / max(1, len(agents)))
+    a_y = {a: top + i * a_gap + a_gap / 2 for i, a in enumerate(agents)}
+    parts = [f'<text x="{left_w / 2:.0f}" y="12" text-anchor="middle" class="ax">wrote</text>'
+             f'<text x="{mid_x + mid_w / 2:.0f}" y="12" text-anchor="middle" class="ax">entries</text>'
+             f'<text x="{right_x + (width - right_x) / 2:.0f}" y="12" text-anchor="middle" class="ax">used by</text>']
+    e_y = {}
+    for i, (what, item) in enumerate(rows):
+        y = top + i * row_h + row_h / 2
+        if what == "kind":
+            n = sum(1 for e in made if (e["kind"] or "?") == item)
+            parts.append(f'<text x="{mid_x}" y="{y + 4:.1f}" class="kh">{esc(item)} · {n}</text>')
+        else:
+            e_y[item["id"]] = y
+    for e in made:  # wrote: writer -> entry; read or built on: entry -> agent
+        y = e_y[e["id"]]
+        if e["member"] in a_y:
+            ay = a_y[e["member"]]
+            parts.append(f'<path class="wrote{" old" if (e.get("t") or 0) < t_start else ""} timed" data-t="{e.get("t") or 0}" '
+                         f'd="M {left_w:.1f} {ay:.1f} C {left_w + 20:.1f} {ay:.1f}, {mid_x - 20:.1f} {y:.1f}, {mid_x:.1f} {y:.1f}"/>')
+        for agent, how in sorted(used.get(e["id"], {}).items()):
+            if agent in a_y:
+                ay = a_y[agent]
+                parts.append(f'<path class="{"built" if "built on" in how else "read"}" d="M {mid_x + mid_w:.1f} {y:.1f} '
+                             f'C {mid_x + mid_w + 18:.1f} {y:.1f}, {right_x - 18:.1f} {ay:.1f}, {right_x:.1f} {ay:.1f}"><title>'
+                             f'{esc(agent + " " + " and ".join(sorted(how)) + " " + e["id"])}</title></path>')
+    for e in made:
+        y = e_y[e["id"]]
+        old = (e.get("t") or 0) < t_start
+        state = "pass" if e["status"] == "valid" else ("fail" if e["status"] in ("invalid", "infra_error") else "wait")
+        score = f" {e['score']:.3g}" if isinstance(e.get("score"), (int, float)) and e["status"] == "valid" else ""
+        tip = (f"{e['id']} {e['kind']} by {e['member']}{' (from before this run)' if old else ''}: {e['summary']}")
+        label = (e.get("name") or e["id"][:7]) if (e["kind"] or "") == "skill" else f"{e['member'] or '?'}"
+        parts.append(f'<g class="kb {state}{" old" if old else ""}"><title>{esc(tip)}</title>'
+                     f'<rect class="under" x="{mid_x}" y="{y - 7.5:.1f}" width="{mid_w}" height="15" rx="4"/>'
+                     f'<rect x="{mid_x}" y="{y - 7.5:.1f}" width="{mid_w}" height="15" rx="4"/>'
+                     f'<text x="{mid_x + 6}" y="{y + 3.5:.1f}">{esc(fit(label + score, mid_w - 10, 9.5))}</text></g>')
+    for a, y in a_y.items():
+        parts.append(f'<text x="{left_w - 4}" y="{y + 4:.1f}" text-anchor="end" class="ln">{esc(fit(a, left_w - 6, 12))}</text>'
+                     f'<text x="{right_x + 4}" y="{y + 4:.1f}" class="ln">{esc(fit(a, width - right_x - 6, 12))}</text>')
+    return (f'<svg viewBox="0 0 {width} {height:.0f}" width="{width}" height="{height:.0f}" role="img" aria-label="the knowledge '
+            f'base: who wrote each entry, and who read it or built on it">{"".join(parts)}</svg>')
+
+
+def skills_list(made, reads=()):
     skills = [e for e in made if (e["kind"] or "").lower() == "skill" and e["status"] == "valid"]
     if not skills:
         return ""
     users = {s["id"]: [e for e in made if s["id"] in e["parents"]] for s in skills}
+    readers = {}
+    for agent, eid, _ in reads:
+        readers.setdefault(eid, []).append(agent)
     rows = []
     for s in sorted(skills, key=lambda e: e.get("t") or 0):
         used = users[s["id"]]
+        read = sorted(set(readers.get(s["id"], [])))
         rows.append(f'<li><div><b>{esc(s["id"])}</b> by {esc(s["member"])}</div><div>{esc(s["summary"])}</div>'
-                    f'<div class="muted">' + (f"built on by {len(used)}: " + esc(", ".join(f"{u['id']} ({u['member']}, {u['kind']})" for u in used))
-                                              if used else "not built on yet") + '</div></li>')
+                    f'<div class="muted">' + (f"read by {len(read)}: " + esc(", ".join(read)) if read else "nobody opened its file")
+                    + '</div><div class="muted">' + (f"built on by {len(used)}: " + esc(", ".join(f"{u['id']} ({u['member']}, {u['kind']})" for u in used))
+                                                     if used else "not built on yet") + '</div></li>')
     return '<h2>Tools the team wrote for itself</h2><ul class="cards">' + "".join(rows) + "</ul>"
 
 
@@ -545,7 +708,7 @@ h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:up
 @media (min-width:900px) {{ .grid2 {{ grid-template-columns:minmax(0,1fr) minmax(0,1fr); align-items:start; }} }}
 .side {{ display:flex; flex-direction:column; gap:14px; min-width:0; }}
 .fig {{ overflow-x:auto; }} .fig svg {{ display:block; margin:0 auto; }}
-.fig.fit svg {{ width:100%; max-width:420px; height:auto; }}
+.fig.fit svg {{ width:100%; max-width:420px; height:auto; }} .fig.wide svg {{ width:100%; max-width:470px; height:auto; }}
 .node rect {{ fill:var(--inset); stroke:var(--wire); stroke-width:1; }} .node.on rect {{ stroke:var(--ice); fill:var(--ice-bg); }}
 .node .t {{ fill:var(--ink); font-size:13px; font-weight:600; }} .node .s, .a, .ax {{ fill:var(--muted); font-size:11px; }}
 .ln {{ fill:var(--ink); font-size:12px; }}
@@ -564,7 +727,20 @@ h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:up
 .lin {{ fill:none; stroke:var(--wire); stroke-width:1; }} .kh {{ fill:var(--ink); font-size:11px; font-weight:600; }}
 .kb rect {{ stroke-width:1; }} .kb text {{ font-size:9.5px; fill:var(--ink); }}
 .kb.pass rect {{ fill:var(--ok-bg); stroke:var(--ok); }} .kb.fail rect {{ fill:var(--bad-bg); stroke:var(--bad); }}
-.kb.wait rect {{ fill:none; stroke:var(--faint); stroke-dasharray:3 2; }}
+.kb.wait rect {{ fill:none; stroke:var(--faint); stroke-dasharray:3 2; }} .kb.old rect {{ stroke-dasharray:4 3; }}
+.td rect {{ stroke-width:1; }} rect.under {{ fill:var(--panel) !important; stroke:none !important; }} .td text {{ font-size:9.5px; fill:var(--ink); }} .td text.ax {{ font-size:9px; fill:var(--muted); }}
+.td.pass rect {{ fill:var(--ok-bg); stroke:var(--ok); }} .td.fail rect {{ fill:var(--bad-bg); stroke:var(--bad); }}
+.td.drop rect {{ fill:none; stroke:var(--faint); stroke-dasharray:3 2; }} .td.drop text {{ fill:var(--faint); }}
+.td.wait rect {{ fill:none; stroke:var(--amber); stroke-dasharray:3 2; }} .td.work rect {{ fill:var(--ice-bg); stroke:var(--ice); }}
+.dep {{ fill:none; stroke:var(--amber); stroke-width:1.2; }} .uses {{ fill:none; stroke:var(--muted); stroke-width:1; stroke-dasharray:3 3; }}
+.wrote {{ fill:none; stroke:var(--ice); stroke-width:1; opacity:.7; }} .wrote.old {{ stroke-dasharray:3 3; opacity:.5; }}
+.built {{ fill:none; stroke:var(--ok); stroke-width:1; opacity:.8; }} .read {{ fill:none; stroke:var(--faint); stroke-width:1; stroke-dasharray:2 3; }}
+.legend i.dep {{ border:0; border-top:2px solid var(--amber); height:0; border-radius:0; vertical-align:3px; }}
+.legend i.uses {{ border:0; border-top:2px dashed var(--muted); height:0; border-radius:0; vertical-align:3px; }}
+.legend i.wrote {{ border:0; border-top:2px solid var(--ice); height:0; border-radius:0; vertical-align:3px; }}
+.legend i.built {{ border:0; border-top:2px solid var(--ok); height:0; border-radius:0; vertical-align:3px; }}
+.legend i.read {{ border:0; border-top:2px dotted var(--faint); height:0; border-radius:0; vertical-align:3px; }}
+.legend i.drop, .legend i.old {{ border-style:dashed; }} .legend i.old {{ border-color:var(--ok); }} .legend i.wait {{ border-color:var(--amber); border-style:dashed; }}
 .legend {{ display:flex; flex-wrap:wrap; gap:4px 14px; font-size:.76rem; color:var(--muted); margin-top:10px; }}
 .legend i {{ display:inline-block; width:12px; height:9px; border-radius:3px; border:1px solid var(--faint); margin-right:5px; vertical-align:-1px; }}
 .legend i.plan {{ background:var(--ice-bg); border-color:var(--ice); }} .legend i.planback {{ background:var(--amber-bg); border-color:var(--amber); }}
@@ -628,6 +804,15 @@ h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:up
 {skills}
 </div>
 </div>
+<div class="grid2">
+<section class="panel"><h2>Who did which todo</h2><div class="fig wide">{division}</div>
+<div class="legend"><span><i class="pass"></i>done (what it made, score)</span><span><i class="fail"></i>failed</span>
+<span><i class="drop"></i>dropped</span><span><i class="wait"></i>not taken yet</span><span><i class="dep"></i>had to wait for (after)</span>
+<span><i class="uses"></i>told to build on its result</span></div></section>
+<section class="panel"><h2>Knowledge: who wrote and who read each entry</h2><div class="fig wide">{knowledge}</div>
+<div class="legend"><span><i class="wrote"></i>wrote (dashed: in an earlier run)</span><span><i class="built"></i>built on it</span>
+<span><i class="read"></i>opened its file</span><span><i class="old"></i>an entry from an earlier run</span><span>skills first, by name</span></div></section>
+</div>
 <section class="panel"><h2>How the team gathered information</h2>
 {gather}</section>
 <section class="panel"><h2>Every todo</h2>
@@ -685,9 +870,11 @@ def render(out):
             "todos": [{"id": t["id"], "text": t.get("text"), "added": t.get("added") or 0, "taken": t.get("taken"),
                        "ended": t.get("ended"), "state": t["state"]} for t in todos]}
     blob = json.dumps(data, ensure_ascii=True).replace("</", "<\\/")
-    skills = skills_list(made)
+    reads = artifact_reads(tools)
+    skills = skills_list(made, reads)
     return PAGE.format(title=title, name=esc(name), state=state, when=when, chips="".join(chips), data=blob, script=SCRIPT,
-                       agents=agents_panel(wakes, turns, todos, summary, members, planner, bool(stop)),
+                       agents=agents_panel(wakes, turns, todos, summary, members, planner, bool(stop), made, reads),
+                       division=division_svg(t0, t1, todos, made, members), knowledge=knowledge_svg(made, reads, members, t0),
                        health=health_panel(start, wakes, turns, summary),
                        loop=loop_svg(start, wakes, turns, todos, summary, members, planner),
                        timeline=timeline_svg(t0, t1, wakes, turns, members, stop.get("why") if stop else None, tools),

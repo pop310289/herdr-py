@@ -682,6 +682,81 @@ class ViewTest(Base):
         lights = dict(re.findall(r'data-agent="(\w+)" data-led="(\w+)"', page))
         self.assertEqual((lights["a"], lights["b"]), ("bad", "ok"))  # a's last turn failed, b's last one passed
 
+    def test_who_did_which_todo_and_who_wrote_and_read_each_entry(self):
+        os.makedirs(os.path.join(self.out, "kb", "artifacts"))
+        os.makedirs(os.path.join(self.out, "members", "claude"))
+        with open(os.path.join(self.out, "engine.jsonl"), "w") as handle:
+            handle.write(json.dumps({"t": 100.0, "kind": "start", "members": ["a", "b"], "planner": "plan", "turns": 4}) + "\n")
+        with open(os.path.join(self.out, "run.jsonl"), "w") as handle:
+            for r in ({"t": 110.0, "start": 101.0, "end": 110.0, "turn": 1, "member": "a", "todo": "t1", "state": "idle",
+                       "kind": "result", "status": "valid", "score": 9, "entry": "kmade0000001"},
+                      {"t": 125.0, "start": 111.0, "end": 125.0, "turn": 2, "member": "b", "todo": "t2", "state": "idle",
+                       "kind": "result", "status": "valid", "score": 70, "entry": "kpage0000002"}):
+                handle.write(json.dumps(r) + "\n")
+        files = {"artifacts/s.txt": "ARTIFACT: skill\n---\nname: walk-cycle\ndescription: two people walking\n---\n",
+                 "artifacts/m.txt": "ARTIFACT: data\n{}", "artifacts/p.txt": "ARTIFACT: page\n<html>"}
+        for rel_path, text in files.items():
+            with open(os.path.join(self.out, "kb", rel_path), "w") as handle:
+                handle.write(text)
+        kb = [{"type": "propose", "id": "kskill000000", "t": 50.0, "member": "a", "summary": "how to draw walking", "parents": [],
+               "kind": "result", "artifact": "artifacts/s.txt"}, {"type": "verdict", "id": "kskill000000", "status": "valid", "score": 8},
+              {"type": "propose", "id": "kmade0000001", "t": 109.0, "member": "a", "summary": "data", "parents": [],
+               "kind": "result", "artifact": "artifacts/m.txt"}, {"type": "verdict", "id": "kmade0000001", "status": "valid", "score": 9},
+              {"type": "propose", "id": "kpage0000002", "t": 124.0, "member": "b", "summary": "a page", "parents": ["kmade0000001"],
+               "kind": "result", "artifact": "artifacts/p.txt"}, {"type": "verdict", "id": "kpage0000002", "status": "valid", "score": 70},
+              {"type": "todo", "op": "add", "id": "t1", "t": 100.5, "text": "gather", "for": "a", "parents": [], "after": []},
+              {"type": "todo", "op": "add", "id": "t2", "t": 100.5, "text": "a page", "for": "b", "parents": ["kmade0000001"],
+               "after": ["t1"]},
+              {"type": "todo", "op": "add", "id": "t3", "t": 100.5, "text": "never mind", "for": "b", "parents": [], "after": []},
+              {"type": "todo", "op": "add", "id": "t4", "t": 100.5, "text": "review it", "for": None, "parents": [], "after": ["t1"],
+               "review": True},
+              {"type": "todo", "op": "take", "id": "t1", "t": 101.0, "member": "a"},
+              {"type": "todo", "op": "end", "id": "t1", "t": 110.0, "member": "a", "outcome": "done", "entry": "kmade0000001", "score": 9},
+              {"type": "todo", "op": "take", "id": "t2", "t": 111.0, "member": "b"},
+              {"type": "todo", "op": "end", "id": "t2", "t": 125.0, "member": "b", "outcome": "done", "entry": "kpage0000002", "score": 70},
+              {"type": "todo", "op": "drop", "id": "t3", "t": 112.0, "by": "plan"}]
+        with open(os.path.join(self.out, "kb", "events.jsonl"), "w") as handle:
+            handle.write("".join(json.dumps(r) + "\n" for r in kb))
+        log = [{"t": 112.0, "agent": "b", "event": {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/r/board/artifacts/kskill000000.txt"}}]}}}]
+        with open(os.path.join(self.out, "members", "claude", "events.jsonl"), "w") as handle:
+            handle.write("".join(json.dumps(r) + "\n" for r in log))
+        page = engineview.render(self.out)
+        start = page.index('aria-label="who did which todo')
+        division = page[start:page.index("</svg>", start)]
+        lanes = re.findall(r'class="ln">([^<]+)<', division)
+        self.assertEqual(lanes, ["a", "b", "anyone"])  # t4 was meant for anyone and nobody took it
+        boxes = {tid: cls for cls, tid in re.findall(r'<g class="td (\w+) timed"[^>]*><title>(t\d)', division)}
+        self.assertEqual(boxes, {"t1": "pass", "t2": "pass", "t3": "drop", "t4": "wait"})
+        self.assertIn(">data<", division)  # a done todo is named by what it made
+        self.assertIn(">review ", division)
+        self.assertEqual(division.count('class="dep timed"'), 2)  # t2 and t4 had to wait for t1
+        self.assertEqual(division.count('class="uses timed"'), 1)  # t2 was told to build on t1's result
+        t4_y = float(re.search(r'<title>t4 [^<]*</title><rect class="under" x="[\d.]+" y="([\d.]+)"', division).group(1))
+        ends = [p.rsplit(" ", 1)[1] for p in re.findall(r'class="dep timed" data-t="[^"]*" d="([^"]+)"', division)]
+        self.assertIn("%.1f" % (t4_y + 28), ends)  # t4 sits level with t1: the line runs under both, into t4's bottom
+        start = page.index('aria-label="the knowledge base')
+        knowledge = page[start:page.index("</svg>", start)]
+        self.assertLess(knowledge.index(">skill · 1<"), knowledge.index(">data · 1<"))  # skills first
+        self.assertIn(">walk-cycle 8<", knowledge)  # a skill by its name
+        self.assertIn('class="kb pass old"', knowledge)  # made before this run started
+        self.assertIn("b read kskill000000", knowledge)  # b opened the skill's file
+        self.assertIn("b built on kmade0000001", knowledge)
+        agents = page.split('id="agents">')[1].split("</ul>")[0]
+        self.assertIn("wrote skill kskill000000", agents.split('data-agent="b"')[0])
+        self.assertIn("read skill kskill000000", agents.split('data-agent="b"')[1])
+        self.assertIn("read by 1: b", page)
+
+    def test_a_dropped_todo_stays_in_the_lane_of_the_member_it_was_for(self):
+        todos = [{"id": "t1", "text": "x", "for": "b", "parents": [], "after": [], "added": 1.0, "state": "dropped", "ended": 2.0},
+                 {"id": "t2", "text": "y", "for": "a", "parents": [], "after": [], "added": 1.0, "state": "done", "member": "a",
+                  "taken": 1.5, "ended": 3.0}]
+        svg = engineview.division_svg(0.0, 10.0, todos, [], ["a", "b"])
+        self.assertEqual(re.findall(r'class="ln">([^<]+)<', svg), ["a", "b"])  # every todo has a member's lane: no "anyone"
+        col_w = (340 - 8) / 2
+        x = float(re.search(r'<title>t1 [^<]*</title><rect class="under" x="([\d.]+)"', svg).group(1))
+        self.assertAlmostEqual(x, 4 + col_w + 3, places=1)  # in b's lane, where it was meant to go
+
     def test_a_run_still_going_is_drawn_from_what_is_there(self):
         os.makedirs(os.path.join(self.out, "kb"))
         with open(os.path.join(self.out, "engine.jsonl"), "w") as handle:
