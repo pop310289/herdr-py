@@ -33,6 +33,8 @@ import sys
 import time
 import urllib.parse
 
+from .viewstyle import TOKENS
+
 
 TAG = re.compile(r"^\W*(artifact|kind)\s*:\s*([A-Za-z][\w-]*)", re.I)
 WEB, FETCH = ("websearch", "web_search", "search"), ("webfetch", "web_fetch", "fetch")
@@ -705,11 +707,7 @@ PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <style>
-:root {{ color-scheme:dark; --bg:#090A0F; --panel:#11141A; --inset:#0C0F14; --line:rgba(255,255,255,.07); --hi:rgba(255,255,255,.10);
-  --ink:#E5E7EB; --muted:#9CA3AF; --faint:#6B7280; --wire:#3B4352; --grid:rgba(255,255,255,.06); --ice:#93C5FD;
-  --ice-bg:rgba(147,197,253,.10); --ok:#10B981; --ok-bg:rgba(16,185,129,.12); --bad:#EF4444; --bad-bg:rgba(239,68,68,.12);
-  --amber:#D4A24C; --amber-bg:rgba(212,162,76,.12); }}
-* {{ box-sizing:border-box; }}
+{tokens}* {{ box-sizing:border-box; }}
 body {{ margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system,"SF Pro Text","PingFang TC","Noto Sans TC",sans-serif;
   padding-inline:16px; padding-block:16px 40px; -webkit-font-smoothing:antialiased; }}
 main {{ max-width:1180px; margin:0 auto; display:flex; flex-direction:column; gap:14px; }}
@@ -915,7 +913,7 @@ def render(out, live=False):
     blob = json.dumps(data, ensure_ascii=True).replace("</", "<\\/")
     reads = artifact_reads(tools)
     skills = skills_list(made, reads)
-    return PAGE.format(title=title, name=esc(name), state=state, when=when, chips="".join(chips), data=blob, script=SCRIPT,
+    return PAGE.format(title=title, name=esc(name), state=state, when=when, chips="".join(chips), data=blob, script=SCRIPT, tokens=TOKENS,
                        controls='<div class="controls" id="controls" hidden></div>' if live else "",
                        sent=control_list(controls, t0),
                        agents=agents_panel(wakes, turns, todos, summary, members, planner, bool(stop), made, reads),

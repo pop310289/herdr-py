@@ -15,6 +15,8 @@ import os
 import sys
 import time
 
+from .viewstyle import SHADOW, TOKENS
+
 STATE_WORD = {"waiting": "waiting", "running": "running", "judging": "judging", "passed": "passed", "failed": "failed",
               "blocked": "blocked"}
 BOX_W, BOX_H, COL_W, ROW_H, PAD = 116, 50, 128, 86, 8
@@ -162,12 +164,7 @@ PAGE = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title>
 <style>
-:root {{ --bg:#F3F5F4; --surface:#FFFFFF; --ink:#16201C; --muted:#5A6661; --rule:#D4DBD8; --accent:#1D5C70;
-  --pass:#2B7448; --pass-bg:#E2F1E7; --fail:#A93636; --fail-bg:#F6E0DF; --wait:#94600E; --run-bg:#E1EEF2; }}
-@media (prefers-color-scheme: dark) {{ :root {{ color-scheme:dark; --bg:#101514; --surface:#171E1C; --ink:#E0E7E4;
-  --muted:#96A29D; --rule:#2A3431; --accent:#6DB3C8; --pass:#79C995; --pass-bg:#1A3123; --fail:#E68B88; --fail-bg:#3A1D1C;
-  --wait:#E1AE5C; --run-bg:#16303A; }} }}
-* {{ box-sizing:border-box; }}
+{tokens}* {{ box-sizing:border-box; }}
 body {{ margin:0; background:var(--bg); color:var(--ink); font:15px/1.5 -apple-system,"PingFang TC","Noto Sans TC",sans-serif;
   padding-inline:16px; padding-block:16px 40px; }}
 main {{ max-width:1100px; margin:0 auto; display:flex; flex-direction:column; gap:14px; }}
@@ -175,14 +172,15 @@ h1 {{ font-size:1.25rem; margin:0; overflow-wrap:anywhere; }} .muted {{ color:va
 .chips {{ display:flex; flex-wrap:wrap; gap:6px; }} .chip {{ font-size:.78rem; border:1px solid var(--rule); border-radius:999px; padding:1px 9px; white-space:nowrap; }}
 .chip.bad {{ color:var(--fail); background:var(--fail-bg); border-color:transparent; }}
 .chip.good {{ color:var(--pass); background:var(--pass-bg); border-color:transparent; }}
-.graph {{ overflow-x:auto; background:var(--surface); border:1px solid var(--rule); border-radius:8px; padding:6px; }}
+.graph {{ overflow-x:auto; background:var(--surface); border:1px solid var(--rule); border-radius:12px; padding:10px;
+  box-shadow:{shadow}; }}
 .graph svg {{ display:block; }}
-.box rect {{ fill:var(--surface); stroke:var(--muted); stroke-width:1.5; }}
+.box rect {{ fill:var(--inset); stroke:var(--wire); stroke-width:1; }}
 .box.passed rect {{ fill:var(--pass-bg); stroke:var(--pass); }} .box.failed rect {{ fill:var(--fail-bg); stroke:var(--fail); }}
-.box.running rect, .box.judging rect {{ fill:var(--run-bg); stroke:var(--accent); stroke-width:2.5; }}
+.box.running rect, .box.judging rect {{ fill:var(--run-bg); stroke:var(--accent); stroke-width:1; }}
 .box.blocked rect {{ stroke-dasharray:5 4; }} .box.blocked text {{ fill:var(--muted); }}
 .box text {{ fill:var(--ink); font-size:13px; }} .box text.id {{ font-weight:600; font-size:14px; }} .box text.sub {{ font-size:11px; fill:var(--muted); }}
-.edge {{ fill:none; stroke:var(--muted); stroke-width:1.5; stroke-dasharray:4 4; }} .edge.done {{ stroke:var(--pass); stroke-dasharray:none; }}
+.edge {{ fill:none; stroke:var(--wire); stroke-width:1.2; stroke-dasharray:4 4; }} .edge.done {{ stroke:var(--pass); stroke-dasharray:none; }}
 .head {{ fill:var(--muted); }}
 .legend {{ display:flex; flex-wrap:wrap; gap:4px 14px; font-size:.78rem; color:var(--muted); }}
 .legend i {{ display:inline-block; width:12px; height:10px; border-radius:3px; border:1.5px solid var(--muted); margin-right:5px; vertical-align:-1px; }}
@@ -234,7 +232,7 @@ def render(out):
     when = "base " + esc((start.get("base") or "no repository")[:12]) + " · started " + esc(
         time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(start["t"])) if start.get("t") else "?") + (
         " · finished" if summary else " · still running (written after every step)")
-    return PAGE.format(title=esc(f"DAG {plan['name']}"), when=when, chips="".join(chips), graph=graph_svg(plan, st),
+    return PAGE.format(title=esc(f"DAG {plan['name']}"), tokens=TOKENS, shadow=SHADOW, when=when, chips="".join(chips), graph=graph_svg(plan, st),
                        checks=checks, attempts=attempts_list(plan, events))
 
 

@@ -21,16 +21,12 @@ import json
 import os
 import sys
 
+from .viewstyle import TOKENS
+
 SCORE_DIGITS = 13  # scores that differ in the 10th digit must not look equal
 
-STYLE = """
-:root { color-scheme: dark;
-  --bg: #121418; --panel: #1b1e24; --line: #2c313a; --text: #e3e6eb; --muted: #9aa3ae;
-  --ok: #3f9c5a; --warn: #c79a2e; --bad: #dc5f6a; --idle: #6b7380; --accent: #3b74c4; --chip-ink: #101214;
-  font-family: system-ui, -apple-system, "Segoe UI", "PingFang TC", "Noto Sans CJK TC", sans-serif; }
-@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { color-scheme: light;
-  --bg: #f5f6f8; --panel: #ffffff; --line: #dde1e6; --text: #15181d; --muted: #5d6673;
-  --ok: #2f8048; --warn: #8a6612; --bad: #b8323f; --idle: #5d6673; --accent: #2f63ad; --chip-ink: #ffffff; } }
+STYLE = TOKENS + """
+:root { font-family: system-ui, -apple-system, "Segoe UI", "PingFang TC", "Noto Sans CJK TC", sans-serif; }
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); }
 body { font-size: 15px; line-height: 1.45; }
@@ -40,7 +36,8 @@ h2 { font-size: 14px; color: var(--muted); margin: 22px 0 8px; text-transform: u
 .sub { color: var(--muted); font-size: 14px; overflow-wrap: anywhere; }
 .stopped { margin: 10px 0; padding: 10px 14px; border: 2px solid var(--bad); border-radius: 10px; font-weight: 600; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
-.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px;
+  box-shadow: inset 0 1px 0 var(--hi); }
 .tile b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
 .tile span { color: var(--muted); font-size: 13px; }
 .tile.bad b { color: var(--bad); }
