@@ -216,6 +216,27 @@ class HubTest(unittest.TestCase):
         wait_for(lambda: missed in {r[0] for r in self.fake.replies}, timeout=8, what="missed request answered after resync")
         wait_for(lambda: self.hub.pending() == [], what="stale request dropped")
 
+    def test_saves_from_many_threads_at_once_never_fail(self):
+        # 2026-10-10: two members of an OpenCode team started at the same moment; both saved the state, and one save
+        # renamed state.json.tmp after the other had already moved it away (FileNotFoundError), failing that turn
+        self.start("a")
+        errors = []
+
+        def save_many():
+            for _ in range(150):
+                try:
+                    self.hub.save()
+                except Exception as exc:  # noqa: BLE001 - what the test counts
+                    errors.append(f"{type(exc).__name__}: {exc}")
+        threads = [threading.Thread(target=save_many) for _ in range(8)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join()
+        self.assertEqual(errors[:3], [])
+        with open(os.path.join(self.tmp.name, "state.json")) as handle:
+            self.assertEqual([a["name"] for a in json.load(handle)["agents"]], ["a"])
+
     def test_state_file_reattaches_agents_and_children(self):
         sid = self.start()
         child = self.fake.child(sid)

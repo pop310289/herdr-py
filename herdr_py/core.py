@@ -175,6 +175,8 @@ class Hub:
             self.emit({"type": "agent.update", "agent": agent.name})
 
     def save(self):
+        """Write the state file. The snapshot, the write and the rename happen under the hub's lock: two saves at once
+        (two members started together) once shared the temporary file, and one rename found it gone."""
         if not self.state_path:
             return
         with self.lock:
@@ -183,10 +185,10 @@ class Hub:
                                                "children": sorted(a.children), "past_sessions": a.past_sessions,
                                                "directory": a.directory, "deny": sorted(a.deny), "tools": a.tools}
                                               for a in self.agents.values()]}
-        tmp = self.state_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, indent=1)
-        os.replace(tmp, self.state_path)
+            tmp = f"{self.state_path}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=1)
+            os.replace(tmp, self.state_path)
 
     def close(self):
         if self.log:

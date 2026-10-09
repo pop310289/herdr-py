@@ -302,9 +302,13 @@ class EngineRun:
             if not isinstance(parents, list) or not all(isinstance(p, str) for p in parents):
                 problems.append(f"add {i}: \"parents\" is a list of entry ids")
                 parents = []
-            missing = [p for p in parents if p not in entries]
+            missing = [p for p in parents if p not in entries and p not in todos]
             if missing:
                 problems.append(f"add {i}: no entry {', '.join(missing)} (build only on entries on the board)")
+            wrong = [p for p in parents if p in todos and p not in entries]  # a weaker model mixes the two kinds of id
+            if wrong:
+                problems.append(f"add {i}: {', '.join(wrong)} is a todo, not an entry: \"parents\" names entries (k...) a todo "
+                                f"builds on; to wait for a todo, name it in \"after\"")
             if not isinstance(after, list) or not all(isinstance(a, str) for a in after):
                 problems.append(f"add {i}: \"after\" is a list of todo ids")
                 after = []

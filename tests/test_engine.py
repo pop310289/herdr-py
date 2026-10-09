@@ -196,6 +196,17 @@ class EngineTest(Base):
         self.assertIn("Your last reply was sent back", self.read_log("planner-02.txt"))
         self.assertEqual(self.summary()["planner_refused"], 1)
 
+    def test_a_todo_named_as_a_parent_is_sent_back_with_how_to_wait_for_it(self):
+        # 2026-10-10, an OpenCode team on a local 8B model: the planner named todo ids as parents six times in a row
+        self.script(planner=[add({"text": "slow", "for": "a", "parents": []}, {"text": "quick", "for": "b", "parents": []}),
+                             add({"text": "next", "for": None, "parents": ["$taken"]}), add(done=True)],
+                    members={"a": [{"answer": "5", "sleep": 1.0}], "b": [{"answer": "3"}]})
+        self.run_main("--turns", "3", "--planner-wakes", "3", members=("a", "b"))
+        problems = " | ".join(p for w in self.records("engine.jsonl") if w.get("kind") == "wake" for p in w.get("problems") or [])
+        self.assertIn("is a todo, not an entry", problems)
+        self.assertIn('name it in "after"', problems)
+        self.assertNotIn("no entry t", problems)
+
     def test_too_many_open_todos_are_refused(self):
         self.script(planner=[add(*["t%d" % i for i in range(5)]), add(done=True)], members={"a": [{"answer": "5"}]})
         code, said, err = self.run_main("--turns", "1", "--max-open", "2", "--planner-wakes", "1", members=("a",))
