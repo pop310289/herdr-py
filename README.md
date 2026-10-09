@@ -153,7 +153,9 @@ free. A todo can come after others ("after": an id, or "#2" for the second todo 
 taken until they have ended. A todo with "review": true is never given to whoever made what it reviews (the members
 of its parents, and whoever did the todos it comes after), so nobody reviews their own work; a review meant for its own
 author is sent back, and when nobody can take the open todos the planner is woken (the run stops once its wakes are
-used up). `--time-limit S` starts no new work after S seconds.
+used up). `--time-limit S` starts no new work after S seconds. Any backend can plan or work; a planner's turn only
+answers: a claude planner gets no tools (`--tools ""`), an opencode planner gets OpenCode's per-message tool switches
+all off (`{"*": false}`; checked with OpenCode 1.18.32, where the same prompt with the tools left on called webfetch).
 A member that is free takes the oldest open todo meant for it or for anyone, so a fast member never waits for a slow
 one, and two members never take the same todo (the take is chosen and recorded under the knowledge base's file lock).
 While members work, `TEAM_BOARD.md` in their folder (read-only) shows the latest verified results, failures and todos,
@@ -182,6 +184,13 @@ python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3
     --member 'b=command:python3 examples/coop/packing_member.py --seed 2 --steps 120000' \
     --member 'c=command:python3 examples/coop/packing_member.py --seed 3 --steps 300000' --turns 9 --out /tmp/e-demo
 open /tmp/e-demo/view.html
+
+# an all-OpenCode team through the daemon of the Quick start (its default socket): members work read-only in the run's
+# board folder (--member-access research: plus web fetches, as the daemon's policy allows); an OpenCode in a container
+# needs the run folder mounted at the same path
+python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3 examples/coop/packing_judge.py" \
+    --planner plan=opencode --member a=opencode --member b=opencode:ollama/qwen3-8b-32k:latest \
+    --socket ~/.local/state/herdr-py/herdr-py.sock --turns 4 --out runs/e2
 ```
 
 `view.html` (rewritten after every event, so it can be watched while the run goes on) draws the loop with this
@@ -417,7 +426,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 432 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 435 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

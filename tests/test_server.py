@@ -72,6 +72,14 @@ class DaemonTest(unittest.TestCase):
             self.client.call("agent.get", name="nope")
         self.assertEqual(ctx.exception.code, "huberror")
 
+    def test_socket_api_passes_tool_switches_to_opencode(self):
+        sid = self.client.call("agent.start", name="p", prompt="plan", tools={"*": False})["session_id"]
+        self.assertEqual([body.get("tools") for s, body in self.fake.prompts if s == sid], [{"*": False}])
+        self.assertEqual(self.client.call("agent.get", name="p")["tools"], {"*": False})
+        with self.assertRaises(ClientError) as ctx:
+            self.client.call("agent.start", name="q", prompt="plan", tools="none")
+        self.assertEqual(ctx.exception.code, "huberror")
+
     def test_http_needs_the_token_and_can_answer_requests(self):
         status, _ = self.http("GET", "/api/agents", token=False)
         self.assertEqual(status, 401)

@@ -182,6 +182,21 @@ class DaemonTest(unittest.TestCase):
                           (True, work, ["external_directory"])])  # no access given: write
         self.assertEqual(len([m for m, _ in daemon.calls if m == "ping"]), 1)  # OpenCode's config is read once
 
+    def test_a_turn_outside_a_folder_only_answers(self):
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        open(os.path.join(work, "deck.json"), "w").close()
+        daemon = FakeDaemon(["the plan", "the work"], names=["deck.json"])
+        members = DaemonMembers(client=daemon, sleep=lambda s: None)
+        members.run_turn("plan", "p1")
+        members.run_turn("a", "p2", workdir=work, access="research")
+        starts = {p["name"]: p for m, p in daemon.calls if m == "agent.start"}
+        self.assertEqual(starts["plan"].get("tools"), {"*": False})  # as a claude member's --tools ""
+        self.assertNotIn("tools", starts["a"])  # in its folder it keeps its tools, bounded by deny and the policy
+        with self.assertRaises(MemberError) as caught:
+            members.run_turn("a", "p3", workdir=work, access="admin")
+        self.assertIn("access is write, read, research, not 'admin'", str(caught.exception))
+
     def test_a_folder_turn_is_refused_before_anything_starts_when_bounds_cannot_hold(self):
         work = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, work, True)

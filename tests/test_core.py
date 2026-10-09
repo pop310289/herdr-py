@@ -282,6 +282,28 @@ class HubTest(unittest.TestCase):
         self.assertTrue(any(json.loads(l).get("hub") == "start" for l in lines))
 
 
+    def test_tool_switches_go_with_every_prompt_and_stay_in_the_state_file(self):
+        planner = self.hub.start("p", "plan", tools={"*": False})["session_id"]
+        worker = self.hub.start("w", "work")["session_id"]
+        self.hub.prompt("p", "once more")
+        sent = {}
+        for sid, body in self.fake.prompts:
+            sent.setdefault(sid, []).append(body.get("tools"))
+        self.assertEqual(sent[planner], [{"*": False}, {"*": False}])
+        self.assertEqual(sent[worker], [None])  # no switches: OpenCode's own defaults
+        self.assertEqual((self.hub.get("p")["tools"], self.hub.get("w")["tools"]), ({"*": False}, {}))
+        self.hub.save()
+        again = self.make_hub()  # a daemon restarted on the same state file
+        self.addCleanup(again.close)
+        self.assertEqual(again.load(), 2)
+        again.prompt("p", "after a restart")
+        self.assertEqual(self.fake.prompts[-1], (planner, dict(self.fake.prompts[-1][1], tools={"*": False})))
+        for bad in ({"*": "no"}, ["*"], {1: False}):
+            with self.assertRaises(HubError):
+                self.hub.start("x", "go", tools=bad)
+        self.assertNotIn("x", [a["name"] for a in self.hub.list()])
+
+
 class PolicyTest(unittest.TestCase):
     def test_first_matching_rule_wins_and_regex_must_match_the_whole_target(self):
         p = Policy(RULES, default="ask")

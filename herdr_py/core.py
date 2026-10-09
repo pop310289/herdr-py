@@ -50,10 +50,12 @@ def file_parts(paths):
 
 
 class Agent:
-    def __init__(self, name, session_id, model=None, budget_s=None, followups=(), created=None, directory=None, deny=()):
+    def __init__(self, name, session_id, model=None, budget_s=None, followups=(), created=None, directory=None, deny=(),
+                 tools=None):
         self.name, self.session_id, self.model = name, session_id, model
         self.directory = directory        # the folder its session works in, when not the server's (a DAG step's clone)
         self.deny = set(deny)             # permission kinds refused before the policy is asked (a step that only reads)
+        self.tools = dict(tools or {})    # tool switches sent with every prompt ({"*": False}: no tools, it only answers)
         self.budget_s = budget_s
         self.followups = list(followups)
         self.created = created or time.time()
@@ -96,7 +98,7 @@ class Agent:
                 "activity": [{"t": round(t, 3), "text": text, "tone": tone} for t, text, tone in list(self.activity.values())[-6:]],
                 "stream": {"kind": self.stream["kind"], "text": self.stream["text"][-400:]},
                 "model": self.model, "past_sessions": self.past_sessions[-5:], "directory": self.directory,
-                "deny": sorted(self.deny), "provider_wait_s": round(self.provider_wait, 1)}
+                "deny": sorted(self.deny), "tools": dict(self.tools), "provider_wait_s": round(self.provider_wait, 1)}
 
 
 class Hub:
@@ -177,7 +179,7 @@ class Hub:
             data = {"version": 1, "agents": [{"name": a.name, "session_id": a.session_id, "model": a.model, "budget_s": a.budget_s,
                                                "followups": a.followups, "turns": a.turns, "idles": a.idles, "created": a.created,
                                                "children": sorted(a.children), "past_sessions": a.past_sessions,
-                                               "directory": a.directory, "deny": sorted(a.deny)}
+                                               "directory": a.directory, "deny": sorted(a.deny), "tools": a.tools}
                                               for a in self.agents.values()]}
         tmp = self.state_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as handle:
@@ -206,13 +208,17 @@ class Hub:
             return self.agent(name).view(self.clock())
 
     def start(self, name, prompt, budget_s=None, followups=(), model=None, title=None, files=(), fresh=False, directory=None,
-              deny=()):
+              deny=(), tools=None):
         """Create an agent (an OpenCode session) and send its first prompt. fresh=True with a name that exists gives that
         agent a new session instead: OpenCode compacts a long session at a moment nobody chooses, so a caller that puts
         everything the turn needs into the prompt can start every turn clean. The role's counters (tokens, turns,
         decisions) carry on; the old session and its subagents are dropped, and their late events are ignored.
         directory: the session works in that folder instead of the server's (OpenCode's ?directory=); deny: permission
-        kinds this agent is refused whatever the policy says (["edit", "bash"] for a step that only reads)."""
+        kinds this agent is refused whatever the policy says (["edit", "bash"] for a step that only reads); tools: OpenCode's
+        tool switches, sent with every prompt to this agent ({"*": False}: no tools, for a turn that only answers)."""
+        if tools is not None and not (isinstance(tools, dict) and all(isinstance(k, str) and isinstance(v, bool)
+                                                                        for k, v in tools.items())):
+            raise HubError('tools: {"tool name or *": true or false}')
         with self.lock:
             old = self.agents.get(name)
             if old is not None:
@@ -225,7 +231,7 @@ class Hub:
         session = self.client.create_session(title or f"herdr-py: {name}", directory=directory)
         with self.lock:
             agent = Agent(name, session["id"], model or (old.model if old else self.model), budget_s, followups, created=self.clock(),
-                          directory=directory, deny=deny)
+                          directory=directory, deny=deny, tools=tools)
             if old is not None:
                 agent.tokens, agent.turns, agent.idles, agent.decisions = old.tokens, old.turns, old.idles, old.decisions
                 agent.seq, agent.history = old.seq, old.history
@@ -256,8 +262,8 @@ class Hub:
             self.note(agent, f"prompt-{agent.turns}", f"prompt #{agent.turns} ({source}): {text[:60]}", "info")
             self.record({"hub": "prompt", "agent": name, "source": source, "text": text})
             self.refresh(agent, "prompt")
-            session_id, model, directory = agent.session_id, agent.model, agent.directory
-        self.client.prompt(session_id, text, model=model, files=parts, directory=directory)
+            session_id, model, directory, tools = agent.session_id, agent.model, agent.directory, agent.tools
+        self.client.prompt(session_id, text, model=model, files=parts, directory=directory, tools=tools)
         self.save()
         return self.get(name)
 
@@ -636,7 +642,7 @@ class Hub:
             for item in data.get("agents", []):
                 agent = Agent(item["name"], item["session_id"], item.get("model"), item.get("budget_s"),
                               item.get("followups") or [], item.get("created"), directory=item.get("directory"),
-                              deny=item.get("deny") or ())
+                              deny=item.get("deny") or (), tools=item.get("tools"))
                 agent.turns, agent.idles = item.get("turns", 0), item.get("idles", 0)
                 agent.base = "idle"
                 agent.children = set(item.get("children") or [])

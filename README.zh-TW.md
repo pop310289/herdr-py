@@ -85,7 +85,7 @@ python3 -m herdr_py.teamkb runs/c1/kb     # 每一筆：分數、誰接了誰的
 
 ## 事件驅動的團隊：共享待辦清單，planner 被事件喚醒
 
-`python3 -m herdr_py.engine` 把 coop 的「一輪一輪」換成「事件」（definitions §23）。planner（任何一種成員後端都可以）在團隊知識庫裡維護一份共享待辦清單。每當有答案被評分、或有待辦結束，planner 就被喚醒：程式從紀錄組出團隊目前的狀態給它，它回覆要新增或撤下哪些待辦，或宣告完成；回覆裡寫了不存在的成員或條目、或開了太多待辦，就附上全部理由退回。planner 不是每個結果都被喚醒：只有在有待辦結束、而且有成員閒著卻沒有能領的待辦時，或結束的待辦數和成員數一樣多（全隊跑完一圈）時才喚醒；它的指令會寫出誰在做什麼、誰閒著。待辦可以排在別的待辦之後（"after"：待辦 id，或用 "#2" 指同一次回覆的第二條），那些待辦結束前不能領。標了 "review": true 的待辦不會派給做出被評內容的人（它參照的成果的作者、它要等的待辦的執行者），沒有人評自己的作品；指定給作者自己的評論會被退回；開著的待辦沒有人能領時會叫醒 planner（喚醒次數用完就停止）。`--time-limit S` 讓 S 秒後不再開始新工作。成員一有空就領一條指定給自己或不指定的最舊待辦，所以快的成員不必等慢的；同一條待辦不會被兩個成員領走（在知識庫的檔案鎖底下挑選並寫入）。成員做事時，資料夾裡的 `TEAM_BOARD.md`（唯讀）顯示最新的已驗證結果、失敗與待辦，每次事件後由程式重寫。和 coop 一樣，只有評分程式的判定會被共享；planner 的待辦只是安排，不是事實。
+`python3 -m herdr_py.engine` 把 coop 的「一輪一輪」換成「事件」（definitions §23）。planner（任何一種成員後端都可以）在團隊知識庫裡維護一份共享待辦清單。每當有答案被評分、或有待辦結束，planner 就被喚醒：程式從紀錄組出團隊目前的狀態給它，它回覆要新增或撤下哪些待辦，或宣告完成；回覆裡寫了不存在的成員或條目、或開了太多待辦，就附上全部理由退回。planner 不是每個結果都被喚醒：只有在有待辦結束、而且有成員閒著卻沒有能領的待辦時，或結束的待辦數和成員數一樣多（全隊跑完一圈）時才喚醒；它的指令會寫出誰在做什麼、誰閒著。待辦可以排在別的待辦之後（"after"：待辦 id，或用 "#2" 指同一次回覆的第二條），那些待辦結束前不能領。標了 "review": true 的待辦不會派給做出被評內容的人（它參照的成果的作者、它要等的待辦的執行者），沒有人評自己的作品；指定給作者自己的評論會被退回；開著的待辦沒有人能領時會叫醒 planner（喚醒次數用完就停止）。`--time-limit S` 讓 S 秒後不再開始新工作。planner 和成員可以是任何一種後端；planner 的回合只回答：claude planner 沒有工具（`--tools ""`），opencode planner 的每則指令都帶 OpenCode 的工具開關、全部關掉（`{"*": false}`；用 OpenCode 1.18.32 實測過，同一則指令不關工具時會呼叫 webfetch）。成員一有空就領一條指定給自己或不指定的最舊待辦，所以快的成員不必等慢的；同一條待辦不會被兩個成員領走（在知識庫的檔案鎖底下挑選並寫入）。成員做事時，資料夾裡的 `TEAM_BOARD.md`（唯讀）顯示最新的已驗證結果、失敗與待辦，每次事件後由程式重寫。和 coop 一樣，只有評分程式的判定會被共享；planner 的待辦只是安排，不是事實。
 
 ```
  團隊知識庫：條目、判定、待辦（只增不改）
@@ -110,6 +110,12 @@ python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3
     --member 'b=command:python3 examples/coop/packing_member.py --seed 2 --steps 120000' \
     --member 'c=command:python3 examples/coop/packing_member.py --seed 3 --steps 300000' --turns 9 --out /tmp/e-demo
 open /tmp/e-demo/view.html
+
+# 全部用 OpenCode 的團隊，經「快速開始」的 daemon（預設 socket）：成員在這次執行的看板資料夾唯讀工作
+# （--member-access research：再加上 daemon 策略允許的上網抓取）；容器裡的 OpenCode 要把執行資料夾掛在同一路徑
+python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3 examples/coop/packing_judge.py" \
+    --planner plan=opencode --member a=opencode --member b=opencode:ollama/qwen3-8b-32k:latest \
+    --socket ~/.local/state/herdr-py/herdr-py.sock --turns 4 --out runs/e2
 ```
 
 `view.html`（每個事件後重寫，執行中也能看）畫出：這次執行的數字標在迴圈上；時間由上往下的時間軸（planner 和每個成員各一欄，每個回合一根長條，每個喚醒 planner 的結果一條虛線）；最佳分數隨時間的變化；每條待辦從新增到結束；planner 的每一回合。沒有 JavaScript 時內容完整；有 JavaScript 時多一個播放器，從第一個事件重播到結束：拖曳時間，迴圈上正在工作的那一段會亮起、數字跟著時間變；點長條可以看那一回合的待辦、判定與分數。頁面也畫出每一回合用了哪些工具（長條裡每次網路搜尋、抓網頁、讀檔各一個點，來自 Claude 與 OpenCode 的紀錄），以及團隊做出的每個成果和它接了誰的成果（從上游畫一條線到下游）；答案第一行寫 `ARTIFACT: <種類>` 的，依種類分欄。
@@ -205,7 +211,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 432 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 435 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

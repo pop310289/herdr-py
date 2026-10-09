@@ -77,7 +77,7 @@ class Daemon:
         if method == "agent.start":
             view = hub.start(p["name"], p["prompt"], budget_s=p.get("budget_s"), followups=p.get("followups") or [],
                              model=p.get("model"), title=p.get("title"), files=p.get("files") or [], fresh=bool(p.get("fresh")),
-                             directory=p.get("directory"), deny=p.get("deny") or ())
+                             directory=p.get("directory"), deny=p.get("deny") or (), tools=p.get("tools"))
             if p.get("wait"):
                 return hub.wait(p["name"], until=p.get("until") or ["idle", "aborted", "error"], timeout=p.get("timeout_s"))
             return view

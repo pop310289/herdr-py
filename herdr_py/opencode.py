@@ -81,9 +81,13 @@ class OpenCode:
     def session(self, session_id, directory=None):
         return self.call("GET", self.at(f"/session/{session_id}", directory))
 
-    def prompt(self, session_id, text, model=None, agent=None, files=(), directory=None):
-        """files: [{"mime": "image/png", "url": "data:...", "filename": "x.png"}] (OpenCode's FilePartInput)."""
+    def prompt(self, session_id, text, model=None, agent=None, files=(), directory=None, tools=None):
+        """files: [{"mime": "image/png", "url": "data:...", "filename": "x.png"}] (OpenCode's FilePartInput); tools:
+        OpenCode's per-message tool switches, {"*": False} for none (in 1.18.32's prompt body; checked against the
+        real server: with it a turn made no tool call, without it the same prompt called webfetch)."""
         body = {"parts": [{"type": "text", "text": text}] + [dict(f, type="file") for f in files]}
+        if tools:
+            body["tools"] = dict(tools)
         if model:
             provider, _, model_id = model.partition("/")
             body["model"] = {"providerID": provider, "modelID": model_id}

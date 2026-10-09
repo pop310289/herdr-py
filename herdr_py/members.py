@@ -3,8 +3,9 @@
     run_turn(name, prompt, files=(), timeout=600, workdir=None, access=None) -> (reply text, state)
         state is "idle" when the turn ended normally; "error", "aborted" or "timeout" otherwise (then the reply is not
         an answer, whatever it says); workdir: the folder this turn works in (a DAG step's workspace), with access
-        "write" (default) or "read" (codex and claude limit their tools to match; a command member is a program you
-        trust, it just runs there; opencode members cannot work in a given folder yet);
+        "write" (default), "read" or "research" (read, plus the web; codex, claude and opencode limit their tools to
+        match; a command member is a program you trust, it just runs there). A turn without a workdir only answers:
+        claude and opencode members get no tools (codex runs read-only);
     tokens(name) -> tokens used so far, or None when the backend does not count them.
 
 Backends (one member can use any of them; one team can mix them):
@@ -129,6 +130,7 @@ class CommandMembers:
 # when OpenCode asks about it, so OpenCode must ask about these kinds (README: Permission policy).
 REFUSED = {"write": ["external_directory"], "read": ["external_directory", "edit", "bash"],
            "research": ["external_directory", "edit", "bash"]}  # web fetches are left to the daemon's policy
+NO_TOOLS = {"*": False}  # a turn outside a folder (a planner's) only answers, as a claude member's (--tools "")
 
 
 class DaemonMembers:
@@ -183,11 +185,11 @@ class DaemonMembers:
                               "an OpenCode in a container needs the folder mounted at the same path")
 
     def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None):
-        place = {}
+        place = {"tools": NO_TOOLS}
         if workdir:
             workdir, access = os.path.abspath(workdir), access or "write"
             if access not in REFUSED:
-                raise MemberError(f"access is write or read, not {access!r}")
+                raise MemberError(f"access is {', '.join(REFUSED)}, not {access!r}")
             self.check_folder(workdir, access)
             place = {"directory": workdir, "deny": REFUSED[access]}
         agents = {a["name"]: a for a in self.client.call("agent.list")["agents"]}
