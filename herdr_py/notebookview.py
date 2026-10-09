@@ -140,9 +140,9 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "static_note": ("These pages are files: a button copies what to tell Claude. `notebook serve` on the Mac gives pages whose buttons act.",
                     "這些頁面是檔案：按鈕會複製要跟 Claude 說的話；在 Mac 上用 notebook serve 打開的頁面，按鈕會直接執行。"),
     "life": ("you: a goal in a line|Claude drafts task, judge, team|you approve|the team runs (run n)|"
-             "you review: pick, note, exclude|run n+1 carries what passed + notes",
+             "you review: pick, note, exclude|run n+1: your picks + what passed",
              "你：一句話的目標|Claude 起草：任務、評分、團隊、預算|你核准|團隊執行（第 n 次）|"
-             "你驗收：選現行版、批註、排除|下一次帶入通過的條目、skill 與你的批註"),
+             "你驗收：選現行版、批註、排除|下次從現行版改起，帶入通過的條目與批註"),
 }
 
 

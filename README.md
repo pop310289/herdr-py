@@ -533,7 +533,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 487 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 488 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

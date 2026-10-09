@@ -614,6 +614,13 @@ class ViewTest(Base):
             json.dump({"title": "Test notebook", "lang": "en", "style": "missing.css"}, handle)
         self.assertEqual(self.cli("view", "--out", out)[0], 0)  # a style that cannot be read adds nothing
 
+    def test_no_step_of_how_a_page_works_is_cut_short(self):
+        from herdr_py import notebookview
+        for lang in ("en", "zh-TW"):
+            svg = notebookview.life_svg(lang)
+            self.assertNotIn("…", svg, lang)  # a label too wide for its box is cut with an ellipsis
+            self.assertEqual(len(re.findall(r'<rect class="box', svg)), 6, lang)
+
     def test_the_view_shows_what_a_run_brought_and_the_plus_asks_what_to_bring(self):
         self.draft()
         skill = "ARTIFACT: skill\n---\nname: count-up\n---\n1. one"
