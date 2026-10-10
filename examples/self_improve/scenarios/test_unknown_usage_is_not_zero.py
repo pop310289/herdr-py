@@ -24,7 +24,7 @@ class UnknownUsage(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.dir, True)
         wrapper = os.path.join(self.dir, "codex")
         with open(wrapper, "w") as handle:  # the member called "slow" (its own folder, -C .../slow) never finishes
-            handle.write("#!/bin/sh\ncase \"$*\" in */slow\ *) FAKE_CODEX_MODE=sleep; export FAKE_CODEX_MODE;; esac\n"
+            handle.write("#!/bin/sh\ncase \"$*\" in */slow\\ *) FAKE_CODEX_MODE=sleep; export FAKE_CODEX_MODE;; esac\n"
                          f"exec {sys.executable} {FAKE} \"$@\"\n")
         os.chmod(wrapper, 0o755)
         os.environ["CODEX_BIN"] = wrapper

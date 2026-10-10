@@ -570,12 +570,13 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 533 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 534 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
 GitHub Actions (`.github/workflows/tests.yml`) runs the suite on RHEL 8's own Python 3.6 (UBI 8 container) and on the
-newest Python, and `scripts/ci_privacy.py` fails a push whose commits carry Claude attribution trailers, home-directory
+newest Python (every Python file of the repository, examples and benches included, must compile there with
+warnings as errors), and `scripts/ci_privacy.py` fails a push whose commits carry Claude attribution trailers, home-directory
 paths or e-mail addresses other than GitHub noreply ones.
 
 ## Limitations

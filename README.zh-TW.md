@@ -275,11 +275,11 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 533 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 534 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 
-GitHub Actions（`.github/workflows/tests.yml`）會在 RHEL 8 自己的 Python 3.6（UBI 8 容器）和最新版 Python 上跑測試；`scripts/ci_privacy.py` 會擋下帶 Claude 署名、家目錄路徑或 GitHub noreply 以外信箱的提交。
+GitHub Actions（`.github/workflows/tests.yml`）會在 RHEL 8 自己的 Python 3.6（UBI 8 容器）和最新版 Python 上跑測試（repo 裡每個 Python 檔，包括範例和實驗，都要能在這兩版編譯、而且不能有警告）；`scripts/ci_privacy.py` 會擋下帶 Claude 署名、家目錄路徑或 GitHub noreply 以外信箱的提交。
 
 ## 限制
 
