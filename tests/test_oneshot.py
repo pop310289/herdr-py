@@ -10,6 +10,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -52,10 +53,14 @@ def tree(folder):
     return out
 
 
+def safe(repo):
+    """What marks repo as a safe directory for git, for this test's own git calls only: on a CI runner the checkout
+    belongs to another user than the container's, and git refuses to read it otherwise."""
+    return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": repo}
+
+
 def trusting(repo):
-    """The environment with repo marked as a safe directory, for this test's own git calls only: on a CI runner the
-    checkout belongs to another user than the container's, and git refuses to read it otherwise."""
-    return dict(os.environ, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0=repo)
+    return dict(os.environ, **safe(repo))
 
 
 def has_commits(repo):
@@ -224,7 +229,9 @@ class OneShotTest(unittest.TestCase):
         dest = os.path.join(self.tmp, "herdr-py-own")
         proc = self.unpack(os.path.join(ROOT, oneshot.ONESHOT), dest)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(tree(dest), {name: (data, bool(mode & 0o100)) for name, data, mode in oneshot.checkout_members(ROOT)})
+        with mock.patch.dict(os.environ, safe(ROOT)):  # git runs in this process here
+            want = {name: (data, bool(mode & 0o100)) for name, data, mode in oneshot.checkout_members(ROOT)}
+        self.assertEqual(tree(dest), want)
 
     @unittest.skipUnless(has_commits(ROOT), "not a git checkout with a commit")
     def test_this_repository(self):

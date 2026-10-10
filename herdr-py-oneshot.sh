@@ -30481,6 +30481,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -30523,10 +30524,14 @@ def tree(folder):
     return out
 
 
+def safe(repo):
+    """What marks repo as a safe directory for git, for this test's own git calls only: on a CI runner the checkout
+    belongs to another user than the container's, and git refuses to read it otherwise."""
+    return {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory", "GIT_CONFIG_VALUE_0": repo}
+
+
 def trusting(repo):
-    """The environment with repo marked as a safe directory, for this test's own git calls only: on a CI runner the
-    checkout belongs to another user than the container's, and git refuses to read it otherwise."""
-    return dict(os.environ, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0=repo)
+    return dict(os.environ, **safe(repo))
 
 
 def has_commits(repo):
@@ -30695,7 +30700,9 @@ class OneShotTest(unittest.TestCase):
         dest = os.path.join(self.tmp, "herdr-py-own")
         proc = self.unpack(os.path.join(ROOT, oneshot.ONESHOT), dest)
         self.assertEqual(proc.returncode, 0, proc.stderr)
-        self.assertEqual(tree(dest), {name: (data, bool(mode & 0o100)) for name, data, mode in oneshot.checkout_members(ROOT)})
+        with mock.patch.dict(os.environ, safe(ROOT)):  # git runs in this process here
+            want = {name: (data, bool(mode & 0o100)) for name, data, mode in oneshot.checkout_members(ROOT)}
+        self.assertEqual(tree(dest), want)
 
     @unittest.skipUnless(has_commits(ROOT), "not a git checkout with a commit")
     def test_this_repository(self):
@@ -34025,7 +34032,7 @@ fae1d3ba88a9048a9e75f88c5dae21cd38f78e27a3d0eb03b2565503bd8fb3a8  tests/test_exa
 7f9aaac073cb4bb5c89edcafe12a90f322aa80270834bca0ffe6eae01d8e9fbc  tests/test_layout.py
 88478892eb9ca74e5af8b3ed0a2d47c2aa5194990e334437a6cae15e1b2ea8d0  tests/test_members.py
 8bf44dc53be401bed122ce2c9015ab389cf87874c95a5d5e575ba5c5c909971c  tests/test_notebook.py
-fc780fdeae6790bb48a32e12cda90d343fda163e189ad830e360b84c96041209  tests/test_oneshot.py
+1cb320f33baff47834a19a8c4f46a6ed0be8c033c84b145d6f1af3b1b4b92f06  tests/test_oneshot.py
 f6e4daa3c67b08d75136853634e00cd250981b2ddac8656107c0a83abf9c5832  tests/test_opencode_config.py
 6f6e39586f447331a8eeae14fb2bc2156c24678bf8a8d596fdaa9a5d02db4a4a  tests/test_organize.py
 145b4cccb7a47eae3a744bc6d8edc4ab6d2fef00b3be3f7773ed6f4777595c80  tests/test_rundiag.py
