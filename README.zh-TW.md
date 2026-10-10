@@ -161,7 +161,8 @@ python3 -m herdr_py.notebook ~/notebook view --out site/ --runs runs/   # --runs
 Agent 都能點開面板）。回放：每次執行的回放（engineview 的頁面，直接在分頁裡）。除錯：每次執行出了什麼錯（被退回的 planner 回覆和理由、
 沒交答案的回合、沒過的答案和評分的理由、成員回報做不到），最後是執行設定與原始指令。skill：誰寫的、誰用過、帶進第幾次。知識庫：所有
 通過的條目，可搜尋、依種類篩選，以及知識圖（每個種類一列、每條一個圓、從每條連到引用它的條目；點一個圓，它引用的和引用它的會亮起來）。
-接著是每種成果的每一版並標出現行版，以及批註與歷史。紀錄裡沒有的東西不顯示（不猜進度、不猜完成時間）。`notebook.json` 可以指定
+接著是每種成果的每一版並標出現行版，以及批註與歷史。文字檔打開的是一頁宣告 UTF-8 的閱讀頁（頁上連到原始檔）：
+`python -m http.server` 這類靜態伺服器送 `.txt` 時不寫編碼，設成繁體中文的手機就會把 skill 當 Big5 讀成亂碼。紀錄裡沒有的東西不顯示（不猜進度、不猜完成時間）。`notebook.json` 可以指定
 筆記本自己的樣式表（`"style"`，相對於筆記本資料夾的 CSS 檔），接在內建樣式後面套到每一頁，例如手機版版面；`"tree"` 決定團隊圖
 橫著畫（`wide`，預設）、直著畫（`tall`），或兩種都畫（`both`：直式先藏著，由這類樣式表決定何時顯示）。`serve` 在這台機器上
 即時提供同樣的頁面（預設 127.0.0.1），並加上按鈕：＋ 記下一個新 task 的請求；task 裡的按鈕可以選現行版、寫批註、驗收、擱置、
@@ -271,7 +272,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 488 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 489 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

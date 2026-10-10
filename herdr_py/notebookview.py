@@ -33,7 +33,7 @@ from . import coopview, dagview, engineview
 from .engineview import esc, fit
 from .members import MemberError, parse_member
 from .notebook import (LOOKED, S, Notebook, NotebookError, add_note, approve, command, day_of, find_entry, local,
-                       need_text, pick, run_facts, say, score_text, span_text, tilde, tokens_text)
+                       need_text, one_line, pick, run_facts, say, score_text, span_text, tilde, tokens_text)
 from .teamkb import TAG
 from .viewstyle import TOKENS
 
@@ -61,6 +61,7 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "close": ("close", "關閉"),
     "refs": ("Reference material from other tasks", "參考資料（來自其他 task）"),
     "kinds_all": ("every verified entry", "全部通過的條目"),
+    "raw_file": ("the file itself (UTF-8 plain text)", "原始檔（UTF-8 純文字）"),
     "refs_note": ("Not this task's verified results; their old scores do not apply here.", "不算這個 task 已驗證的成果，舊分數不適用。"),
     "refs_line": ("reference material: {items}", "參考資料：{items}"),
     "refs_item": ("{title}, run {n}: {k}", "{title} 第 {n} 次 {k} 條"),
@@ -585,6 +586,47 @@ def artifact_body(entry):
     head = text.lstrip()[:200].lower()
     ext = ".html" if head.startswith(("<!doctype html", "<html")) else (".svg" if head.startswith("<svg") else ".txt")
     return text, ext
+
+
+def open_name(eid, ext):
+    """The file a person opens for an entry. A text file opens as a page that says it is UTF-8: a static server such as
+    python -m http.server sends .txt as text/plain with no charset, and Safari on a phone set to Traditional Chinese
+    then read a skill as Big5."""
+    if not ext:
+        return None
+    return eid + (".html" if ext == ".txt" else ext)
+
+
+READER = TOKENS + """html, body { margin:0; background:var(--bg); color:var(--ink); }
+body { font:15px/1.7 -apple-system, BlinkMacSystemFont, "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
+  padding:calc(14px + env(safe-area-inset-top, 0px)) 16px calc(24px + env(safe-area-inset-bottom, 0px)); }
+main { max-width:78ch; margin:0 auto; display:flex; flex-direction:column; gap:12px; }
+a { color:var(--ice); text-decoration:none; } a:hover { text-decoration:underline; }
+.top, .foot { font-size:.85rem; color:var(--muted); }
+h1 { margin:0; font-size:1.2rem; font-weight:650; line-height:1.4; text-wrap:balance; overflow-wrap:anywhere; }
+.meta { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; font-size:.8rem; color:var(--muted); }
+.kbadge { color:var(--ice); border:1px solid rgba(147,197,253,.35); border-radius:6px; padding:0 6px; }
+.mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre { margin:0; padding:14px 16px; background:var(--panel); border:1px solid var(--line); border-radius:12px;
+  white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
+pre.code { font:13px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; }
+"""
+
+
+def reader_page(page, entry, text, lang):
+    """A text file as a page to read on a phone: it says it is UTF-8 whatever the server sends, wraps its lines, and
+    links back to its task and to the file itself."""
+    eid, title = entry["id"], page.d.get("title") or page.id
+    name = entry.get("name") or one_line(entry.get("summary") or eid, 80)
+    cls = ' class="code"' if text.lstrip()[:1] in ("{", "[") else ""  # data reads better in a fixed-width font
+    return ('<!doctype html>\n<html lang="' + esc(lang) + '"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">'
+            f'<title>{esc(name)} · {esc(title)}</title><style>{READER}</style></head><body><main>'
+            f'<div class="top"><a href="../index.html">← {esc(title)}</a></div><h1>{esc(name)}</h1>'
+            f'<div class="meta"><span class="kbadge">{esc(entry["kind"])}</span><span>{esc(entry.get("member") or "")}</span>'
+            f'<span>{esc(say(lang, "run_n", n=entry.get("run")))}</span><span class="mono">{esc(eid)}</span></div>'
+            f'<pre{cls}>{esc(text)}</pre>'
+            f'<div class="foot"><a href="{esc(eid)}.txt">{esc(t(lang, "raw_file"))}</a></div></main></body></html>\n')
 
 
 def write(path, text):
@@ -1147,7 +1189,7 @@ def references_html(page, lang):
             if e is None:
                 continue
             _, ext = artifact_body(e)
-            link = f' <a href="../{esc(src.id)}/files/{esc(eid + ext)}">{esc(say(lang, "open"))}</a>' if ext else ""
+            link = f' <a href="../{esc(src.id)}/files/{esc(open_name(eid, ext))}">{esc(say(lang, "open"))}</a>' if ext else ""
             rows.append(f'<li><span class="kbadge">{esc(e["kind"])}</span> <b>{esc(fit(e.get("name") or e.get("summary") or eid, 520, 13))}</b> '
                         f'<span class="faint">{esc(t(lang, "from_run", title=src.d.get("title") or src.id, n=e["run"]))} · {esc(e["member"])}</span>{link}</li>')
     if not rows:
@@ -1663,7 +1705,7 @@ def render_task(nb, page, pages, live=False):
     for e in page.entries().values():  # the file a version opens as, without writing it (serve makes it when asked)
         if e["status"] == "valid" and e.get("artifact") and e["id"] not in page.files:
             _, ext = artifact_body(e)
-            page.files[e["id"]] = e["id"] + ext if ext else None
+            page.files[e["id"]] = open_name(e["id"], ext)
     main = task_main(nb, page, nb.lang, run_links, live)
     return app(nb, pages, nb.lang, "../../", page.id, page.d.get("title") or page.id, main, live, page.id)
 
@@ -1680,7 +1722,9 @@ def view(nb, out, roots=()):
                 text, ext = artifact_body(e)
                 if text is not None:
                     write(os.path.join(base, "files", e["id"] + ext), text)
-                    page.files[e["id"]] = e["id"] + ext
+                    if ext == ".txt":  # the page it opens as (open_name)
+                        write(os.path.join(base, "files", e["id"] + ".html"), reader_page(page, e, text, nb.lang))
+                    page.files[e["id"]] = open_name(e["id"], ext)
         for r in page.runs():
             try:
                 html_ = run_page(page.facts(r["n"]), r["folder"])
@@ -1747,6 +1791,8 @@ def route(folder, path, roots=(), live=True):
     if m.group(4):
         entry = page.entries().get(m.group(4))
         text, ext = artifact_body(entry) if entry and entry["status"] == "valid" else (None, None)
+        if text is not None and ext == ".txt" and m.group(5) == "html":  # the page a text file opens as
+            return 200, reader_page(page, entry, text, nb.lang), "text/html; charset=utf-8", {"Content-Security-Policy": "sandbox allow-scripts"}
         if text is None or ext != "." + m.group(5):
             return 404, "not found", "text/plain; charset=utf-8", {}
         ctype = {".html": "text/html", ".svg": "image/svg+xml", ".txt": "text/plain"}[ext] + "; charset=utf-8"

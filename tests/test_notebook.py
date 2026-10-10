@@ -621,6 +621,40 @@ class ViewTest(Base):
             self.assertNotIn("…", svg, lang)  # a label too wide for its box is cut with an ellipsis
             self.assertEqual(len(re.findall(r'<rect class="box', svg)), 6, lang)
 
+    def test_a_text_file_opens_as_a_page_that_says_it_is_utf8(self):
+        # sent as text/plain with no charset (python -m http.server does), a skill was read as Big5 on a phone set to
+        # Traditional Chinese; the page it opens as says UTF-8, whatever the server sends
+        from herdr_py import notebookview
+        self.draft()
+        skill = "ARTIFACT: skill\n---\nname: 長條圖做法\n---\n1. 每個月畫一根長條 <script>alert(1)</script>"
+        made_page = '<!doctype html><html><head><meta charset="utf-8"></head><body><p>hi</p></body></html>'
+        notebook.attach(self.page(), self.engine_run("outside", answers=(skill, made_page)), "claude")
+        sid, pid = [e["id"] for e in self.page().facts(1)["made"]]
+        out = os.path.join(self.dir, "site")
+        self.cli("view", "--out", out)
+        files = os.path.join(out, "p", "p1", "files")
+        self.assertEqual(read(os.path.join(files, sid + ".txt")), skill.split("\n", 1)[1] + "\n")  # the file itself, kept
+        with open(os.path.join(files, sid + ".html"), "rb") as handle:
+            raw = handle.read()
+        self.assertIn(b'<meta charset="utf-8">', raw[:1024])  # where a browser looks for it
+        reader = raw.decode("utf-8")
+        self.assertIn("每個月畫一根長條 &lt;script&gt;alert(1)&lt;/script&gt;", reader)  # shown, never run
+        self.assertNotIn("<script>", reader)
+        self.assertIn(f'href="{sid}.txt"', reader)
+        task = read(os.path.join(out, "p", "p1", "index.html"))
+        self.assertIn(f'files/{sid}.html"', task)
+        self.assertNotIn(f'files/{sid}.txt"', task)  # every link opens the page, not the bare file
+        self.assertEqual(read(os.path.join(files, pid + ".html")), made_page + "\n")  # a page the team made opens as itself
+        for path, ctype, has in ((f"/p/p1/files/{sid}.html", "text/html; charset=utf-8", "&lt;script&gt;"),
+                                 (f"/p/p1/files/{sid}.txt", "text/plain; charset=utf-8", "<script>"),
+                                 (f"/p/p1/files/{pid}.html", "text/html; charset=utf-8", "<p>hi</p>")):
+            code, body, got, _ = notebookview.route(self.nb.folder, path)
+            self.assertEqual((code, got), (200, ctype), path)
+            self.assertIn(has, body, path)
+        live = notebookview.route(self.nb.folder, "/p/p1/")[1]
+        self.assertIn(f'files/{sid}.html"', live)  # served live, the task's links open the page too
+        self.assertNotIn(f'files/{sid}.txt"', live)
+
     def test_the_view_shows_what_a_run_brought_and_the_plus_asks_what_to_bring(self):
         self.draft()
         skill = "ARTIFACT: skill\n---\nname: count-up\n---\n1. one"
@@ -637,7 +671,7 @@ class ViewTest(Base):
         self.cli("view", "--out", out)
         p2 = read(os.path.join(out, "p", "p2", "index.html"))
         self.assertIn("reference material: A page, run 1: 1", p2)  # the run card
-        self.assertIn(f'href="../p1/files/{sid}.txt"', p2)  # the overview links each one to its own page
+        self.assertIn(f'href="../p1/files/{sid}.html"', p2)  # the overview links each one to its own page
         self.assertIn("count-up", p2.split('id="overview"')[1].split('<section class="panel tab"')[0])
         new = read(os.path.join(out, "new.html"))
         self.assertIn('value="p1:skills"', new)

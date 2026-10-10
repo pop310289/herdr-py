@@ -290,7 +290,9 @@ answers that did not pass and the judge's reason, members that said they could n
 raw commands. Skills: who wrote each, who used it, which runs carried it. Knowledge: every verified entry, to search
 and filter by kind, and the knowledge as a graph (a row per kind, a circle per entry, a line from each entry to what
 built on it; tap a circle to light up what it came from and what built on it). Then every version of every output
-with the current one marked, and the notes and the history. Nothing is shown that the records do not hold (no
+with the current one marked, and the notes and the history. A text file opens as a page that says it is UTF-8
+(the file itself is linked from it): a static server such as `python -m http.server` sends `.txt` with no charset,
+and a phone set to Traditional Chinese then read a skill as Big5. Nothing is shown that the records do not hold (no
 progress or finishing time is guessed). `notebook.json` may name a style sheet of the notebook's own (`"style"`, a
 CSS file relative to the notebook's folder), added after the built-in one in every page: a layout for phones, for
 example; `"tree"` draws the team sideways (`wide`, the default), top down (`tall`), or both (`both`: the top-down
@@ -533,7 +535,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 488 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 489 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
