@@ -66,11 +66,20 @@ def has_commits(repo):
 
 
 def committed(repo, rev="HEAD"):
-    """{path: (bytes, executable)} of the files of a commit, read from git archive."""
+    """{path: (bytes, executable)} of the files of a commit, read from git archive (the one-shot script left out)."""
     raw = subprocess.run(["git", "-C", repo, "archive", "--format=tar", rev], stdout=subprocess.PIPE, check=True,
                          env=trusting(repo)).stdout
     with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
-        return {m.name: (tar.extractfile(m).read(), bool(m.mode & 0o100)) for m in tar.getmembers() if m.isfile()}
+        return {m.name: (tar.extractfile(m).read(), bool(m.mode & 0o100)) for m in tar.getmembers()
+                if m.isfile() and m.name != oneshot.ONESHOT}
+
+
+def manifest(script):
+    """The paths a script's sha256 list names."""
+    with open(script, encoding="utf-8") as handle:
+        text = handle.read()
+    sums = text.split("cat > \"$sums\" <<'%s'\n" % oneshot.MARK, 1)[1].split("\n%s\n" % oneshot.MARK, 1)[0]
+    return sorted(line.split("  ", 1)[1] for line in sums.split("\n"))
 
 
 @unittest.skipIf(MISSING, "needs " + ", ".join(MISSING))
@@ -102,6 +111,49 @@ class OneShotTest(unittest.TestCase):
 
     def unpack(self, script, dest):
         return run(["bash", script, dest], self.tmp)
+
+    def oneshot(self, *args):
+        return run([sys.executable, SCRIPT, "--repo", self.repo] + list(args), self.tmp, env=trusting(self.repo))
+
+    def test_update_and_check_keep_the_repositorys_own_script_with_its_files(self):
+        with open(os.path.join(self.repo, ".gitignore"), "w") as handle:
+            handle.write("*.log\n")
+        self.assertEqual(self.oneshot("--check").returncode, 1)  # not written yet
+        self.assertEqual(self.oneshot("--update").returncode, 0)
+        self.assertEqual(self.oneshot("--check").returncode, 0)
+        script = os.path.join(self.repo, oneshot.ONESHOT)
+        self.assertTrue(os.stat(script).st_mode & stat.S_IXUSR)
+        self.assertEqual(manifest(script), sorted(list(FILES) + [".gitignore"]))  # never itself
+        with open(os.path.join(self.repo, "x.log"), "w") as handle:
+            handle.write("ignored\n")
+        self.assertEqual(self.oneshot("--check").returncode, 0)  # what git ignores is not a file of the commit
+        with open(os.path.join(self.repo, "a.txt"), "a") as handle:
+            handle.write("a change\n")
+        proc = self.oneshot("--check")
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("run python3 scripts/oneshot.py --update", proc.stderr)
+        self.oneshot("--update")
+        with open(os.path.join(self.repo, "new.txt"), "w") as handle:
+            handle.write("a new file, not added yet\n")
+        self.assertEqual(self.oneshot("--check").returncode, 1)  # git add -A would commit it
+        self.oneshot("--update")
+        self.assertEqual(self.oneshot("--check").returncode, 0)
+        dest = os.path.join(self.tmp, "got")
+        proc = self.unpack(script, dest)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        want = {name: data for name, data in tree(self.repo).items()
+                if not name.startswith(".git" + os.sep) and name not in (oneshot.ONESHOT, "x.log")}
+        self.assertEqual(tree(dest), want)
+
+    def test_a_commits_scripts_leave_the_repositorys_own_script_out(self):
+        self.oneshot("--update")
+        for args in (["add", "-A"], ["commit", "-q", "-m", "its own script"]):
+            self.assertEqual(run(["git"] + args, self.repo, env=self.env).returncode, 0)
+        for kind, script in self.make(self.repo).items():
+            self.assertNotIn(oneshot.ONESHOT, manifest(script), kind)
+            dest = os.path.join(self.tmp, "got-" + kind)
+            self.assertEqual(self.unpack(script, dest).returncode, 0)
+            self.assertNotIn(oneshot.ONESHOT, tree(dest), kind)
 
     def test_both_kinds_write_every_file_byte_for_byte_with_its_mode(self):
         scripts = self.make(self.repo)
@@ -164,6 +216,15 @@ class OneShotTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 1)
         self.assertIn("already exists", proc.stderr)
         self.assertEqual(os.listdir(dest), [])
+
+    @unittest.skipUnless(has_commits(ROOT), "not a git checkout with a commit")
+    def test_this_repository_keeps_its_own_script_up_to_date(self):
+        proc = run([sys.executable, SCRIPT, "--check"], ROOT, env=trusting(ROOT))
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        dest = os.path.join(self.tmp, "herdr-py-own")
+        proc = self.unpack(os.path.join(ROOT, oneshot.ONESHOT), dest)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(tree(dest), {name: (data, bool(mode & 0o100)) for name, data, mode in oneshot.checkout_members(ROOT)})
 
     @unittest.skipUnless(has_commits(ROOT), "not a git checkout with a commit")
     def test_this_repository(self):

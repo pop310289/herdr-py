@@ -35,19 +35,19 @@ Or run it in place: `python3 -m herdr_py ...` from the repository folder.
 
 ### A machine that cannot clone
 
-`scripts/oneshot.py` writes one bash script that holds every file of a commit: copy that one file to the machine, run
-it, and it writes the repository and checks every file's sha256, so a copy that changed on the way (a paste, a mail)
-says which files differ.
+`herdr-py-oneshot.sh`, at the top of the repository, holds every file of the commit it is in (but itself). Download that
+one file (on GitHub: open it, then "Download raw file"), copy it to the machine and run it: it writes the repository and
+checks every file's sha256, so a copy that changed on the way (a paste, a mail) says which files differ. It needs only
+bash and coreutils, and no line of it is 1000 bytes or more, so a paste into a terminal does not cut one.
 
 ```bash
-python3 scripts/oneshot.py                     # herdr-py-<commit>-packed.sh and herdr-py-<commit>-files.sh
-# on the other machine:
-bash herdr-py-<commit>-packed.sh && cd herdr-py && ./scripts/install.sh
+bash herdr-py-oneshot.sh && cd herdr-py && ./scripts/install.sh
 ```
 
-The packed script (the files as a tar.gz in base64, about 0.75 MB) needs tar and gzip there; the files script (about
-2 MB: a mkdir for the folders and a here-document for each file, readable as it is) needs only bash and coreutils.
-No line of either is 1000 bytes or more, so a paste into a terminal does not cut one.
+Whoever changes a file runs `python3 scripts/oneshot.py --update` before committing (the tests fail while the script is
+behind). Without `--update`, `scripts/oneshot.py` writes the two kinds for a commit: `herdr-py-<commit>-files.sh`, like
+the one at the top, and `herdr-py-<commit>-packed.sh`, a tar.gz in base64 at about 40% of the size (it needs tar and
+gzip on the machine).
 
 ## Quick start
 
@@ -586,7 +586,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 539 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 542 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

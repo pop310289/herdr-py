@@ -31,15 +31,13 @@ cd herdr-py && ./scripts/install.sh          # 在 ~/.local/bin 放一個 herdr-
 
 ### 不能 clone 的機器
 
-`scripts/oneshot.py` 會產生一支 bash 腳本，裡面裝著某個 commit 的所有檔案：把這一個檔案複製到那台機器上執行，它就會寫出整個 repo，最後核對每個檔案的 sha256。複製過程（貼上、寄信）有任何字元走樣，都會指出是哪些檔案。
+repo 最上層的 `herdr-py-oneshot.sh` 裝著它所在這個 commit 的所有檔案（不含它自己）。只要下載這一個檔案（在 GitHub 上點開它，再按「Download raw file」），複製到那台機器上執行：它會寫出整個 repo，最後核對每個檔案的 sha256；複製過程（貼上、寄信）有任何字元走樣，都會指出是哪些檔案。它只需要 bash 和基本指令，而且沒有超過 1000 bytes 的行，貼進終端機也不會被截斷。
 
 ```bash
-python3 scripts/oneshot.py                     # 產生 herdr-py-<commit>-packed.sh 與 herdr-py-<commit>-files.sh
-# 在那台機器上：
-bash herdr-py-<commit>-packed.sh && cd herdr-py && ./scripts/install.sh
+bash herdr-py-oneshot.sh && cd herdr-py && ./scripts/install.sh
 ```
 
-壓縮版（檔案打包成 tar.gz 再轉 base64，約 0.75 MB）在那台機器上需要 tar 和 gzip；可讀版（約 2 MB：用 mkdir 建資料夾，每個檔案一段 here-document，可以直接看）只需要 bash 和 coreutils。兩者都沒有超過 1000 bytes 的行，貼進終端機也不會被截斷。
+改了任何檔案的人，提交前要執行 `python3 scripts/oneshot.py --update`（腳本沒跟上時測試會失敗）。不加 `--update` 時，`scripts/oneshot.py` 會為某個 commit 產生兩種版本：`herdr-py-<commit>-files.sh`（和最上層那份一樣）與 `herdr-py-<commit>-packed.sh`（tar.gz 轉 base64，大小約四成，但那台機器需要 tar 和 gzip）。
 
 ## 快速開始
 
@@ -287,7 +285,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 539 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 542 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 
