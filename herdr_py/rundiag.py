@@ -14,6 +14,8 @@ The rules (codes):
 - waiting: members that spent a quarter of the run or more free with nothing to take.
 - sent_back: planner replies the program sent back, and why.
 - repairs: turns that repaired an answer in the turn, and how many repairs helped.
+- team_tools: the MCP tools members made for each other (verified ARTIFACT: mcp answers), how many answered the
+  engine's probe, and how often members called them.
 - broken: what broke in the setup (a backend, the judge)."""
 import argparse
 import collections
@@ -205,6 +207,17 @@ def findings(run):
         add("repairs", f"{len(repaired)} turns repaired their answer: {n} repairs, {helped} gave the turn's best version",
             {"turns": len(repaired), "repairs": n, "helped": helped, "tokens": sum(a.get("tokens") or 0 for r in repaired for a in r["repairs"])},
             "a repair keeps what the member already read; when repairs rarely help, the judge's detail may not say what to fix")
+
+    # the members' own MCP tools: made, probed, called
+    made = [r.get("tool") for r in turns for r in [r] + list(r.get("repairs") or []) if r.get("tool")]
+    calls = collections.Counter(c.get("agent") for c in tools if str(c.get("tool") or "").startswith("mcp__team_"))
+    if made or calls:
+        answered = sum(1 for t in made if t.get("ok"))
+        add("team_tools", f"the team made {len(made)} MCP tools ({answered} answered the probe); members called them "
+            f"{sum(calls.values())} times" + (" (" + ", ".join(f"{m} {n}" for m, n in sorted(calls.items())) + ")" if calls else ""),
+            {"made": len(made), "answered": answered, "calls": sum(calls.values())},
+            "a tool pays off when teammates call it: name it in the todos it is for",
+            who=", ".join(f"{m} {n}" for m, n in sorted(calls.items())) or "-")
 
     for item in summary.get("broken") or []:
         add("broken", f"the setup broke: {item}", {}, "fix the setup before reading the results", what=str(item))

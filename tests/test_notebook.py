@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -330,6 +331,12 @@ class PageTest(Base):
         self.draft(loop={"repairs": 1}, outputs=["code"])
         notebook.approve(self.page(), "person")
         self.assertNotIn("--repair-kind", self.run_page(dry=True)[1])
+        box = "docker run --rm -i --network none -v {file}:/srv/t.py:ro img python3 /srv/t.py"
+        self.draft(tools={"sandbox": box})
+        notebook.approve(self.page(), "person")
+        self.assertIn("--mcp-sandbox " + shlex.quote(box), self.run_page(dry=True)[1])
+        for tools in ({"sandbox": "docker run img"}, {"box": box}, "docker"):
+            self.assertTrue(any("tools:" in p for p in notebook.check_definition(self.definition(tools=tools))), tools)
 
     def test_what_a_page_brings_is_checked(self):
         d = self.definition

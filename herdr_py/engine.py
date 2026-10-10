@@ -48,6 +48,7 @@ from .coop import FENCE, REPLY, command_judge, exit_judge, parse_reply, used
 from .dag import resolve_args
 from .members import BROKEN, MemberError, Members, parse_member
 from .teamkb import MAX_SUMMARY, TAG, TeamKB, TeamKBError, one_line
+from .teamtools import KIND as TOOL_KIND, TeamTools
 
 BOARD = "TEAM_BOARD.md"
 CONTROL = "control.jsonl"
@@ -122,6 +123,12 @@ What it said: {detail}
 Fix what it names and keep what passed. Answer again the same way as before: the whole answer in one fenced block (not \
 a diff or a part of it), its first line as the task asks, with the SUMMARY and PARENTS lines."""
 
+TOOLS_NOTE = """
+
+Team tools: your teammates made these MCP tools, and you can call them this turn. They run in a sandbox (no network, a \
+read-only file system, the team's knowledge base at /kb):
+{lines}"""
+
 MEMBER = """You are {member}, one of {n} members of a team working on the task below. A planner keeps the team's todo \
 list and you took one todo. A program judges every answer (it is not a person); only its verdicts count.
 
@@ -172,7 +179,7 @@ class EngineRun:
     def __init__(self, task, judge, members, names, planner, out, turns, planner_wakes=None, max_open=None, max_todos=None,
                  target=None, patience=0, about=None, results=3, failures=3, answer_bytes=6000, answer_name="answer.txt",
                  turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2, member_access="read",
-                 time_limit=None, seeded=None, repairs=0, repair_below=None, wrap_up=0, repair_kinds=()):
+                 time_limit=None, seeded=None, repairs=0, repair_below=None, wrap_up=0, repair_kinds=(), mcp_sandbox=None):
         if not names:
             raise ValueError("no members")
         if planner in names:
@@ -202,6 +209,9 @@ class EngineRun:
         self.kb = TeamKB(os.path.join(out, "kb"))
         self.board_dir = os.path.join(out, "board")
         os.makedirs(self.board_dir, exist_ok=True)
+        # the members' own MCP tools, offered to later turns, run only by this sandbox command (none: never offered)
+        self.team_tools = TeamTools(out, mcp_sandbox, os.path.abspath(os.path.join(out, "kb")), os.path.abspath(self.board_dir)) \
+            if mcp_sandbox else None
         self.board_lock = threading.Lock()
         self.cond = threading.Condition()
         now = time.monotonic()  # durations use the monotonic clock: a VM's wall clock can jump backwards
@@ -474,6 +484,10 @@ class EngineRun:
                 rec.update(status=status, score=score)
                 outcome = "done" if status == "valid" else "failed"
                 detail = None if status == "valid" else self.verdict_detail(entry)
+                if self.team_tools and status == "valid" and rec.get("artifact_kind") == TOOL_KIND:
+                    for t in self.team_tools.refresh(self.kb.entries(), self.kb.folder):
+                        if t["id"] == entry:
+                            rec["tool"] = {"ok": t["ok"], "why": t["why"], "tools": [x["name"] for x in t["tools"]]}
             else:
                 detail = parsed["summary"]
         return outcome, status, score, entry, detail
@@ -499,11 +513,16 @@ class EngineRun:
         outcome, status, score, entry, detail = "failed", None, None, None, None
         try:
             prompt, shown, version = self.member_prompt(name, todo, turn)
+            offer = self.team_tools.config() if self.team_tools else None
+            if offer:
+                prompt += TOOLS_NOTE.format(lines="\n".join(offer[2]))
+                rec["tools_offered"] = [r[len("mcp__"):] for r in offer[1]]
+            mcp = offer[:2] if offer else None
             rec.update(board_version=version, prompt_sha=sha_text(prompt))
             before, clock = self.tokens(name), time.monotonic()
             try:
                 text, state = self.members.run_turn(name, prompt, timeout=self.turn_timeout, workdir=self.board_dir,
-                                                    access=self.member_access)
+                                                    access=self.member_access, mcp=mcp)
             except Exception as exc:  # a member backend that breaks fails its turn
                 text, state = f"({type(exc).__name__}: {exc})", "error"
             rec.update(state=state, seconds=round(time.monotonic() - clock, 2), tokens=used(before, self.tokens(name)))
@@ -521,7 +540,7 @@ class EngineRun:
                 before, clock = self.tokens(name), time.monotonic()
                 try:
                     text, state = self.members.run_turn(name, ask, timeout=self.turn_timeout, workdir=self.board_dir,
-                                                        access=self.member_access, cont=True)
+                                                        access=self.member_access, cont=True, mcp=mcp)
                 except Exception as exc:
                     text, state = f"({type(exc).__name__}: {exc})", "error"
                 r.update(state=state, seconds=round(time.monotonic() - clock, 2), tokens=used(before, self.tokens(name)))
@@ -851,6 +870,10 @@ def main(argv=None):
     ap.add_argument("--repair-kind", action="append", default=[], metavar="KIND",
                     help="with --repair-below: only answers of this artifact kind (its first line ARTIFACT: KIND) "
                          "are repaired toward the bar (repeat; default: every kind)")
+    ap.add_argument("--mcp-sandbox", metavar="COMMAND",
+                    help="offer the members' own MCP tools (verified answers whose first line is ARTIFACT: mcp) to later "
+                         "turns, each run by this command ({file}: the tool's code, {kb}: the knowledge base, {board}: the "
+                         "board folder); Claude members only. Without it they are never run")
     ap.add_argument("--member-access", choices=["read", "research"], default="read",
                     help="read (default): members read the board folder; research: and search the web (Claude members)")
     a = ap.parse_args(argv)
@@ -938,7 +961,7 @@ def main(argv=None):
                         failures=a.show_failures, answer_bytes=a.answer_bytes, answer_name=a.answer_name,
                         turn_timeout=a.turn_timeout, stop_on_infra_error=a.stop_on_infra_error,
                         member_access=a.member_access, time_limit=a.time_limit, seeded=seeded, repairs=a.repairs,
-                        repair_below=a.repair_below, wrap_up=a.wrap_up, repair_kinds=a.repair_kind)
+                        repair_below=a.repair_below, wrap_up=a.wrap_up, repair_kinds=a.repair_kind, mcp_sandbox=a.mcp_sandbox)
         summary = run.run()
     finally:
         members.close()

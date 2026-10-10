@@ -19,7 +19,7 @@ import sys
 import time
 import uuid
 
-FLAGS = {"-p", "--print", "--verbose", "--safe-mode", "--no-session-persistence", "--bare"}
+FLAGS = {"-p", "--print", "--verbose", "--safe-mode", "--no-session-persistence", "--bare", "--restricted", "--strict-mcp-config"}
 VALUE = {"--output-format", "--model", "--resume", "-r", "--permission-mode", "--session-id", "--input-format", "--effort",
          "--settings"}
 MANY = {"--tools", "--add-dir", "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools", "--mcp-config"}

@@ -71,6 +71,8 @@ def stop(proc):
 
 
 class ClaudeAgents:
+    uses_mcp = True  # a workspace turn can be given MCP servers (the team's tools): see args()
+
     def __init__(self, root, claude=None, model=None, fresh=False, isolation=None):
         """fresh=True: every turn is a new conversation (no resume); the caller's prompt carries everything.
         isolation: the flags that keep this machine's Claude Code setup out of the run (default ISOLATION)."""
@@ -108,7 +110,7 @@ class ClaudeAgents:
             agent.update(fields)
             self._publish()
 
-    def args(self, name, prompt, model=None, files=(), access=None, resume=None):
+    def args(self, name, prompt, model=None, files=(), access=None, resume=None, mcp=None):
         """access "write", "read" or "research": a turn in a workspace (see WORKSPACE); None: no tools, as everywhere else.
         resume: the session to continue (a repair of the turn that just ended, in the same folder)."""
         session = resume or (None if (self.fresh or access) else self.sessions.get(name))  # a workspace turn is a new conversation
@@ -116,6 +118,10 @@ class ClaudeAgents:
         if access:
             mode, tools = WORKSPACE[access]
             kept = [f for i, f in enumerate(isolation) if f != "--permission-mode" and (i == 0 or isolation[i - 1] != "--permission-mode")]
+            if mcp:  # --safe-mode keeps every MCP server out, the given ones too; --restricted with --strict-mcp-config loads
+                # only the given ones and, like --safe-mode, no CLAUDE.md, skills, hooks or settings files (checked with
+                # Claude Code 2.1.295 on 2026-10-10: the same context size as --safe-mode, no skills, the tool answered)
+                kept = [f for f in kept if f != "--safe-mode"] + ["--restricted", "--strict-mcp-config"]
             isolation = kept + ["--permission-mode", mode]
         out = [self.claude, "-p", "--output-format", "stream-json", "--verbose"] + isolation
         if session:
@@ -125,8 +131,11 @@ class ClaudeAgents:
         paths = [os.path.abspath(path) for path in files]
         if access:
             out += ["--tools", tools]
-            if access == "research":
-                out += ["--settings", WEB_ONLY]
+            allow = (["WebSearch", "WebFetch"] if access == "research" else []) + (list(mcp[1]) if mcp else [])
+            if mcp:
+                out += ["--mcp-config", mcp[0]]
+            if allow:
+                out += ["--settings", json.dumps({"permissions": {"allow": allow}})]
             if paths:
                 out += ["--add-dir"] + sorted({os.path.dirname(path) for path in paths})
                 prompt += "\n\nOpen each image with the Read tool before you answer:\n" + "\n".join(
@@ -139,7 +148,7 @@ class ClaudeAgents:
             out += ["--tools", ""]  # no tools at all: the member only writes its answer
         return out + ["--", prompt]  # --tools and --add-dir take several values: without "--" they eat the prompt
 
-    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None, cont=False):
+    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None, cont=False, mcp=None):
         """workdir: run this turn in that folder with file tools (access "write", the default there, or "read").
         cont: continue the conversation of this member's last turn there (can_continue says when it can)."""
         if access not in (None, "write", "read", "research"):
@@ -150,7 +159,7 @@ class ClaudeAgents:
             if not self.can_continue(name, workdir, access):
                 raise ValueError(f"{name}: no turn to continue in this folder")
             resume = self.last_turn[name][0]
-        argv = self.args(name, prompt, model, files, access=access, resume=resume)
+        argv = self.args(name, prompt, model, files, access=access, resume=resume, mcp=mcp if workdir else None)
         folder = workdir or os.path.join(self.root, name)
         os.makedirs(folder, exist_ok=True)
         self._set(name, state="working")

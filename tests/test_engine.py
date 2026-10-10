@@ -77,6 +77,9 @@ else:
 JUDGE = r'''
 import json, sys
 text = open(sys.argv[-1]).read().strip()
+if text.lower().startswith("artifact: mcp"):
+    print(json.dumps({"status": "valid", "score": 10, "detail": "a tool"}))
+    sys.exit(0)
 if text.lower().startswith("artifact:"):
     text = text.split("\n", 1)[1].strip() if "\n" in text else ""
 try:
@@ -772,6 +775,29 @@ class PartsTest(Base):
         self.assertIn("Do not give two members the same piece of work, at once or one after the other", prompt)
         self.assertIn("a member waiting costs nothing, a second version of the same work costs a whole turn", prompt)
         self.assertIn("do not write your own guesses of the findings into a todo", prompt)
+
+    def test_a_tool_a_member_made_is_offered_to_later_turns_through_the_sandbox_command(self):
+        tool = ("ARTIFACT: mcp\nimport json, sys\nfor line in sys.stdin:\n    m = json.loads(line)\n    r = {'resultType': 'complete', "
+                "'supportedVersions': ['2026-07-28'], 'capabilities': {'tools': {}}} if m['method'] == 'server/discover' else "
+                "{'resultType': 'complete', 'tools': [{'name': 'probe', 'description': 'runs a server'}]}\n"
+                "    print(json.dumps({'jsonrpc': '2.0', 'id': m['id'], 'result': r}), flush=True)")
+        self.script(planner=[add("make a tool"), add("use it"), add(done=True)], members={"a": [{"answer": tool}, {"answer": "5"}]})
+        code, said, err = self.run_main("--turns", "2", "--mcp-sandbox", f"{sys.executable} {{file}}", members=("a",))
+        self.assertEqual(code, 0, said + err)
+        first, second = self.member_records()
+        self.assertEqual(first["tool"], {"ok": True, "why": None, "tools": ["probe"]})  # probed in the sandbox at once
+        self.assertNotIn("tools_offered", first)
+        self.assertEqual(second["tools_offered"], ["team_" + first["entry"]])
+        prompt = self.read_log("a-02.prompt")
+        self.assertIn("Team tools: your teammates made these MCP tools", prompt)
+        self.assertIn("mcp__team_%s__probe: runs a server" % first["entry"], prompt)
+        self.assertNotIn("Team tools", self.read_log("a-01.prompt"))
+        self.out = os.path.join(self.dir, "no-sandbox")
+        shutil.rmtree(self.log)
+        self.script(planner=[add("make a tool"), add("use it"), add(done=True)], members={"a": [{"answer": tool}, {"answer": "5"}]})
+        self.run_main("--turns", "2", members=("a",))
+        self.assertNotIn("Team tools", self.read_log("a-02.prompt"))  # without a sandbox command a tool is never run
+        self.assertFalse(os.path.isdir(os.path.join(self.out, "tools")))
 
     def test_seeding_is_checked(self):
         self.script([add(done=True)], {})

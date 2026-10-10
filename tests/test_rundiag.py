@@ -167,6 +167,20 @@ class RunDiagTest(unittest.TestCase):
         self.assertEqual({k: codes["repairs"]["numbers"][k] for k in ("turns", "repairs", "helped")}, {"turns": 1, "repairs": 1, "helped": 1})
         self.assertIn("the judge failed on k1", codes["broken"]["title"])
 
+    def test_team_tools_made_probed_and_called(self):
+        tool = self.entry("a", "ARTIFACT: mcp\ncode", ok(10))
+        self.turn("a", tool, 0, 5, tool={"ok": True, "why": None, "tools": ["probe"]})
+        broken = self.entry("b", "ARTIFACT: mcp\nbroken", ok(10))
+        self.turn("b", broken, 0, 6, tool={"ok": False, "why": "the server exited", "tools": []})
+        os.makedirs(os.path.join(self.run, "members", "claude"))
+        with open(os.path.join(self.run, "members", "claude", "events.jsonl"), "w") as handle:
+            for agent, name in (("b", "mcp__team_%s__probe" % tool), ("b", "mcp__team_%s__probe" % tool), ("a", "WebFetch")):
+                handle.write(json.dumps({"t": 9, "agent": agent, "event": {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": name, "input": {"url": "https://x.example"} if name == "WebFetch" else {}}]}}}) + "\n")
+        f = self.codes()["team_tools"]
+        self.assertEqual(f["numbers"], {"made": 2, "answered": 1, "calls": 2})
+        self.assertEqual(f["args"]["who"], "b 2")
+
     def test_a_quiet_run_says_nothing_and_an_empty_folder_does_not_break_it(self):
         e = self.entry("a", "1", ok(1))
         self.turn("a", e, 0, 1)

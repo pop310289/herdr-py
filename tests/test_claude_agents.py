@@ -115,6 +115,23 @@ class ClaudeAgentsTest(unittest.TestCase):
         self.team.run_turn("r1", "a new todo", workdir=ws, access="research")
         self.assertFalse(self.calls()[-1]["resumed"])  # a new turn is a new conversation
 
+    def test_a_turn_given_team_tools_loads_only_those_and_may_call_only_them(self):  # flags checked with the real CLI
+        ws = os.path.join(self.root, "ws5")
+        os.makedirs(ws)
+        cfg = os.path.join(self.root, "mcp.json")
+        self.team.run_turn("t1", "use the tool", workdir=ws, access="research", mcp=(cfg, ["mcp__team_k1"]))
+        args = self.calls()[-1]["args"]
+        self.assertNotIn("--safe-mode", args)  # it keeps every MCP server out, the given ones too
+        self.assertIn("--restricted", args)
+        self.assertIn("--strict-mcp-config", args)
+        self.assertEqual(args[args.index("--mcp-config") + 1], cfg)
+        rules = json.loads(args[args.index("--settings") + 1])
+        self.assertEqual(rules, {"permissions": {"allow": ["WebSearch", "WebFetch", "mcp__team_k1"]}})
+        self.team.run_turn("t1", "no tools now", workdir=ws, access="research")
+        args = self.calls()[-1]["args"]
+        self.assertIn("--safe-mode", args)
+        self.assertNotIn("--mcp-config", args)
+
     def test_fresh_members_and_forget_start_a_new_conversation(self):
         team = ClaudeAgents(os.path.join(self.root, "team3"), claude=self.claude, fresh=True)
         self.addCleanup(team.close)

@@ -223,7 +223,14 @@ repairs). Each repair is a new version that builds on the one it fixes, and the 
 best version (Claude and command members; Codex and OpenCode members are not repaired). The planner is told how many
 wakes it has left (on its last one, to add every todo the turns left should do), and not to give two members the same
 work at once, to let a todo come after the one finding out what it needs, and not to write its own guesses of the
-findings into a research todo. `python3 -m herdr_py.rundiag RUN_DIR` reads a run's records and says what was wasted
+findings into a research todo. Members can also make tools for each other: a verified answer whose first line is
+`ARTIFACT: mcp` is a one-file MCP server, and with `--mcp-sandbox COMMAND` the engine starts it once in that sandbox
+(`{file}` the tool's code, `{kb}` the knowledge base, `{board}` the board folder; for example a `docker run` with no
+network and a read-only file system), asks server/discover and tools/list (revision 2026-07-28), and offers the tools
+that answered to the Claude members' later turns (the newest of a line of tools; their prompt lists them). Such a turn
+runs with `--restricted --strict-mcp-config` instead of `--safe-mode`, which keeps every MCP server out: checked with
+Claude Code 2.1.295, the context is the same size and holds no CLAUDE.md or skills, and the member called the tool.
+Without a sandbox command a member's tool is never run. `python3 -m herdr_py.rundiag RUN_DIR` reads a run's records and says what was wasted
 or went wrong: answers turned down for the same reason, results that neither beat the best nor were built on (the same
 work done twice), skills nobody used, pages opened by more than one member, turns after the best score, turns left
 when the planner's wakes ran out, members waiting for work, planner replies sent back, repairs.
@@ -554,7 +561,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 514 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 521 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

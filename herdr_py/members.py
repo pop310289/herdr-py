@@ -294,8 +294,9 @@ class Members:
         check = getattr(backend, "can_continue", None)
         return bool(check and check(name, workdir, access if workdir else None))
 
-    def run_turn(self, name, prompt, files=(), timeout=600, workdir=None, access=None, cont=False):
-        """cont: continue the member's last turn (a repair), which can_continue must allow."""
+    def run_turn(self, name, prompt, files=(), timeout=600, workdir=None, access=None, cont=False, mcp=None):
+        """cont: continue the member's last turn (a repair), which can_continue must allow. mcp: (an MCP config file,
+        its allow rules) for a backend that can use MCP servers (Claude); the others do without."""
         member = self.spec[name]
         backend = self.backends[member["backend"]]
         if self.sessions == "fresh" and not cont:
@@ -304,6 +305,8 @@ class Members:
         place = {"workdir": workdir, "access": access} if workdir else {}
         if cont:
             place["cont"] = True
+        if mcp and workdir and getattr(backend, "uses_mcp", False):
+            place["mcp"] = mcp
         try:
             text, state = backend.run_turn(name, prompt, member["model"], files=files, timeout=timeout, **place)
         except (OSError, ClientError) as exc:  # the program is missing, the daemon is gone: this turn failed, say why

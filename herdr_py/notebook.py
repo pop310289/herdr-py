@@ -338,6 +338,11 @@ def check_definition(d):
         problems.append("loop.wrap_up goes with loop.target (the member turns after the target is reached)")
     if "repair_below" in loop and not loop.get("repairs"):
         problems.append("loop.repair_below goes with loop.repairs")
+    tools = d.get("tools", {})
+    if not (isinstance(tools, dict) and set(tools) <= {"sandbox"}
+            and (not tools or (isinstance(tools.get("sandbox"), str) and "{file}" in tools["sandbox"]))):
+        problems.append('tools: {"sandbox": "a command that runs one tool, with {file} for its code"} (the members\' own MCP '
+                        "tools run only that way)")
     show = d.get("show") if isinstance(d.get("show"), dict) else {}
     for key, value in show.items():
         if key not in SHOW or isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -875,6 +880,8 @@ def run_argv(page, folder, task_file, source=None, picks=(), source_n=None):
         if key in (d.get("loop") or {}):
             value = d["loop"][key]
             argv += [flag, str(int(value)) if key in ("repairs", "wrap_up") else f"{value:g}"]
+    if isinstance(d.get("tools"), dict) and d["tools"].get("sandbox"):
+        argv += ["--mcp-sandbox", d["tools"]["sandbox"]]
     if "repair_below" in (d.get("loop") or {}):
         for kind in d.get("outputs") or []:  # the bar is for the page's outputs, not for a skill that always scores the same
             argv += ["--repair-kind", kind]
