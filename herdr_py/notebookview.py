@@ -29,7 +29,7 @@ import sys
 import time
 import urllib.parse
 
-from . import coopview, dagview, engineview
+from . import coopview, dagview, engineview, rundiag
 from .engineview import esc, fit
 from .members import MemberError, parse_member
 from .notebook import (LOOKED, S, Notebook, NotebookError, add_note, approve, command, day_of, find_entry, local,
@@ -62,6 +62,39 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "refs": ("Reference material from other tasks", "參考資料（來自其他 task）"),
     "kinds_all": ("every verified entry", "全部通過的條目"),
     "raw_file": ("the file itself (UTF-8 plain text)", "原始檔（UTF-8 純文字）"),
+    "dg_head": ("Replay diagnosis: what was wasted or went wrong", "回放診斷：浪費與出錯的地方"),
+    "dg_same_failure": ("{answers} answers turned down for the same reason: {reason}", "{answers} 份答案因同一個原因被判不通過：{reason}"),
+    "dgs_same_failure": ("say it plainly in the task, or let members repair in the turn (loop.repairs)",
+                         "在任務說明裡寫明，或讓成員在回合內修正（loop.repairs）"),
+    "dg_no_gain": ("{results} results added nothing: no better than the best and nothing built on them ({which}; {tokens_text} tokens)",
+                   "{results} 份成果沒有貢獻：沒贏過最高分，也沒人接著做（{which}；{tokens_text} tokens）"),
+    "dgs_no_gain": ("the same work was given twice, or came after a better result: give the second member another part, "
+                    "or have it test the first version", "同一份工作派了兩次，或做在更好的版本之後：讓第二個人做別的部分，或去測試第一版"),
+    "dg_unused_skill": ("{skills} skills were not used in this run ({which})", "{skills} 個 skill 這次沒人用到（{which}）"),
+    "dgs_unused_skill": ("give a skill as a parent to the todos it is for, or carry it to a next run",
+                         "把 skill 當上游交給需要它的待辦，或帶到下一次執行"),
+    "dg_page_overlap": ("{pages} pages were opened by more than one member ({fetches} fetches of {unique} pages)",
+                        "{pages} 個網頁被不只一個成員打開（共開 {fetches} 次、{unique} 個網頁）"),
+    "dgs_page_overlap": ("have one member write down what the pages say (a skill) and give it to the others as a parent",
+                         "讓一個成員把網頁內容寫成 skill，再當上游交給其他人"),
+    "dg_after_best": ("{turns} member turns started after the best score ({best_text}) was reached ({tokens_text} tokens)",
+                      "最高分（{best_text}）出現後又開始了 {turns} 個成員回合（{tokens_text} tokens）"),
+    "dgs_after_best": ("if it is the most this task can score, set loop.target (and loop.wrap_up)",
+                       "如果這已經是滿分，設定 loop.target（再加 loop.wrap_up）"),
+    "dg_wrap_up": ("{turns} wrap-up turns after the target ({tokens_text} tokens)", "達標後的收尾回合 {turns} 個（{tokens_text} tokens）"),
+    "dgs_wrap_up": ("they pay off when a next run carries what they wrote", "下一次執行帶著它們寫的東西，才算值得"),
+    "dg_budget_left": ("stopped with {turns_left} member turns unused: the planner's wakes ran out",
+                       "planner 的喚醒用完，還有 {turns_left} 個成員回合沒用就停了"),
+    "dgs_budget_left": ("give budget.planner_wakes about as many as budget.turns", "budget.planner_wakes 設得接近 budget.turns"),
+    "dg_waiting": ("members waited for work: {who}", "成員閒著等工作：{who}"),
+    "dgs_waiting": ("the planner should keep an open todo for each free member", "planner 要讓每個空閒的成員都有待辦可接"),
+    "dg_sent_back": ("the planner's replies were sent back {sent_back} times: {why}", "planner 的回覆被退回 {sent_back} 次：{why}"),
+    "dgs_sent_back": ("each reason names the rule the planner broke", "每個原因都寫出 planner 違反了哪條規則"),
+    "dg_repairs": ("{turns} turns repaired their answer: {repairs} repairs, {helped} gave the turn's best version",
+                   "{turns} 個回合在回合內修正答案：修 {repairs} 次，其中 {helped} 次修出該回合最好的版本"),
+    "dgs_repairs": ("a repair keeps what the member already read", "修正保留成員已經讀過的東西"),
+    "dg_broken": ("the setup broke: {what}", "設定壞了：{what}"),
+    "dgs_broken": ("fix the setup before reading the results", "先修好設定再看結果"),
     "left_out": ("left out", "已排除"), "all_left_out": ("every version is left out", "每一版都已排除"),
     "refs_note": ("Not this task's verified results; their old scores do not apply here.", "不算這個 task 已驗證的成果，舊分數不適用。"),
     "refs_line": ("reference material: {items}", "參考資料：{items}"),
@@ -1287,6 +1320,16 @@ def debug_html(page, lang):
     for r in reversed(page.runs()):
         f = page.facts(r["n"])
         lines = []
+        if f["type"] == "engine":
+            try:
+                found = rundiag.findings(r["folder"])
+            except Exception as exc:  # noqa: BLE001 - a diagnosis that breaks must not hide the rest of the card
+                found = [{"code": "broken", "args": {"what": f"rundiag: {type(exc).__name__}: {exc}"}, "numbers": {}}]
+            if found:
+                lines.append(("warn-line", t(lang, "dg_head")))
+                for x in found:
+                    key = "wrap_up" if x["code"] == "after_best" and x["numbers"].get("wrap_up") else x["code"]
+                    lines.append(("", t(lang, "dg_" + key, **x["args"]) + " → " + t(lang, "dgs_" + key)))
         if f["type"] in ("engine", "coop"):
             if f.get("sent_back"):
                 lines.append(("warn-line", t(lang, "sent_back", n=len(f["sent_back"]))))

@@ -213,7 +213,18 @@ entry, with a line from every entry to each one it built on; an answer whose fir
 grouped by that kind.
 
 The run stops when the member turns are used up, the target score (`--target`) is reached, the planner says done,
-its wakes are used up with nothing left to do, or `--patience` judged answers in a row did not beat the best.
+its wakes are used up with nothing left to do, or `--patience` judged answers in a row did not beat the best. With
+`--wrap-up N`, reaching the target wakes the planner once more and allows N more member turns to write down what
+worked (skills) before the run stops. `--repairs N` lets a member fix an answer the judge turned down, in the same turn
+and the same conversation (what it read stays with it), told what the judge said; `--repair-below SCORE` repairs a
+valid answer under SCORE too. Each repair is a new version that builds on the one it fixes, and the turn ends with its
+best version (Claude and command members; Codex and OpenCode members are not repaired). The planner is told how many
+wakes it has left (on its last one, to add every todo the turns left should do), and not to give two members the same
+work at once, to let a todo come after the one finding out what it needs, and not to write its own guesses of the
+findings into a research todo. `python3 -m herdr_py.rundiag RUN_DIR` reads a run's records and says what was wasted
+or went wrong: answers turned down for the same reason, results that neither beat the best nor were built on (the same
+work done twice), skills nobody used, pages opened by more than one member, turns after the best score, turns left
+when the planner's wakes ran out, members waiting for work, planner replies sent back, repairs.
 `summary.json` counts todos taken twice (must be 0), turns that can be traced to their todo, board version and prompt
 hash (must be all of them), each member's time free with nothing to take, the planner's share of the tokens, and how
 often members read the board (from the Codex, Claude and OpenCode logs; programs keep none). Every verified result is
@@ -243,7 +254,10 @@ kind, and the task names it as the version to improve on). A page can also bring
 pages: `"from": [{"page": "museum-report", "kinds": ["skill"], "current": true}]` copies, before each run, the chosen
 verified entries of that page's latest run (or `"run": N`) into the members' folder (`reference/<page>/<entry>.txt`,
 listed in `reference/INDEX.md`), and the task says so (`"kinds": ["*"]` brings every verified entry). What a request
-for a new task ticked on the + page (skills, knowledge, current versions) becomes the drafted page's `"from"`. They are not the new page's verified results and keep no
+for a new task ticked on the + page (skills, knowledge, current versions) becomes the drafted page's `"from"`.
+`"loop": {"repairs": 2, "repair_below": 100, "target": 100, "wrap_up": 2}` passes those engine options (repairs in
+the turn, a target, the wrap-up after it) to every run, and the Debug tab starts each run's card with its replay
+diagnosis (`herdr_py.rundiag`). They are not the new page's verified results and keep no
 score: the other page was judged by another rule. In the demo, a library report that brings the museum report's
 skills reaches a full page in 4 member turns; the same report from scratch takes 5. What waits for a person is worked out from the records, never stored: a
 draft to approve, a run that ended and that nobody has looked at since (a note, a pick, an exclusion, accept, hold or
@@ -538,7 +552,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 491 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 512 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

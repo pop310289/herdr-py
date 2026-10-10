@@ -56,6 +56,7 @@ from .members import MemberError, parse_member
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 KINDS = ("engine", "dag", "other")
 BUDGET = ("turns", "planner_wakes", "time_limit", "max_open", "turn_timeout")
+LOOP = {"repairs": "--repairs", "repair_below": "--repair-below", "target": "--target", "wrap_up": "--wrap-up"}  # page.json "loop"
 SHOW = ("results", "failures", "answer_bytes")
 BRING = ("skills", "knowledge", "current")  # what a request may ask a new task to bring from another page
 LOOKED = ("approve", "note", "pick", "exclude", "include", "accept", "hold", "done")  # someone looked at the page
@@ -323,6 +324,20 @@ def check_definition(d):
         elif isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0 or \
                 (key != "time_limit" and int(value) != value):
             problems.append(f"budget.{key}: a positive number" + ("" if key == "time_limit" else " (whole)"))
+    loop = d.get("loop", {})
+    if not isinstance(loop, dict):
+        problems.append("loop: an object (repairs, repair_below, target, wrap_up)")
+        loop = {}
+    for key, value in loop.items():
+        number = isinstance(value, (int, float)) and not isinstance(value, bool)
+        if key not in LOOP:
+            problems.append(f"loop.{key}: not a loop setting (one of {', '.join(LOOP)})")
+        elif not number or (key in ("repairs", "wrap_up") and (int(value) != value or value < 0)):
+            problems.append(f"loop.{key}: " + ("a whole number, 0 or more" if key in ("repairs", "wrap_up") else "a number"))
+    if loop.get("wrap_up") and "target" not in loop:
+        problems.append("loop.wrap_up goes with loop.target (the member turns after the target is reached)")
+    if "repair_below" in loop and not loop.get("repairs"):
+        problems.append("loop.repair_below goes with loop.repairs")
     show = d.get("show") if isinstance(d.get("show"), dict) else {}
     for key, value in show.items():
         if key not in SHOW or isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -856,6 +871,10 @@ def run_argv(page, folder, task_file, source=None, picks=(), source_n=None):
     for key in BUDGET:
         if key in budget:
             argv += ["--" + key.replace("_", "-"), f"{budget[key]:g}" if key == "time_limit" else str(int(budget[key]))]
+    for key, flag in LOOP.items():
+        if key in (d.get("loop") or {}):
+            value = d["loop"][key]
+            argv += [flag, str(int(value)) if key in ("repairs", "wrap_up") else f"{value:g}"]
     for key, flag in (("results", "--show-results"), ("failures", "--show-failures"), ("answer_bytes", "--answer-bytes")):
         if key in (d.get("show") or {}):
             argv += [flag, str(d["show"][key])]

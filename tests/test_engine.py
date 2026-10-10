@@ -48,7 +48,8 @@ log = os.environ["ENGINE_TEST_LOG"]
 os.makedirs(log, exist_ok=True)
 k = len([f for f in os.listdir(log) if f.startswith(name + "-") and f.endswith(".prompt")])
 open(os.path.join(log, "%s-%02d.prompt" % (name, k + 1)), "w").write(prompt)
-open(os.path.join(log, "%s-%02d.where" % (name, k + 1)), "w").write(os.getcwd() + "\n" + os.environ.get("HERDR_ACCESS", ""))
+open(os.path.join(log, "%s-%02d.where" % (name, k + 1)), "w").write(os.getcwd() + "\n" + os.environ.get("HERDR_ACCESS", "")
+                                                                + "\n" + os.environ.get("HERDR_REPAIR", ""))
 acts = json.load(open(os.environ["ENGINE_TEST_MEMBERS"])).get(name, [{"answer": "1"}])
 act = acts[min(k, len(acts) - 1)]
 if act.get("board_first"):
@@ -674,6 +675,85 @@ class PartsTest(Base):
             self.assertEqual(code, 0, err)
             seeded = self.records("engine.jsonl")[0]["seeded"]
             self.assertEqual((seeded["carried"], seeded["picked"]), ([picked], want_picked), name)
+
+    def member_records(self):
+        return [r for r in self.records("run.jsonl") if r.get("member")]
+
+    def test_an_answer_turned_down_is_repaired_in_the_same_turn_when_asked(self):
+        self.script(planner=[add("give a number"), add(done=True)], members={"a": [{"answer": "oops"}, {"answer": "7"}]})
+        code, said, err = self.run_main("--turns", "1", "--repairs", "2", members=("a",))
+        self.assertEqual(code, 0, said + err)
+        turn = self.member_records()[0]
+        self.assertEqual((turn["status"], turn["score"], turn["best_of"]), ("valid", 7.0, 2))
+        first = turn["repairs"][0]["of"]
+        kb = {e["id"]: e for e in TeamKB(os.path.join(self.out, "kb")).entries()}
+        self.assertEqual((kb[first]["status"], kb[turn["entry"]]["parents"]), ("invalid", [first]))  # it builds on what it fixes
+        self.assertIn("not a number: 'oops'", self.read_log("a-02.prompt"))  # told what the judge said
+        self.assertEqual(self.read_log("a-02.where").split("\n")[2], "1")  # as a repair of the turn
+        self.assertEqual(self.summary()["turns"], 1)  # a repair is no new turn
+        todo = TeamKB(os.path.join(self.out, "kb")).todo_list()[0]
+        self.assertEqual((todo["state"], todo.get("entry")), ("done", turn["entry"]))
+
+    def test_without_repairs_an_answer_turned_down_ends_the_turn(self):
+        self.script(planner=[add("give a number"), add(done=True)], members={"a": [{"answer": "oops"}, {"answer": "7"}]})
+        self.run_main("--turns", "1", members=("a",))
+        turn = self.member_records()[0]
+        self.assertEqual(turn["status"], "invalid")
+        self.assertNotIn("repairs", turn)
+        self.assertEqual(self.logged(".prompt"), ["a-01.prompt"])
+
+    def test_a_low_score_is_repaired_and_the_turn_ends_with_its_best_version(self):
+        self.script(planner=[add("give a number"), add(done=True)], members={"a": [{"answer": "40"}, {"answer": "oops"}, {"answer": "90"}]})
+        self.run_main("--turns", "1", "--repairs", "3", "--repair-below", "100", members=("a",))
+        turn = self.member_records()[0]
+        self.assertEqual([r["status"] for r in turn["repairs"]], ["invalid", "valid", "valid"])  # 90 is still under 100
+        self.assertEqual((turn["score"], turn["best_of"]), (90.0, 4))
+        self.out = os.path.join(self.dir, "worse")
+        shutil.rmtree(self.log)
+        self.script(planner=[add("give a number"), add(done=True)], members={"a": [{"answer": "40"}, {"answer": "oops"}]})
+        self.run_main("--turns", "1", "--repairs", "1", "--repair-below", "100", members=("a",))
+        turn = self.member_records()[0]
+        self.assertEqual((turn["status"], turn["score"], turn["best_of"]), ("valid", 40.0, 2))  # a worse repair is not kept as the turn's
+
+    def test_a_repair_that_says_the_same_again_stops_the_repairs(self):
+        self.script(planner=[add("give a number"), add(done=True)], members={"a": [{"answer": "oops"}]})
+        self.run_main("--turns", "1", "--repairs", "3", members=("a",))
+        turn = self.member_records()[0]
+        self.assertEqual([r.get("repeat") for r in turn["repairs"]], [True])  # the same answer: nothing more to try
+        self.assertEqual(turn["status"], "invalid")
+
+    def test_the_planner_is_told_how_many_wakes_are_left_and_which_is_the_last(self):
+        self.script(planner=[add("give a number"), add("another"), add()], members={"a": [{"answer": "1"}]})
+        self.run_main("--turns", "3", "--planner-wakes", "2", members=("a",))
+        self.assertIn("you will be woken at most 1 more times", self.read_log("planner-01.txt"))
+        self.assertIn("this is your last wake: no one will plan again", self.read_log("planner-02.txt"))
+
+    def test_reaching_the_target_stops_the_run_or_leaves_a_short_wrap_up(self):
+        for extra, turns in ((["--target", "100"], 1), (["--target", "100", "--wrap-up", "1"], 2)):
+            self.out = os.path.join(self.dir, "run%d" % turns)
+            if os.path.isdir(self.log):
+                shutil.rmtree(self.log)
+            self.script(planner=[add("give a number"), add("write down what worked"), add("more"), add()],
+                        members={"a": [{"answer": "100"}, {"answer": "5"}, {"answer": "6"}]})
+            code, said, err = self.run_main("--turns", "5", *extra, members=("a",))
+            self.assertEqual(code, 0, said + err)
+            s = self.summary()
+            self.assertEqual((s["turns"], s["stopped"]), (turns, "the target 100 was reached"), extra)
+        self.assertIn("the target 100 was reached: the run ends after at most 1 more member turns", self.read_log("planner-02.txt"))
+        self.assertEqual([r.get("wrap_up") for r in self.records("run.jsonl") if r.get("member")], [None, True])
+
+    def test_wrap_up_and_repair_below_go_with_what_they_need(self):
+        for extra, said in ((["--wrap-up", "1"], "--wrap-up goes with --target"), (["--repair-below", "90"], "--repair-below goes with --repairs")):
+            code, _, err = self.run_main("--turns", "1", *extra, members=("a",))
+            self.assertEqual(code, 2)
+            self.assertIn(said, err)
+
+    def test_the_planner_is_told_to_spend_the_turns_well(self):
+        self.script(planner=[add("give a number"), add()], members={"a": [{"answer": "1"}]})
+        self.run_main("--turns", "1", members=("a",))
+        prompt = self.read_log("planner-01.txt")
+        self.assertIn("Do not give two members the same piece of work at the same time", prompt)
+        self.assertIn("do not write your own guesses of the findings into a todo", prompt)
 
     def test_seeding_is_checked(self):
         self.script([add(done=True)], {})

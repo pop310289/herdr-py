@@ -99,8 +99,13 @@ class CommandMembers:
     def close(self):
         pass
 
-    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None):
+    def can_continue(self, name, workdir=None, access=None):
+        return True  # a program has no conversation: a repair is a new call, told so (HERDR_REPAIR) and given what to fix
+
+    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None, cont=False):
         env = dict(os.environ, HERDR_MEMBER=name)
+        if cont:
+            env["HERDR_REPAIR"] = "1"
         if model:
             env["HERDR_MODEL"] = model
         if files:
@@ -283,13 +288,22 @@ class Members:
     def names(self):
         return list(self.spec)
 
-    def run_turn(self, name, prompt, files=(), timeout=600, workdir=None, access=None):
+    def can_continue(self, name, workdir=None, access=None):
+        """True when this member's backend can continue its last turn (a repair): Claude and command members can."""
+        backend = self.backends[self.spec[name]["backend"]]
+        check = getattr(backend, "can_continue", None)
+        return bool(check and check(name, workdir, access if workdir else None))
+
+    def run_turn(self, name, prompt, files=(), timeout=600, workdir=None, access=None, cont=False):
+        """cont: continue the member's last turn (a repair), which can_continue must allow."""
         member = self.spec[name]
         backend = self.backends[member["backend"]]
-        if self.sessions == "fresh":
+        if self.sessions == "fresh" and not cont:
             backend.forget(name)
         start, state, text = time.time(), "error", ""
         place = {"workdir": workdir, "access": access} if workdir else {}
+        if cont:
+            place["cont"] = True
         try:
             text, state = backend.run_turn(name, prompt, member["model"], files=files, timeout=timeout, **place)
         except (OSError, ClientError) as exc:  # the program is missing, the daemon is gone: this turn failed, say why

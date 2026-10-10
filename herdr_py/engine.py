@@ -87,7 +87,7 @@ Members:
 Team state, as the program recorded it (board version {version}):
 {board}
 
-Budget: {turns_left} member turns left of {turns}; at most {max_open} todos may be open at a time.
+Budget: {turns_left} member turns left of {turns}; at most {max_open} todos may be open at a time; {wakes_left}.
 You were woken because: {reason}.
 Right now: {now}
 
@@ -98,6 +98,12 @@ reply): it cannot be taken until that one has ended. A todo that reviews or crit
 work) gets "review": true: it is never given to whoever made its parents or did the todos it comes after, so nobody
 reviews their own work.
 
+Spend the turns well. Do not give two members the same piece of work at the same time unless you want competing \
+attempts: give the second one another part, or have it test or review the first one's version. When a todo needs what \
+a teammate is finding out or writing down (a skill), let it come "after" that todo and build on its result \
+("parents"), instead of having both find it out. When the task is to find things out, do not write your own guesses \
+of the findings into a todo: say what to find and how it will be checked.
+
 Reply with one fenced JSON block:
 ```json
 {{"add": [{{"text": "what to do, in one or two sentences", "for": "a member's name, or null for anyone", \
@@ -107,6 +113,12 @@ Reply with one fenced JSON block:
  "why": "one sentence"}}
 ```
 Set "done" to true only when the best verified result is good enough and nothing more is worth trying.{problems}"""
+
+REPAIR = """The program judged your answer ({entry}): {status}{score}.
+What it said: {detail}
+
+Fix what it names and keep what passed. Answer again the same way as before: the whole answer in one fenced block (not \
+a diff or a part of it), its first line as the task asks, with the SUMMARY and PARENTS lines."""
 
 MEMBER = """You are {member}, one of {n} members of a team working on the task below. A planner keeps the team's todo \
 list and you took one todo. A program judges every answer (it is not a person); only its verdicts count.
@@ -158,7 +170,7 @@ class EngineRun:
     def __init__(self, task, judge, members, names, planner, out, turns, planner_wakes=None, max_open=None, max_todos=None,
                  target=None, patience=0, about=None, results=3, failures=3, answer_bytes=6000, answer_name="answer.txt",
                  turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2, member_access="read",
-                 time_limit=None, seeded=None):
+                 time_limit=None, seeded=None, repairs=0, repair_below=None, wrap_up=0):
         if not names:
             raise ValueError("no members")
         if planner in names:
@@ -174,6 +186,12 @@ class EngineRun:
         self.results, self.failures, self.answer_bytes, self.answer_name = results, failures, answer_bytes, answer_name
         self.turn_timeout, self.judge_name, self.stop_on_infra_error = turn_timeout, judge_name, stop_on_infra_error
         self.planner_tries = planner_tries
+        if not (isinstance(repairs, int) and repairs >= 0):
+            raise ValueError("repairs: 0 or more")
+        self.repairs, self.repair_below = repairs, repair_below  # repairs per turn; repair a valid answer under this score too
+        if not (isinstance(wrap_up, int) and wrap_up >= 0):
+            raise ValueError("wrap_up: 0 or more")
+        self.wrap_up, self.wrap_from = wrap_up, None  # member turns after the target, and the turns used when it was reached
         if member_access not in ("read", "research"):
             raise ValueError("member_access: read or research")
         self.member_access = member_access  # research: read the folder and search the web (Claude members)
@@ -262,9 +280,12 @@ class EngineRun:
         working = {t["taken_by"]: t for t in self.kb.todo_list() if t["state"] == "taken"}
         now = "; ".join([f"{n} works on {working[n]['id']} ({one_line(working[n]['text'], 60)})" for n in self.names if n in working]
                         + ([f"free and waiting for a todo: {', '.join(free)}"] if free else ["nobody is free"]))
+        wakes_left = self.planner_wakes - self.wakes  # this wake counted: what is left after it
+        wakes = (f"this is your last wake: no one will plan again, so add now every todo the {left} member turns left "
+                 "should do" if wakes_left <= 0 else f"you will be woken at most {wakes_left} more times")
         prompt = PLANNER.format(n=len(self.names), task=self.task.strip(), members=members, version=version,
                                 board=self.board_text(), turns_left=left, turns=self.turns, max_open=self.max_open,
-                                reason=reason, now=now, problems=problems)
+                                reason=reason, now=now, problems=problems, wakes_left=wakes)
         return prompt, version
 
     def check_plan(self, reply):
@@ -422,8 +443,49 @@ class EngineRun:
                                parents=parents, brief=brief, board=BOARD, reply=REPLY)
         return prompt, set(shown) | set(todo["parents"]), version
 
+    def take_answer(self, name, todo, turn, text, state, shown, rec, extra_parents=()):
+        """Parse a member's reply, record its answer and judge a result; fills rec. Returns (outcome, status, score,
+        entry, detail)."""
+        outcome, status, score, entry, detail = "failed", None, None, None, None
+        parsed = parse_reply(text) if state == "idle" else None
+        if parsed is None:
+            detail = rec["problem"] = f"the turn ended {state}" + (f": {one_line(text, 300)}" if text else "")
+        elif parsed["kind"] is None:
+            detail = rec["problem"] = "no fenced answer and no FAILED line"
+            rec["reply_tail"] = text[-300:]
+        else:
+            parents = list(collections.OrderedDict.fromkeys(list(todo["parents"]) + list(extra_parents)
+                                                             + [p for p in parsed["parents"] if p in shown]))
+            before_len = len(self.kb)
+            entry = self.kb.propose(name, parsed["kind"], one_line(parsed["summary"], 500), artifact=parsed["answer"],
+                                    name=self.answer_name, parents=parents, round=turn, scope="team")
+            rec.update(entry=entry, kind=parsed["kind"], parents=parents, repeat=len(self.kb) == before_len)
+            dropped = [p for p in parsed["parents"] if p not in shown]
+            if dropped:
+                rec["parents_dropped"] = dropped
+            if parsed["kind"] == "result":
+                known = self.kb.verdict(entry) if rec["repeat"] else None
+                status, score = known or self.kb.judge(entry, self.judge, judge=self.judge_name)
+                rec.update(status=status, score=score)
+                outcome = "done" if status == "valid" else "failed"
+                detail = None if status == "valid" else self.verdict_detail(entry)
+            else:
+                detail = parsed["summary"]
+        return outcome, status, score, entry, detail
+
+    def verdict_detail(self, entry):
+        return next((e["detail"] for e in self.kb.entries() if e["id"] == entry), None)
+
+    def wants_repair(self, status, score):
+        return status == "invalid" or (status == "valid" and self.repair_below is not None and score < self.repair_below)
+
+    def out_of_time(self):
+        return bool(self.stopping) or bool(self.time_limit and time.monotonic() - self.started >= self.time_limit)
+
     def member_turn(self, name, todo, turn):
         rec = {"t": round(time.time(), 3), "start": round(time.time(), 3), "turn": turn, "member": name, "todo": todo["id"]}
+        if self.wrap_from is not None:
+            rec["wrap_up"] = True  # after the target: a turn to write down what worked
         outcome, status, score, entry, detail = "failed", None, None, None, None
         try:
             prompt, shown, version = self.member_prompt(name, todo, turn)
@@ -435,29 +497,37 @@ class EngineRun:
             except Exception as exc:  # a member backend that breaks fails its turn
                 text, state = f"({type(exc).__name__}: {exc})", "error"
             rec.update(state=state, seconds=round(time.monotonic() - clock, 2), tokens=used(before, self.tokens(name)))
-            parsed = parse_reply(text) if state == "idle" else None
-            if parsed is None:
-                detail = rec["problem"] = f"the turn ended {state}" + (f": {one_line(text, 300)}" if text else "")
-            elif parsed["kind"] is None:
-                detail = rec["problem"] = "no fenced answer and no FAILED line"
-                rec["reply_tail"] = text[-300:]
-            else:
-                parents = list(collections.OrderedDict.fromkeys(todo["parents"] + [p for p in parsed["parents"] if p in shown]))
-                before_len = len(self.kb)
-                entry = self.kb.propose(name, parsed["kind"], one_line(parsed["summary"], 500), artifact=parsed["answer"],
-                                        name=self.answer_name, parents=parents, round=turn, scope="team")
-                rec.update(entry=entry, kind=parsed["kind"], parents=parents, repeat=len(self.kb) == before_len)
-                dropped = [p for p in parsed["parents"] if p not in shown]
-                if dropped:
-                    rec["parents_dropped"] = dropped
-                if parsed["kind"] == "result":
-                    known = self.kb.verdict(entry) if rec["repeat"] else None
-                    status, score = known or self.kb.judge(entry, self.judge, judge=self.judge_name)
-                    rec.update(status=status, score=score)
-                    outcome = "done" if status == "valid" else "failed"
-                    detail = None if status == "valid" else next((e["detail"] for e in self.kb.entries() if e["id"] == entry), None)
-                else:
-                    detail = parsed["summary"]
+            outcome, status, score, entry, detail = self.take_answer(name, todo, turn, text, state, shown, rec)
+            best = (outcome, status, score, entry, detail)
+            last, repairs = entry, []
+            while (status in ("valid", "invalid") and len(repairs) < self.repairs and self.wants_repair(status, score)
+                   and not rec.get("repeat") and not self.out_of_time()
+                   and self.members.can_continue(name, self.board_dir, self.member_access)):
+                said = self.verdict_detail(last) or "(no detail)"
+                ask = REPAIR.format(entry=last, status=status, score="" if score is None else f", score {score:.10g}",
+                                    detail=one_line(said, 3000))
+                r = {"of": last, "start": round(time.time(), 3)}
+                before, clock = self.tokens(name), time.monotonic()
+                try:
+                    text, state = self.members.run_turn(name, ask, timeout=self.turn_timeout, workdir=self.board_dir,
+                                                        access=self.member_access, cont=True)
+                except Exception as exc:
+                    text, state = f"({type(exc).__name__}: {exc})", "error"
+                r.update(state=state, seconds=round(time.monotonic() - clock, 2), tokens=used(before, self.tokens(name)))
+                got = self.take_answer(name, todo, turn, text, state, shown | {last}, r, extra_parents=[last])
+                repairs.append(r)
+                outcome, status, score, entry, detail = got
+                if status not in ("valid", "invalid"):
+                    break
+                if (status == "valid", score or 0) > (best[1] == "valid", best[2] or 0):
+                    best = got
+                if r.get("repeat"):
+                    break
+                last = entry
+            if repairs:
+                rec["repairs"] = repairs
+                outcome, status, score, entry, detail = best  # the turn ends with its best version
+                rec.update(entry=entry, status=status, score=score, best_of=1 + len(repairs))
         except Exception as exc:  # the engine's own mistake: recorded and the todo ended, never left taken
             rec["problem"] = detail = f"engine error: {type(exc).__name__}: {exc}"
         finally:
@@ -540,7 +610,12 @@ class EngineRun:
         if self.time_limit and time.monotonic() - self.started >= self.time_limit:
             return f"the time limit of {self.time_limit:g} s was reached"
         if self.target is not None and self.best is not None and self.best >= self.target:
-            return f"the target {self.target:g} was reached"
+            if self.wrap_up and self.wrap_from is None:  # once: the planner may use a few turns to write down what worked
+                self.wrap_from = self.turns_used
+                self.wake_reasons.append(f"the target {self.target:g} was reached: the run ends after at most {self.wrap_up} more "
+                                         "member turns; use them to write down what worked (skills) for a next run, or say done")
+            if not self.wrap_up or self.turns_used - self.wrap_from >= self.wrap_up:
+                return f"the target {self.target:g} was reached"
         if self.patience and self.since_best >= self.patience:
             return f"{self.patience} judged answers in a row did not beat the best"
         if self.broken and self.stop_on_infra_error:
@@ -729,6 +804,9 @@ def main(argv=None):
     ap.add_argument("--planner-wakes", type=int, metavar="N", help="planner wakes at most (default: turns + 1)")
     ap.add_argument("--max-open", type=int, metavar="N", help="open todos at a time (default: 2 per member)")
     ap.add_argument("--target", type=float, help="stop when a valid answer scores this much")
+    ap.add_argument("--wrap-up", type=int, default=0, metavar="N",
+                    help="with --target: when it is reached, wake the planner once more and allow N more member turns "
+                         "to write down what worked (skills), then stop (default 0: stop at once)")
     ap.add_argument("--patience", type=int, default=0, metavar="K",
                     help="stop after K judged answers in a row that did not beat the best (0: never)")
     ap.add_argument("--out", required=True, metavar="DIR", help="a new folder for this run")
@@ -749,12 +827,21 @@ def main(argv=None):
                     help="with --seed-from: carry this entry whatever its kind (a version a person picked)")
     ap.add_argument("--seed-entry", action="append", default=[], nargs=2, metavar=("RUN_DIR", "ENTRY"),
                     help="also carry this verified entry of that run (a picked version made in an earlier run)")
+    ap.add_argument("--repairs", type=int, default=0, metavar="N",
+                    help="in a turn, let the member fix an answer the judge turned down up to N times, in the same "
+                         "conversation, told what the judge said (Claude and command members; default 0)")
+    ap.add_argument("--repair-below", type=float, metavar="SCORE",
+                    help="with --repairs: also repair a valid answer that scored under SCORE")
     ap.add_argument("--member-access", choices=["read", "research"], default="read",
                     help="read (default): members read the board folder; research: and search the web (Claude members)")
     a = ap.parse_args(argv)
     problems = []
     if not a.member:
         problems.append("--member: give at least one")
+    if a.wrap_up and a.target is None:
+        problems.append("--wrap-up goes with --target (the turns after the target is reached)")
+    if a.repair_below is not None and not a.repairs:
+        problems.append("--repair-below goes with --repairs")
     for path in ("run.jsonl", "kb", "summary.json"):
         if os.path.exists(os.path.join(a.out, path)):
             problems.append(f"--out: {a.out} already holds a run ({path}); give a new folder")
@@ -831,7 +918,8 @@ def main(argv=None):
                         target=a.target, patience=a.patience, about=about, results=a.show_results,
                         failures=a.show_failures, answer_bytes=a.answer_bytes, answer_name=a.answer_name,
                         turn_timeout=a.turn_timeout, stop_on_infra_error=a.stop_on_infra_error,
-                        member_access=a.member_access, time_limit=a.time_limit, seeded=seeded)
+                        member_access=a.member_access, time_limit=a.time_limit, seeded=seeded, repairs=a.repairs,
+                        repair_below=a.repair_below, wrap_up=a.wrap_up)
         summary = run.run()
     finally:
         members.close()

@@ -326,6 +326,24 @@ class MixedTeamTest(unittest.TestCase):
         self.assertIsInstance(summary["cl"]["tokens"], int)
         self.assertIsNone(summary["pg"]["tokens"])
 
+    def test_a_repair_through_the_team_continues_a_claude_member_but_not_a_codex_one(self):
+        specs = [parse_member("cl=claude:haiku"), parse_member("cx=codex:gpt-test")]
+        team = Members(specs, os.path.join(self.dir, "work"), sessions="fresh")  # fresh: every new turn forgets
+        self.addCleanup(team.close)
+        ws = os.path.join(self.dir, "board")
+        os.makedirs(ws)
+        log = os.path.join(self.dir, "claude_calls.jsonl")
+        os.environ["FAKE_CLAUDE_LOG"] = log
+        self.addCleanup(os.environ.pop, "FAKE_CLAUDE_LOG", None)
+        self.assertEqual(team.run_turn("cl", "find facts", workdir=ws, access="research", timeout=60)[1], "idle")
+        self.assertTrue(team.can_continue("cl", ws, "research"))
+        self.assertFalse(team.can_continue("cx", ws, "research"))  # Codex members are not continued
+        text, state = team.run_turn("cl", "the judge said: fix it", workdir=ws, access="research", timeout=60, cont=True)
+        self.assertEqual(state, "idle")  # the team did not forget the conversation it was asked to continue
+        with open(log) as handle:
+            calls = [json.loads(line) for line in handle]
+        self.assertEqual([c["resumed"] for c in calls], [False, True])
+
     def test_a_coop_run_counts_the_tokens_of_every_turn_including_the_first(self):
         from herdr_py.coop import CoopRun
         team = Members([parse_member("cx=codex"), parse_member("cl=claude")], os.path.join(self.dir, "work"))

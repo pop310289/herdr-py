@@ -78,6 +78,7 @@ class ClaudeAgents:
         self.isolation = list(ISOLATION if isolation is None else isolation)
         os.makedirs(root, exist_ok=True)
         self.sessions, self.agents = {}, {}
+        self.last_turn = {}  # name -> (session, workdir, access) of its last workspace turn that ended well: a repair continues it
         self.lock = threading.Lock()
         self.events = open(os.path.join(root, "events.jsonl"), "a", encoding="utf-8", buffering=1)
 
@@ -87,6 +88,12 @@ class ClaudeAgents:
     def forget(self, name):
         """This member's next turn starts a new conversation."""
         self.sessions.pop(name, None)
+        self.last_turn.pop(name, None)
+
+    def can_continue(self, name, workdir=None, access=None):
+        """True when this member's last turn, in this folder with this access, can be continued (a repair)."""
+        info = self.last_turn.get(name)
+        return bool(info and info[0] and info[1] == (os.path.abspath(workdir) if workdir else None) and info[2] == access)
 
     def _publish(self):
         tmp = os.path.join(self.root, "agents.json.tmp")
@@ -101,9 +108,10 @@ class ClaudeAgents:
             agent.update(fields)
             self._publish()
 
-    def args(self, name, prompt, model=None, files=(), access=None):
-        """access "write", "read" or "research": a turn in a workspace (see WORKSPACE); None: no tools, as everywhere else."""
-        session = None if (self.fresh or access) else self.sessions.get(name)  # a workspace turn is always a new conversation
+    def args(self, name, prompt, model=None, files=(), access=None, resume=None):
+        """access "write", "read" or "research": a turn in a workspace (see WORKSPACE); None: no tools, as everywhere else.
+        resume: the session to continue (a repair of the turn that just ended, in the same folder)."""
+        session = resume or (None if (self.fresh or access) else self.sessions.get(name))  # a workspace turn is a new conversation
         isolation = self.isolation
         if access:
             mode, tools = WORKSPACE[access]
@@ -131,11 +139,18 @@ class ClaudeAgents:
             out += ["--tools", ""]  # no tools at all: the member only writes its answer
         return out + ["--", prompt]  # --tools and --add-dir take several values: without "--" they eat the prompt
 
-    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None):
-        """workdir: run this turn in that folder with file tools (access "write", the default there, or "read")."""
+    def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None, cont=False):
+        """workdir: run this turn in that folder with file tools (access "write", the default there, or "read").
+        cont: continue the conversation of this member's last turn there (can_continue says when it can)."""
         if access not in (None, "write", "read", "research"):
             raise ValueError("access: write, read or research")
-        argv = self.args(name, prompt, model, files, access=(access or "write") if workdir else None)
+        access = (access or "write") if workdir else None
+        resume = None
+        if cont:
+            if not self.can_continue(name, workdir, access):
+                raise ValueError(f"{name}: no turn to continue in this folder")
+            resume = self.last_turn[name][0]
+        argv = self.args(name, prompt, model, files, access=access, resume=resume)
         folder = workdir or os.path.join(self.root, name)
         os.makedirs(folder, exist_ok=True)
         self._set(name, state="working")
@@ -194,8 +209,11 @@ class ClaudeAgents:
             state = "error"
         else:
             state = "idle"
-        if workdir:
-            pass  # a workspace conversation is never resumed: a later turn elsewhere must not land in that folder
+        if workdir:  # a workspace conversation is resumed only by a repair, in the same folder, right after it ended
+            if state == "idle" and session:
+                self.last_turn[name] = (session, os.path.abspath(workdir), access)
+            else:
+                self.last_turn.pop(name, None)
         elif session and not (state == "error" and result is not None and result.get("num_turns") == 0):
             self.sessions[name] = session
         else:

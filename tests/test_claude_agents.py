@@ -92,6 +92,29 @@ class ClaudeAgentsTest(unittest.TestCase):
         self.assertNotIn("--allowedTools", args)
         self.assertEqual(call["cwd"], os.path.realpath(ws))
 
+    def test_a_repair_continues_the_workspace_turn_that_just_ended_and_nothing_else(self):
+        ws, other = os.path.join(self.root, "ws3"), os.path.join(self.root, "ws4")
+        os.makedirs(ws)
+        os.makedirs(other)
+        self.assertFalse(self.team.can_continue("r1", ws, "research"))  # nothing to continue yet
+        self.team.run_turn("r1", "find facts", workdir=ws, access="research")
+        first = self.calls()[-1]
+        self.assertTrue(self.team.can_continue("r1", ws, "research"))
+        self.assertFalse(self.team.can_continue("r1", other, "research"))  # another folder
+        self.assertFalse(self.team.can_continue("r1", ws, "read"))  # another access
+        self.team.run_turn("r1", "the judge said: fix it", workdir=ws, access="research", cont=True)
+        fix = self.calls()[-1]
+        self.assertTrue(fix["resumed"])
+        self.assertEqual(fix["args"][fix["args"].index("--resume") + 1], first["session"])
+        self.assertEqual(fix["tools"], first["tools"])  # still a research turn, in the same folder
+        self.assertEqual(fix["cwd"], first["cwd"])
+        self.team.forget("r1")
+        self.assertFalse(self.team.can_continue("r1", ws, "research"))
+        with self.assertRaises(ValueError):
+            self.team.run_turn("r1", "again", workdir=ws, access="research", cont=True)
+        self.team.run_turn("r1", "a new todo", workdir=ws, access="research")
+        self.assertFalse(self.calls()[-1]["resumed"])  # a new turn is a new conversation
+
     def test_fresh_members_and_forget_start_a_new_conversation(self):
         team = ClaudeAgents(os.path.join(self.root, "team3"), claude=self.claude, fresh=True)
         self.addCleanup(team.close)

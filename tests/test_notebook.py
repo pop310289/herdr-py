@@ -309,6 +309,21 @@ class PageTest(Base):
         notebook.start_run(self.page(pid), "tester", dry=True, out=out)
         return out.getvalue()
 
+    def test_the_loop_settings_reach_the_engine_and_are_checked(self):
+        d = self.definition
+        self.assertEqual(notebook.check_definition(d(loop={"repairs": 2, "repair_below": 100, "target": 100, "wrap_up": 1})), [])
+        for loop, problem in (({"repairs": -1}, "loop.repairs: a whole number"), ({"repairs": 1.5}, "loop.repairs: a whole number"),
+                              ({"target": "high"}, "loop.target: a number"), ({"wrap_up": 1}, "loop.wrap_up goes with loop.target"),
+                              ({"repair_below": 90}, "loop.repair_below goes with loop.repairs"), ({"retries": 1}, "not a loop setting"),
+                              ([1], "loop: an object")):
+            got = notebook.check_definition(d(loop=loop))
+            self.assertTrue(any(problem in p for p in got), (loop, got))
+        self.draft(loop={"repairs": 2, "repair_below": 99.5, "target": 100, "wrap_up": 1})
+        notebook.approve(self.page(), "person")
+        _, dry = self.run_page(dry=True)
+        for words in ("--repairs 2", "--repair-below 99.5", "--target 100", "--wrap-up 1"):
+            self.assertIn(words, dry)
+
     def test_what_a_page_brings_is_checked(self):
         d = self.definition
         for refs, problem in (([{"page": "p1", "kinds": ["skill"]}], "own runs carry on"), ([{"page": "p0"}], "say what to bring"),
@@ -693,6 +708,16 @@ class ViewTest(Base):
         for where in (now, inbox):
             self.assertIn("every version is left out", where)
             self.assertNotIn('data-act="pick"', where)
+
+    def test_the_debug_tab_says_what_the_replay_shows_was_wasted(self):
+        self.draft()
+        notebook.attach(self.page(), self.engine_run("outside", answers=("oops", "nope", "5")), "claude")
+        out = os.path.join(self.dir, "site")
+        self.cli("view", "--out", out)
+        debug = read(os.path.join(out, "p", "p1", "index.html")).split('id="debug"')[1].split('<section class="panel tab"')[0]
+        self.assertIn("Replay diagnosis", debug)
+        self.assertIn("2 answers turned down for the same reason: neither", debug)  # both judged "neither"
+        self.assertIn("say it plainly in the task", debug)
 
     def test_a_text_file_opens_as_a_page_that_says_it_is_utf8(self):
         # sent as text/plain with no charset (python -m http.server does), a skill was read as Big5 on a phone set to
