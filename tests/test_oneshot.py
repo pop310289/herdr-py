@@ -52,16 +52,23 @@ def tree(folder):
     return out
 
 
+def trusting(repo):
+    """The environment with repo marked as a safe directory, for this test's own git calls only: on a CI runner the
+    checkout belongs to another user than the container's, and git refuses to read it otherwise."""
+    return dict(os.environ, GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="safe.directory", GIT_CONFIG_VALUE_0=repo)
+
+
 def has_commits(repo):
     if shutil.which("git") is None:
         return False
     return subprocess.run(["git", "-C", repo, "rev-parse", "--verify", "HEAD"], stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE).returncode == 0
+                          stderr=subprocess.PIPE, env=trusting(repo)).returncode == 0
 
 
 def committed(repo, rev="HEAD"):
     """{path: (bytes, executable)} of the files of a commit, read from git archive."""
-    raw = subprocess.run(["git", "-C", repo, "archive", "--format=tar", rev], stdout=subprocess.PIPE, check=True).stdout
+    raw = subprocess.run(["git", "-C", repo, "archive", "--format=tar", rev], stdout=subprocess.PIPE, check=True,
+                         env=trusting(repo)).stdout
     with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
         return {m.name: (tar.extractfile(m).read(), bool(m.mode & 0o100)) for m in tar.getmembers() if m.isfile()}
 
@@ -89,7 +96,7 @@ class OneShotTest(unittest.TestCase):
     def make(self, repo, kind="both"):
         out = os.path.join(self.tmp, "out")
         os.makedirs(out, exist_ok=True)
-        proc = run([sys.executable, SCRIPT, "--repo", repo, "--out", out, "--kind", kind], self.tmp)
+        proc = run([sys.executable, SCRIPT, "--repo", repo, "--out", out, "--kind", kind], self.tmp, env=trusting(repo))
         self.assertEqual(proc.returncode, 0, proc.stderr)
         return {name.rsplit("-", 1)[1][:-3]: os.path.join(out, name) for name in sorted(os.listdir(out))}
 
