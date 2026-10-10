@@ -323,6 +323,13 @@ class PageTest(Base):
         _, dry = self.run_page(dry=True)
         for words in ("--repairs 2", "--repair-below 99.5", "--target 100", "--wrap-up 1"):
             self.assertIn(words, dry)
+        self.draft(loop={"repairs": 1, "repair_below": 90}, outputs=["code", "page"])
+        notebook.approve(self.page(), "person")
+        dry = self.run_page(dry=True)[1]
+        self.assertIn("--repair-kind code --repair-kind page", dry)  # the bar is for the page's outputs
+        self.draft(loop={"repairs": 1}, outputs=["code"])
+        notebook.approve(self.page(), "person")
+        self.assertNotIn("--repair-kind", self.run_page(dry=True)[1])
 
     def test_what_a_page_brings_is_checked(self):
         d = self.definition

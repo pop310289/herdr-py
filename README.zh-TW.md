@@ -120,7 +120,7 @@ python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3
 
 `view.html`（每個事件後重寫，執行中也能看；統一的深色外觀，寬螢幕兩欄、手機一欄）畫出：這次執行的數字標在迴圈上；每個 agent 一列、附狀態燈（最後一個回合：綠＝通過、紅＝失敗；工作中是白色）；這次執行的數字（回合、沒加任何待辦的喚醒、被退回的回覆、回合時間中位數、成員閒著的時間、token），全部來自紀錄；誰做了哪條待辦（每個成員一欄，連到它要等的、要接著做的待辦）；知識庫的流向（誰寫了每個成果、skill 排最前面並顯示名稱、誰接著做或打開了它的檔案；每個 agent 那列也寫出它寫了、讀了哪些 skill）；時間由上往下的時間軸（planner 和每個成員各一欄，每個回合一根長條，每個喚醒 planner 的結果一條虛線）；最佳分數隨時間的變化；每條待辦從新增到結束；planner 的每一回合。沒有 JavaScript 時內容完整；有 JavaScript 時多一個播放器，從第一個事件重播到結束：拖曳時間，迴圈上正在工作的那一段會亮起、數字跟著時間變；點長條可以看那一回合的待辦、判定與分數。頁面也畫出每一回合用了哪些工具（長條裡每次網路搜尋、抓網頁、讀檔各一個點，來自 Claude 與 OpenCode 的紀錄），以及團隊做出的每個成果和它接了誰的成果（從上游畫一條線到下游）；答案第一行寫 `ARTIFACT: <種類>` 的，依種類分欄。
 
-停止條件：成員回合用完、達到目標分數（`--target`）、planner 宣告完成、planner 的喚醒次數用完而且沒有待辦、或連續 `--patience` 個判定都沒有超過最佳分數。加上 `--wrap-up N`，達標後會再叫醒 planner 一次，最多再跑 N 個成員回合把有效的做法寫成 skill，然後停止。`--repairs N` 讓成員在同一回合、同一段對話裡修正被判不通過的答案（讀過的東西都還在），並告訴它評分說了什麼；`--repair-below 分數` 讓通過但低於這個分數的答案也修。每次修正都是接著上一版的新版本，回合用最好的那一版結束（Claude 與程式成員；Codex、OpenCode 成員不修）。planner 會知道還剩幾次喚醒（最後一次要把剩下回合的事一次派完），並被提醒：同一份工作不同時派給兩個人、需要隊友正在查的東西就排在那條待辦之後、研究題不要把自己猜的答案寫進待辦。`python3 -m herdr_py.rundiag RUN_DIR` 讀一次執行的紀錄，說出浪費與出錯的地方：同一個原因被判不通過的答案、沒贏過最高分也沒人接著做的成果（同一份工作做了兩次）、沒人用到的 skill、被不只一個成員打開的網頁、最高分出現後的回合、planner 喚醒用完時剩下的回合、閒著等工作的成員、被退回的 planner 回覆、回合內修正。`summary.json` 會算：被領兩次的待辦數（必須是 0）、對得到待辦、看板版本與指令 hash 的回合比例（必須全部）、每個成員「有空卻沒有待辦可領」的時間、planner 占全部 token 的比例，以及成員讀看板的次數（從 Codex、Claude、OpenCode 的紀錄算；程式成員沒有紀錄）。每個已驗證的結果也會變成看板資料夾裡的檔案（`artifacts/<id>.txt`），太長放不進指令的成果，隊友也能打開來看。`--member-access research` 讓 Claude 成員也能上網查資料（WebSearch、WebFetch，用 settings 規則只允許這兩個；真的 CLI 實測：沒有規則時不詢問模式會拒絕 WebSearch，有規則時讀資料夾外的檔案仍然被擋）。Codex 成員維持唯讀。
+停止條件：成員回合用完、達到目標分數（`--target`）、planner 宣告完成、planner 的喚醒次數用完而且沒有待辦、或連續 `--patience` 個判定都沒有超過最佳分數。加上 `--wrap-up N`，達標後會再叫醒 planner 一次，最多再跑 N 個成員回合把有效的做法寫成 skill，然後停止。`--repairs N` 讓成員在同一回合、同一段對話裡修正被判不通過的答案（讀過的東西都還在），並告訴它評分說了什麼；`--repair-below 分數` 讓通過但低於這個分數的答案也修（`--repair-kind 種類`：只修這種成果，分數固定的 skill 不會被拿去修到程式的門檻；通過的答案修完分數沒提高就停止修正）。每次修正都是接著上一版的新版本，回合用最好的那一版結束（Claude 與程式成員；Codex、OpenCode 成員不修）。planner 會知道還剩幾次喚醒（最後一次要把剩下回合的事一次派完），並被提醒：同一份工作不同時派給兩個人、需要隊友正在查的東西就排在那條待辦之後、研究題不要把自己猜的答案寫進待辦。`python3 -m herdr_py.rundiag RUN_DIR` 讀一次執行的紀錄，說出浪費與出錯的地方：同一個原因被判不通過的答案、沒贏過最高分也沒人接著做的成果（同一份工作做了兩次）、沒人用到的 skill、被不只一個成員打開的網頁、最高分出現後的回合、planner 喚醒用完時剩下的回合、閒著等工作的成員、被退回的 planner 回覆、回合內修正。`summary.json` 會算：被領兩次的待辦數（必須是 0）、對得到待辦、看板版本與指令 hash 的回合比例（必須全部）、每個成員「有空卻沒有待辦可領」的時間、planner 占全部 token 的比例，以及成員讀看板的次數（從 Codex、Claude、OpenCode 的紀錄算；程式成員沒有紀錄）。每個已驗證的結果也會變成看板資料夾裡的檔案（`artifacts/<id>.txt`），太長放不進指令的成果，隊友也能打開來看。`--member-access research` 讓 Claude 成員也能上網查資料（WebSearch、WebFetch，用 settings 規則只允許這兩個；真的 CLI 實測：沒有規則時不詢問模式會拒絕 WebSearch，有規則時讀資料夾外的檔案仍然被擋）。Codex 成員維持唯讀。
 
 ## 筆記本：每天交出去的工作，一件一頁
 
@@ -275,7 +275,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 512 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 514 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

@@ -47,7 +47,7 @@ from . import engineview
 from .coop import FENCE, REPLY, command_judge, exit_judge, parse_reply, used
 from .dag import resolve_args
 from .members import BROKEN, MemberError, Members, parse_member
-from .teamkb import MAX_SUMMARY, TeamKB, TeamKBError, one_line
+from .teamkb import MAX_SUMMARY, TAG, TeamKB, TeamKBError, one_line
 
 BOARD = "TEAM_BOARD.md"
 CONTROL = "control.jsonl"
@@ -91,15 +91,17 @@ Budget: {turns_left} member turns left of {turns}; at most {max_open} todos may 
 You were woken because: {reason}.
 Right now: {now}
 
-Keep every free member busy: when you add todos, make sure each free member has one it can take now. Set "for" only
+Keep every free member busy with work that adds something: when you add todos, give each free member one it can \
+take now if there is a separate part to give. When there is not, a free member may improve the best version (building \
+on it: "parents") or wait: a member waiting costs nothing, a second version of the same work costs a whole turn. Set "for" only
 when the work needs that member's role; leave it null and whoever is free first takes it. If a todo needs another
 todo's result first, list that todo in "after" (an id from the board, or "#2" for the second todo you add in this
 reply): it cannot be taken until that one has ended. A todo that reviews or critiques work already made (not new
 work) gets "review": true: it is never given to whoever made its parents or did the todos it comes after, so nobody
 reviews their own work.
 
-Spend the turns well. Do not give two members the same piece of work at the same time unless you want competing \
-attempts: give the second one another part, or have it test or review the first one's version. When a todo needs what \
+Spend the turns well. Do not give two members the same piece of work, at once or one after the other, unless you \
+want competing attempts: give the second one another part, or have it improve, test or review the first one's version. When a todo needs what \
 a teammate is finding out or writing down (a skill), let it come "after" that todo and build on its result \
 ("parents"), instead of having both find it out. When the task is to find things out, do not write your own guesses \
 of the findings into a todo: say what to find and how it will be checked.
@@ -170,7 +172,7 @@ class EngineRun:
     def __init__(self, task, judge, members, names, planner, out, turns, planner_wakes=None, max_open=None, max_todos=None,
                  target=None, patience=0, about=None, results=3, failures=3, answer_bytes=6000, answer_name="answer.txt",
                  turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2, member_access="read",
-                 time_limit=None, seeded=None, repairs=0, repair_below=None, wrap_up=0):
+                 time_limit=None, seeded=None, repairs=0, repair_below=None, wrap_up=0, repair_kinds=()):
         if not names:
             raise ValueError("no members")
         if planner in names:
@@ -189,6 +191,7 @@ class EngineRun:
         if not (isinstance(repairs, int) and repairs >= 0):
             raise ValueError("repairs: 0 or more")
         self.repairs, self.repair_below = repairs, repair_below  # repairs per turn; repair a valid answer under this score too
+        self.repair_kinds = {k.lower() for k in repair_kinds}  # repair_below applies to these artifact kinds (all when empty)
         if not (isinstance(wrap_up, int) and wrap_up >= 0):
             raise ValueError("wrap_up: 0 or more")
         self.wrap_up, self.wrap_from = wrap_up, None  # member turns after the target, and the turns used when it was reached
@@ -459,7 +462,9 @@ class EngineRun:
             before_len = len(self.kb)
             entry = self.kb.propose(name, parsed["kind"], one_line(parsed["summary"], 500), artifact=parsed["answer"],
                                     name=self.answer_name, parents=parents, round=turn, scope="team")
-            rec.update(entry=entry, kind=parsed["kind"], parents=parents, repeat=len(self.kb) == before_len)
+            tag = TAG.match(parsed["answer"].split("\n", 1)[0]) if parsed["kind"] == "result" else None
+            rec.update(entry=entry, kind=parsed["kind"], parents=parents, repeat=len(self.kb) == before_len,
+                       artifact_kind=tag.group(2).lower() if tag else None)
             dropped = [p for p in parsed["parents"] if p not in shown]
             if dropped:
                 rec["parents_dropped"] = dropped
@@ -476,8 +481,13 @@ class EngineRun:
     def verdict_detail(self, entry):
         return next((e["detail"] for e in self.kb.entries() if e["id"] == entry), None)
 
-    def wants_repair(self, status, score):
-        return status == "invalid" or (status == "valid" and self.repair_below is not None and score < self.repair_below)
+    def wants_repair(self, status, score, kind=None):
+        """Repair an answer the judge turned down; or a valid one under the bar, when its kind is one the bar is for (a
+        skill that always scores 20 is not repaired toward 100)."""
+        if status == "invalid":
+            return True
+        return (status == "valid" and self.repair_below is not None and score < self.repair_below
+                and (not self.repair_kinds or kind in self.repair_kinds))
 
     def out_of_time(self):
         return bool(self.stopping) or bool(self.time_limit and time.monotonic() - self.started >= self.time_limit)
@@ -500,7 +510,8 @@ class EngineRun:
             outcome, status, score, entry, detail = self.take_answer(name, todo, turn, text, state, shown, rec)
             best = (outcome, status, score, entry, detail)
             last, repairs = entry, []
-            while (status in ("valid", "invalid") and len(repairs) < self.repairs and self.wants_repair(status, score)
+            while (status in ("valid", "invalid") and len(repairs) < self.repairs
+                   and self.wants_repair(status, score, (repairs[-1] if repairs else rec).get("artifact_kind"))
                    and not rec.get("repeat") and not self.out_of_time()
                    and self.members.can_continue(name, self.board_dir, self.member_access)):
                 said = self.verdict_detail(last) or "(no detail)"
@@ -516,9 +527,14 @@ class EngineRun:
                 r.update(state=state, seconds=round(time.monotonic() - clock, 2), tokens=used(before, self.tokens(name)))
                 got = self.take_answer(name, todo, turn, text, state, shown | {last}, r, extra_parents=[last])
                 repairs.append(r)
+                was = (status, score)
                 outcome, status, score, entry, detail = got
                 if status not in ("valid", "invalid"):
                     break
+                if was[0] == "valid" and status == "valid" and (score or 0) <= (was[1] or 0):
+                    if (status == "valid", score or 0) > (best[1] == "valid", best[2] or 0):
+                        best = got
+                    break  # a repair of a valid answer that did not raise its score: more of the same will not help
                 if (status == "valid", score or 0) > (best[1] == "valid", best[2] or 0):
                     best = got
                 if r.get("repeat"):
@@ -832,6 +848,9 @@ def main(argv=None):
                          "conversation, told what the judge said (Claude and command members; default 0)")
     ap.add_argument("--repair-below", type=float, metavar="SCORE",
                     help="with --repairs: also repair a valid answer that scored under SCORE")
+    ap.add_argument("--repair-kind", action="append", default=[], metavar="KIND",
+                    help="with --repair-below: only answers of this artifact kind (its first line ARTIFACT: KIND) "
+                         "are repaired toward the bar (repeat; default: every kind)")
     ap.add_argument("--member-access", choices=["read", "research"], default="read",
                     help="read (default): members read the board folder; research: and search the web (Claude members)")
     a = ap.parse_args(argv)
@@ -919,7 +938,7 @@ def main(argv=None):
                         failures=a.show_failures, answer_bytes=a.answer_bytes, answer_name=a.answer_name,
                         turn_timeout=a.turn_timeout, stop_on_infra_error=a.stop_on_infra_error,
                         member_access=a.member_access, time_limit=a.time_limit, seeded=seeded, repairs=a.repairs,
-                        repair_below=a.repair_below, wrap_up=a.wrap_up)
+                        repair_below=a.repair_below, wrap_up=a.wrap_up, repair_kinds=a.repair_kind)
         summary = run.run()
     finally:
         members.close()

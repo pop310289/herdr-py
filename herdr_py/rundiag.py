@@ -79,9 +79,14 @@ def findings(run):
         out.append({"code": code, "title": title, "numbers": numbers, "suggestion": suggestion, "args": dict(numbers, **args)})
 
     # answers turned down for the same reason: the task (or the planner) did not say something plainly
-    attempts = []
+    attempts, counted = [], set()
     for r in turns:
-        attempts += [r] + list(r.get("repairs") or [])
+        tries = [r] + list(r.get("repairs") or [])
+        named = [a.get("entry") for a in tries] + [a.get("of") for a in r.get("repairs") or []]  # "of": the version repaired
+        for eid in named:
+            if eid and eid not in counted:  # a repaired turn names its best version again; count each version once
+                counted.add(eid)
+                attempts.append(next((a for a in tries if a.get("entry") == eid), {"entry": eid, "tokens": 0}))
     reasons = collections.defaultdict(list)
     for a in attempts:
         e = by_id.get(a.get("entry"))
@@ -98,12 +103,13 @@ def findings(run):
     # results that added nothing: below the best when judged, or as good as the best without building on it (the same work
     # done twice), and no later result built on them (a skill citing it does not make it count)
     built_by_results = {p for e in entries if kinds.get(e["id"]) != "skill" for p in e.get("parents") or []}
-    best, holder, idle_results = None, None, []
+    best, holder, idle_results, seen = None, None, [], set()
     for r in sorted(turns, key=lambda r: r.get("end") or 0):
-        for a in [r] + list(r.get("repairs") or []):
+        for a in [r] + list(r.get("repairs") or []):  # a repaired turn names its best version again: count each once
             e = by_id.get(a.get("entry"))
-            if not e or e["status"] != "valid" or kinds.get(e["id"]) == "skill":
+            if not e or e["id"] in seen or e["status"] != "valid" or kinds.get(e["id"]) == "skill":
                 continue
+            seen.add(e["id"])
             score = e["score"] if e["score"] is not None else float("-inf")
             if best is None or score > best or (score == best and holder in (e.get("parents") or [])):
                 best, holder = score, e["id"]  # a new best, or a revision of the best that keeps its score

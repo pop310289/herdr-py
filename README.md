@@ -217,7 +217,9 @@ its wakes are used up with nothing left to do, or `--patience` judged answers in
 `--wrap-up N`, reaching the target wakes the planner once more and allows N more member turns to write down what
 worked (skills) before the run stops. `--repairs N` lets a member fix an answer the judge turned down, in the same turn
 and the same conversation (what it read stays with it), told what the judge said; `--repair-below SCORE` repairs a
-valid answer under SCORE too. Each repair is a new version that builds on the one it fixes, and the turn ends with its
+valid answer under SCORE too (`--repair-kind KIND`: only answers of that artifact kind, so a skill that always scores
+the same is not repaired toward a bar set for code; a repair of a valid answer that does not raise its score ends the
+repairs). Each repair is a new version that builds on the one it fixes, and the turn ends with its
 best version (Claude and command members; Codex and OpenCode members are not repaired). The planner is told how many
 wakes it has left (on its last one, to add every todo the turns left should do), and not to give two members the same
 work at once, to let a todo come after the one finding out what it needs, and not to write its own guesses of the
@@ -552,7 +554,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 512 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 514 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

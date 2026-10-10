@@ -72,10 +72,13 @@ else:
     print("SUMMARY: %s\nPARENTS: %s\n```\n%s\n```" % (act.get("summary", "answered " + act["answer"]), parents, act["answer"]))
 '''
 
-# The judge: an answer that is a number is valid with that score; anything else is invalid.
+# The judge: an answer that is a number is valid with that score; anything else is invalid. A first line
+# "ARTIFACT: kind" is taken off first.
 JUDGE = r'''
 import json, sys
 text = open(sys.argv[-1]).read().strip()
+if text.lower().startswith("artifact:"):
+    text = text.split("\n", 1)[1].strip() if "\n" in text else ""
 try:
     score = float(text)
     print(json.dumps({"status": "valid", "score": score, "detail": "a number"}))
@@ -715,6 +718,20 @@ class PartsTest(Base):
         turn = self.member_records()[0]
         self.assertEqual((turn["status"], turn["score"], turn["best_of"]), ("valid", 40.0, 2))  # a worse repair is not kept as the turn's
 
+    def test_the_bar_is_only_for_the_kinds_it_names_and_no_progress_stops_the_repairs(self):
+        self.script(planner=[add("give a number"), add(done=True)],
+                    members={"a": [{"answer": "ARTIFACT: skill\n20"}, {"answer": "ARTIFACT: skill\n20.5"}]})
+        self.run_main("--turns", "1", "--repairs", "2", "--repair-below", "100", "--repair-kind", "code", members=("a",))
+        turn = self.member_records()[0]
+        self.assertEqual((turn["artifact_kind"], turn["score"]), ("skill", 20.0))
+        self.assertNotIn("repairs", turn)  # a skill is not repaired toward a bar set for code
+        self.out = os.path.join(self.dir, "flat")
+        shutil.rmtree(self.log)
+        self.script(planner=[add("give a number"), add(done=True)], members={"a": [{"answer": "40"}, {"answer": "40.0"}, {"answer": "90"}]})
+        self.run_main("--turns", "1", "--repairs", "3", "--repair-below", "100", members=("a",))
+        turn = self.member_records()[0]
+        self.assertEqual(([r["score"] for r in turn["repairs"]], turn["score"]), ([40.0], 40.0))  # no better: stop there
+
     def test_a_repair_that_says_the_same_again_stops_the_repairs(self):
         self.script(planner=[add("give a number"), add(done=True)], members={"a": [{"answer": "oops"}]})
         self.run_main("--turns", "1", "--repairs", "3", members=("a",))
@@ -752,7 +769,8 @@ class PartsTest(Base):
         self.script(planner=[add("give a number"), add()], members={"a": [{"answer": "1"}]})
         self.run_main("--turns", "1", members=("a",))
         prompt = self.read_log("planner-01.txt")
-        self.assertIn("Do not give two members the same piece of work at the same time", prompt)
+        self.assertIn("Do not give two members the same piece of work, at once or one after the other", prompt)
+        self.assertIn("a member waiting costs nothing, a second version of the same work costs a whole turn", prompt)
         self.assertIn("do not write your own guesses of the findings into a todo", prompt)
 
     def test_seeding_is_checked(self):

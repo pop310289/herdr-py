@@ -87,6 +87,18 @@ class RunDiagTest(unittest.TestCase):
         self.assertEqual((f["numbers"]["results"], f["numbers"]["tokens"]), (1, 7000))
         self.assertIn(twice, f["title"])
 
+    def test_a_repaired_turn_naming_its_best_version_again_is_counted_once(self):
+        first = self.entry("a", "50 by a", ok(50))
+        self.turn("a", first, 0, 10)
+        wrong = self.entry("b", "oops", bad("not a number"))  # b's first try: only the repair's "of" names it
+        again = self.entry("b", "50 again by b", ok(50), parents=[wrong])  # its repair: as good as the best, not on it
+        self.turn("b", again, 0, 12, tokens=4000, repairs=[{"entry": again, "status": "valid", "score": 50, "tokens": 900, "of": wrong}])
+        wrong2 = self.entry("c", "nope", bad("not a number"))  # c's one answer, named by the turn and by its repair
+        self.turn("c", wrong2, 0, 13, repairs=[{"entry": wrong2, "status": "invalid", "tokens": 100, "of": wrong2, "repeat": True}])
+        codes = self.codes()
+        self.assertEqual(codes["no_gain"]["numbers"]["results"], 1)  # b's version, once
+        self.assertEqual(codes["same_failure"]["numbers"]["answers"], 2)  # b's first try and c's answer, each once
+
     def test_a_skill_counts_when_built_on_or_opened(self):
         used = self.entry("a", "ARTIFACT: skill\n---\nname: used\n---\n", ok(20))
         opened = self.entry("a", "ARTIFACT: skill\n---\nname: opened\n---\n", ok(20))

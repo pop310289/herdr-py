@@ -875,6 +875,9 @@ def run_argv(page, folder, task_file, source=None, picks=(), source_n=None):
         if key in (d.get("loop") or {}):
             value = d["loop"][key]
             argv += [flag, str(int(value)) if key in ("repairs", "wrap_up") else f"{value:g}"]
+    if "repair_below" in (d.get("loop") or {}):
+        for kind in d.get("outputs") or []:  # the bar is for the page's outputs, not for a skill that always scores the same
+            argv += ["--repair-kind", kind]
     for key, flag in (("results", "--show-results"), ("failures", "--show-failures"), ("answer_bytes", "--answer-bytes")):
         if key in (d.get("show") or {}):
             argv += [flag, str(d["show"][key])]
