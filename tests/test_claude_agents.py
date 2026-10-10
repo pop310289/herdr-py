@@ -132,6 +132,22 @@ class ClaudeAgentsTest(unittest.TestCase):
         self.assertIn("--safe-mode", args)
         self.assertNotIn("--mcp-config", args)
 
+    def test_a_running_turn_can_be_cancelled(self):
+        import threading
+        os.environ["FAKE_CLAUDE_MODE"] = "sleep"
+        ws = os.path.join(self.root, "ws6")
+        os.makedirs(ws)
+        got = {}
+        t = threading.Thread(target=lambda: got.update(r=self.team.run_turn("slow", "take long", workdir=ws, access="read", timeout=30)))
+        t.start()
+        deadline = time.time() + 10
+        while "slow" not in self.team.procs and time.time() < deadline:
+            time.sleep(0.05)
+        self.assertTrue(self.team.cancel("slow"))
+        t.join(10)
+        self.assertEqual(got["r"][1], "aborted")
+        self.assertFalse(self.team.cancel("slow"))  # nothing running now
+
     def test_fresh_members_and_forget_start_a_new_conversation(self):
         team = ClaudeAgents(os.path.join(self.root, "team3"), claude=self.claude, fresh=True)
         self.addCleanup(team.close)

@@ -81,6 +81,7 @@ class ClaudeAgents:
         os.makedirs(root, exist_ok=True)
         self.sessions, self.agents = {}, {}
         self.last_turn = {}  # name -> (session, workdir, access) of its last workspace turn that ended well: a repair continues it
+        self.procs = {}  # name -> the process of its turn now running (cancel() ends it)
         self.lock = threading.Lock()
         self.events = open(os.path.join(root, "events.jsonl"), "a", encoding="utf-8", buffering=1)
 
@@ -91,6 +92,15 @@ class ClaudeAgents:
         """This member's next turn starts a new conversation."""
         self.sessions.pop(name, None)
         self.last_turn.pop(name, None)
+
+    def cancel(self, name):
+        """End the member's running turn now (the turn ends "aborted"); False when none is running."""
+        with self.lock:
+            proc = self.procs.get(name)
+        if proc is None or proc.poll() is not None:
+            return False
+        stop(proc)
+        return True
 
     def can_continue(self, name, workdir=None, access=None):
         """True when this member's last turn, in this folder with this access, can be continued (a repair)."""
@@ -174,6 +184,8 @@ class ClaudeAgents:
             err.close()
             self._set(name, state="error")
             raise
+        with self.lock:
+            self.procs[name] = proc
         timed_out = []
         timer = threading.Timer(timeout, lambda: (timed_out.append(True), stop(proc)))
         timer.start()
@@ -208,6 +220,9 @@ class ClaudeAgents:
                 proc.wait()
             proc.stdout.close()
             err.close()
+            with self.lock:
+                if self.procs.get(name) is proc:
+                    del self.procs[name]
         if result is not None:
             used = tokens_of(result.get("usage")) or used
         if timed_out:

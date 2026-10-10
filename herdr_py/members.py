@@ -88,7 +88,7 @@ class CommandMembers:
     def __init__(self, root, cwd=None):
         self.root, self.cwd = root, cwd or os.getcwd()
         os.makedirs(root, exist_ok=True)
-        self.commands, self.agents = {}, {}
+        self.commands, self.agents, self.procs = {}, {}, {}
 
     def add(self, name, command):
         self.commands[name] = shlex.split(command) if isinstance(command, str) else list(command)
@@ -101,6 +101,17 @@ class CommandMembers:
 
     def can_continue(self, name, workdir=None, access=None):
         return True  # a program has no conversation: a repair is a new call, told so (HERDR_REPAIR) and given what to fix
+
+    def cancel(self, name):
+        """End the member's running turn now; False when none is running."""
+        proc = self.procs.get(name)
+        if proc is None or proc.poll() is not None:
+            return False
+        try:  # the turn's own thread is in communicate(): kill the group and let that call return
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            return False
+        return True
 
     def run_turn(self, name, prompt, model=None, files=(), timeout=600, workdir=None, access=None, cont=False):
         env = dict(os.environ, HERDR_MEMBER=name)
@@ -116,12 +127,14 @@ class CommandMembers:
             proc = subprocess.Popen(self.commands[name], cwd=workdir or self.cwd, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                     stderr=err, universal_newlines=True, encoding="utf-8", errors="replace",
                                     start_new_session=True)
+            self.procs[name] = proc
             try:
                 out, _ = proc.communicate(prompt, timeout=timeout)
                 state = "idle" if proc.returncode == 0 else ("aborted" if proc.returncode < 0 else "error")
             except subprocess.TimeoutExpired:
                 stop_group(proc)
                 out, state = "", "timeout"
+        self.procs.pop(name, None)
         agent = self.agents.setdefault(name, {"name": name, "turns": 0})
         agent.update(turns=agent["turns"] + 1, state=state)
         return out.strip(), state
@@ -287,6 +300,12 @@ class Members:
 
     def names(self):
         return list(self.spec)
+
+    def cancel(self, name):
+        """End the member's running turn now, when its backend can (Claude and command members); False otherwise."""
+        backend = self.backends[self.spec[name]["backend"]]
+        cancel = getattr(backend, "cancel", None)
+        return bool(cancel and cancel(name))
 
     def can_continue(self, name, workdir=None, access=None):
         """True when this member's backend can continue its last turn (a repair): Claude and command members can."""

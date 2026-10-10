@@ -213,15 +213,17 @@ entry, with a line from every entry to each one it built on; an answer whose fir
 grouped by that kind.
 
 The run stops when the member turns are used up, the target score (`--target`) is reached, the planner says done,
-its wakes are used up with nothing left to do, or `--patience` judged answers in a row did not beat the best. With
+its wakes are used up with nothing left to do, or `--patience` judged answers in a row did not beat the best. Reaching the target cancels the member turns still working toward it (Claude and command members; their todo ends
+"cancelled", not failed): what they were making is no longer needed. With
 `--wrap-up N`, reaching the target wakes the planner once more and allows N more member turns to write down what
 worked (skills) before the run stops. `--repairs N` lets a member fix an answer the judge turned down, in the same turn
 and the same conversation (what it read stays with it), told what the judge said; `--repair-below SCORE` repairs a
 valid answer under SCORE too (`--repair-kind KIND`: only answers of that artifact kind, so a skill that always scores
 the same is not repaired toward a bar set for code; a repair of a valid answer that does not raise its score ends the
 repairs). Each repair is a new version that builds on the one it fixes, and the turn ends with its
-best version (Claude and command members; Codex and OpenCode members are not repaired). The planner is told how many
-wakes it has left (on its last one, to add every todo the turns left should do), and not to give two members the same
+best version (Claude and command members; Codex and OpenCode members are not repaired). A member is told how long its turn may run (a turn that runs out is lost), and a Claude member which tools it has and
+that nobody on the team can run commands (so the skills it writes are ones its teammates can follow). The planner is
+told how many wakes it has left (on its last one, to add every todo the turns left should do), and not to give two members the same
 work at once, to let a todo come after the one finding out what it needs, and not to write its own guesses of the
 findings into a research todo. Members can also make tools for each other: a verified answer whose first line is
 `ARTIFACT: mcp` is a one-file MCP server, and with `--mcp-sandbox COMMAND` the engine starts it once in that sandbox
@@ -561,7 +563,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 521 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 526 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

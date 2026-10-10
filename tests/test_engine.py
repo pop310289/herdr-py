@@ -761,6 +761,8 @@ class PartsTest(Base):
             self.assertEqual((s["turns"], s["stopped"]), (turns, "the target 100 was reached"), extra)
         self.assertIn("the target 100 was reached: the run ends after at most 1 more member turns", self.read_log("planner-02.txt"))
         self.assertEqual([r.get("wrap_up") for r in self.records("run.jsonl") if r.get("member")], [None, True])
+        self.assertIn("Improve an existing skill (give it as the todo's parent) rather than adding one that overlaps it",
+                      self.read_log("planner-02.txt"))
 
     def test_wrap_up_and_repair_below_go_with_what_they_need(self):
         for extra, said in ((["--wrap-up", "1"], "--wrap-up goes with --target"), (["--repair-below", "90"], "--repair-below goes with --repairs")):
@@ -798,6 +800,53 @@ class PartsTest(Base):
         self.run_main("--turns", "2", members=("a",))
         self.assertNotIn("Team tools", self.read_log("a-02.prompt"))  # without a sandbox command a tool is never run
         self.assertFalse(os.path.isdir(os.path.join(self.out, "tools")))
+
+    def test_reaching_the_target_cancels_the_turns_still_working_toward_it(self):
+        self.script(planner=[add("try", "try too"), add(done=True)], members={"a": [{"answer": "100"}], "b": [{"answer": "5", "sleep": 8}]})
+        started = time.monotonic()
+        code, said, err = self.run_main("--turns", "2", "--target", "100")
+        self.assertEqual(code, 0, said + err)
+        self.assertLess(time.monotonic() - started, 7)  # b's 8 s turn did not hold the run
+        turns = {r["member"]: r for r in self.member_records()}
+        self.assertEqual((turns["b"]["state"], turns["b"]["cancelled"]), ("aborted", "the target 100 was reached"))
+        self.assertNotIn("cancelled", turns["a"])
+        self.assertEqual([r["member"] for r in self.records("engine.jsonl") if r.get("kind") == "cancel"], ["b"])
+        todo = next(t for t in TeamKB(os.path.join(self.out, "kb")).todo_list() if t.get("taken_by") == "b")
+        self.assertEqual(todo["detail"], "cancelled: the target 100 was reached")
+
+    def test_without_a_target_a_long_turn_finishes(self):
+        self.script(planner=[add("try", "try too"), add(done=True)], members={"a": [{"answer": "100"}], "b": [{"answer": "5", "sleep": 1}]})
+        self.run_main("--turns", "2")
+        self.assertEqual({r["member"]: r.get("status") for r in self.member_records()}, {"a": "valid", "b": "valid"})
+
+    def test_a_member_is_told_how_long_its_turn_may_run(self):
+        self.script(planner=[add("give a number"), add(done=True)], members={"a": [{"answer": "5"}]})
+        self.run_main("--turns", "1", "--turn-timeout", "300", members=("a",))
+        prompt = self.read_log("a-01.prompt")
+        self.assertIn("This turn may run for at most 5 minutes", prompt)
+        self.assertNotIn("Your tools this turn", prompt)  # a program's tools are not known
+
+    def test_a_claude_member_is_told_its_tools_and_that_nobody_runs_commands(self):
+        wrapper = os.path.join(self.dir, "claude")
+        with open(wrapper, "w") as handle:
+            handle.write(f"#!/bin/sh\nexec {sys.executable} {os.path.join(HERE, 'fake_claude.py')} \"$@\"\n")
+        os.chmod(wrapper, 0o755)
+        calls = os.path.join(self.dir, "claude_calls.jsonl")
+        saved = {k: os.environ.get(k) for k in ("CLAUDE_BIN", "FAKE_CLAUDE_LOG", "FAKE_CLAUDE_STATE", "FAKE_CLAUDE_MODE")}
+        self.addCleanup(lambda: [os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v) for k, v in saved.items()])
+        os.environ.update(CLAUDE_BIN=wrapper, FAKE_CLAUDE_LOG=calls, FAKE_CLAUDE_STATE=os.path.join(self.dir, "fc.json"))
+        os.environ.pop("FAKE_CLAUDE_MODE", None)
+        self.script(planner=[add("give a number"), add(done=True)], members={})
+        argv = ["--task", "task.md", "--judge", "%s -B judge.py" % sys.executable, "--planner", "plan=command:%s -B planner.py" % sys.executable,
+                "--member", "c=claude", "--member-access", "research", "--turns", "1", "--out", self.out]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            engine.main(argv)
+        with open(calls) as handle:
+            prompt = [json.loads(line) for line in handle][-1]["prompt"]
+        self.assertIn("Your tools this turn: Read, Glob and Grep in your folder, WebSearch and WebFetch.", prompt)
+        self.assertIn("You cannot run commands or programs, and neither can your teammates", prompt)
+        self.assertIn("This turn may run for at most 15 minutes", prompt)
 
     def test_seeding_is_checked(self):
         self.script([add(done=True)], {})

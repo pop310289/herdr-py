@@ -123,6 +123,18 @@ What it said: {detail}
 Fix what it names and keep what passed. Answer again the same way as before: the whole answer in one fenced block (not \
 a diff or a part of it), its first line as the task asks, with the SUMMARY and PARENTS lines."""
 
+DEADLINE = """
+
+This turn may run for at most {minutes} minutes: answer well before then. A turn that runs out is lost, with all it \
+did."""
+
+YOUR_TOOLS = """
+
+Your tools this turn: {tools}. You cannot run commands or programs, and neither can your teammates: a skill whose steps \
+need a shell is of no use here; write steps these tools can do."""
+
+CLAUDE_TOOLS = {"read": "Read, Glob and Grep in your folder", "research": "Read, Glob and Grep in your folder, WebSearch and WebFetch"}
+
 TOOLS_NOTE = """
 
 Team tools: your teammates made these MCP tools, and you can call them this turn. They run in a sandbox (no network, a \
@@ -202,6 +214,9 @@ class EngineRun:
         if not (isinstance(wrap_up, int) and wrap_up >= 0):
             raise ValueError("wrap_up: 0 or more")
         self.wrap_up, self.wrap_from = wrap_up, None  # member turns after the target, and the turns used when it was reached
+        self.now_running = {}  # member -> {"turn", "wrap_up"} of its turn now running
+        self.cut = False  # the turns running when the target was reached have been cancelled
+        self.cancelled = {}  # member -> why its running turn was cancelled
         if member_access not in ("read", "research"):
             raise ValueError("member_access: read or research")
         self.member_access = member_access  # research: read the folder and search the web (Claude members)
@@ -492,6 +507,17 @@ class EngineRun:
                 detail = parsed["summary"]
         return outcome, status, score, entry, detail
 
+    def turn_notes(self, name, offer=None):
+        """What a member is told about its turn besides the work: how long it may run, and (a Claude member, whose tools
+        are known) which tools it has, the team's tools included."""
+        notes = DEADLINE.format(minutes=f"{self.turn_timeout / 60:g}")
+        if (getattr(self.members, "spec", {}).get(name) or {}).get("backend") == "claude":
+            tools = CLAUDE_TOOLS.get(self.member_access, "Read, Glob and Grep in your folder")
+            notes += YOUR_TOOLS.format(tools=tools + (", and the team tools below" if offer else ""))
+        if offer:
+            notes += TOOLS_NOTE.format(lines="\n".join(offer[2]))
+        return notes
+
     def verdict_detail(self, entry):
         return next((e["detail"] for e in self.kb.entries() if e["id"] == entry), None)
 
@@ -510,12 +536,14 @@ class EngineRun:
         rec = {"t": round(time.time(), 3), "start": round(time.time(), 3), "turn": turn, "member": name, "todo": todo["id"]}
         if self.wrap_from is not None:
             rec["wrap_up"] = True  # after the target: a turn to write down what worked
+        with self.cond:
+            self.now_running[name] = {"turn": turn, "wrap_up": bool(rec.get("wrap_up"))}
         outcome, status, score, entry, detail = "failed", None, None, None, None
         try:
             prompt, shown, version = self.member_prompt(name, todo, turn)
             offer = self.team_tools.config() if self.team_tools else None
+            prompt += self.turn_notes(name, offer)
             if offer:
-                prompt += TOOLS_NOTE.format(lines="\n".join(offer[2]))
                 rec["tools_offered"] = [r[len("mcp__"):] for r in offer[1]]
             mcp = offer[:2] if offer else None
             rec.update(board_version=version, prompt_sha=sha_text(prompt))
@@ -566,6 +594,11 @@ class EngineRun:
         except Exception as exc:  # the engine's own mistake: recorded and the todo ended, never left taken
             rec["problem"] = detail = f"engine error: {type(exc).__name__}: {exc}"
         finally:
+            with self.cond:
+                why = self.cancelled.pop(name, None)
+            if why:  # stopped because what it worked toward was reached: not a failure of the member
+                rec["cancelled"] = why
+                detail = f"cancelled: {why}"
             try:
                 self.kb.end_todo(todo["id"], name, outcome, entry=entry, status=status, score=score, detail=detail)
             finally:
@@ -577,6 +610,7 @@ class EngineRun:
                     self.free[name] = True
                     self.idle_since[name] = None if self.paused else time.monotonic()
                     self.running -= 1
+                    self.now_running.pop(name, None)
                     if rec.get("state") in BROKEN:
                         self.broken.append(f"{name} turn {turn}: the backend ended {rec['state']}")
                     if status == "infra_error":
@@ -648,7 +682,9 @@ class EngineRun:
             if self.wrap_up and self.wrap_from is None:  # once: the planner may use a few turns to write down what worked
                 self.wrap_from = self.turns_used
                 self.wake_reasons.append(f"the target {self.target:g} was reached: the run ends after at most {self.wrap_up} more "
-                                         "member turns; use them to write down what worked (skills) for a next run, or say done")
+                                         "member turns; use them to write down what worked (skills) for a next run, or say done. "
+                                         "Improve an existing skill (give it as the todo's parent) rather than adding one that "
+                                         "overlaps it, and keep each skill under 3000 characters")
             if not self.wrap_up or self.turns_used - self.wrap_from >= self.wrap_up:
                 return f"the target {self.target:g} was reached"
         if self.patience and self.since_best >= self.patience:
@@ -682,6 +718,13 @@ class EngineRun:
                 self.read_control()
                 if self.stopping is None:
                     self.stopping = self.why_stop()
+                if not self.cut and self.target is not None and self.best is not None and self.best >= self.target:
+                    self.cut = True  # what was still being made toward the target is no longer needed: stop it
+                    for name, cur in list(self.now_running.items()):
+                        if not cur["wrap_up"] and self.members.cancel(name):
+                            self.cancelled[name] = f"the target {self.target:g} was reached"
+                            self.record(self.elog, self.wake_records, {"t": round(time.time(), 3), "kind": "cancel", "member": name,
+                                                                       "turn": cur["turn"], "why": self.cancelled[name]})
                 if self.stopping is None and not self.paused:
                     for name in self.names:
                         if not self.free[name] or self.turns_used >= self.turns:
