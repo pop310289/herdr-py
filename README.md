@@ -214,7 +214,9 @@ grouped by that kind.
 
 The run stops when the member turns are used up, the target score (`--target`) is reached, the planner says done,
 its wakes are used up with nothing left to do, or `--patience` judged answers in a row did not beat the best. Reaching the target cancels the member turns still working toward it (Claude and command members; their todo ends
-"cancelled", not failed): what they were making is no longer needed. With
+"dropped" with the reason, not failed, and does not wake the planner on its own): what they were making is no longer
+needed. Until the planner's next wake has run, no member takes a todo, so it can drop the open ones that worked toward
+the target before anyone starts them. With
 `--wrap-up N`, reaching the target wakes the planner once more and allows N more member turns to write down what
 worked (skills) before the run stops. `--repairs N` lets a member fix an answer the judge turned down, in the same turn
 and the same conversation (what it read stays with it), told what the judge said; `--repair-below SCORE` repairs a
@@ -235,7 +237,10 @@ Claude Code 2.1.295, the context is the same size and holds no CLAUDE.md or skil
 Without a sandbox command a member's tool is never run. `python3 -m herdr_py.rundiag RUN_DIR` reads a run's records and says what was wasted
 or went wrong: answers turned down for the same reason, results that neither beat the best nor were built on (the same
 work done twice), skills nobody used, pages opened by more than one member, turns after the best score, turns left
-when the planner's wakes ran out, members waiting for work, planner replies sent back, repairs.
+when the planner's wakes ran out, members waiting for work, planner replies sent back, repairs, turns that left
+nothing (timed out: their token count is a lower bound) or were cancelled at the target, pairs of skills that quote the
+same sentences (the same rules written down twice; a revision of a skill under its own name does not count), and
+whether the files brought from other tasks were opened.
 `summary.json` counts todos taken twice (must be 0), turns that can be traced to their todo, board version and prompt
 hash (must be all of them), each member's time free with nothing to take, the planner's share of the tokens, and how
 often members read the board (from the Codex, Claude and OpenCode logs; programs keep none). Every verified result is
@@ -264,7 +269,9 @@ kept, and a person picks the current one; the next run goes on from it (a picked
 kind, and the task names it as the version to improve on). A page can also bring reference material from other
 pages: `"from": [{"page": "museum-report", "kinds": ["skill"], "current": true}]` copies, before each run, the chosen
 verified entries of that page's latest run (or `"run": N`) into the members' folder (`reference/<page>/<entry>.txt`,
-listed in `reference/INDEX.md`), and the task says so (`"kinds": ["*"]` brings every verified entry). What a request
+listed in `reference/INDEX.md`), and the task says so (`"kinds": ["*"]` brings every verified entry); when skills are
+brought, it also says to start the work from them, look up again only what they leave out or get wrong, and improve one
+into a new version rather than write another skill on the same subject. What a request
 for a new task ticked on the + page (skills, knowledge, current versions) becomes the drafted page's `"from"`.
 `"loop": {"repairs": 2, "repair_below": 100, "target": 100, "wrap_up": 2}` passes those engine options (repairs in
 the turn, a target, the wrap-up after it) to every run, and the Debug tab starts each run's card with its replay
@@ -563,7 +570,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 526 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 533 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

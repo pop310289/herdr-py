@@ -181,6 +181,72 @@ class RunDiagTest(unittest.TestCase):
         self.assertEqual(f["numbers"], {"made": 2, "answered": 1, "calls": 2})
         self.assertEqual(f["args"]["who"], "b 2")
 
+    def test_turns_that_left_nothing_and_turns_cancelled_at_the_target(self):
+        e = self.entry("a", "1", ok(1))
+        self.turn("a", e, 0, 1)
+        self.turns.append({"member": "b", "start": 0, "end": 900, "tokens": 800000, "state": "timeout", "entry": None})
+        self.assertEqual(self.codes()["lost"]["numbers"], {"turns": 1, "tokens": 800000})
+        self.assertNotIn("cancelled", self.codes())
+        fixed = self.entry("c", "2", ok(2))  # the turn's own answer was lost, its repair was recorded: not lost
+        self.turns.append({"member": "c", "start": 0, "end": 5, "tokens": 10, "state": "idle", "entry": None,
+                           "repairs": [{"entry": fixed, "status": "valid", "score": 2, "tokens": 5}]})
+        self.turns.append({"member": "d", "start": 1, "end": 2, "tokens": 300, "state": "aborted", "entry": None,
+                           "cancelled": "the target 1 was reached"})
+        codes = self.codes()
+        self.assertEqual(codes["lost"]["numbers"], {"turns": 1, "tokens": 800000})
+        self.assertIn("b timeout 800.0k", codes["lost"]["title"])
+        self.assertEqual(codes["cancelled"]["numbers"], {"turns": 1, "tokens": 300})
+
+    def skill(self, member, name, said, parents=()):
+        body = "".join(f'{i + 1}. WebFetch the page; it says "{q}"\n' for i, q in enumerate(said))
+        return self.entry(member, f"ARTIFACT: skill\n---\nname: {name}\ndescription: x\n---\n{body}", ok(20), parents=parents,
+                          kind="method")
+
+    def test_skills_quoting_the_same_sentences_restate_each_other_unless_one_revises_the_other(self):
+        rules = ["the server must not write anything else", "every result must include a resultType",
+                 "a request missing a field must be rejected", "responses never contain newlines"]  # the last has 4 words: not counted
+        a = self.skill("a", "rules", rules)  # shares 2 with b, and the 4-word one
+        b = self.skill("b", "checks", rules[:2] + [rules[3], "Messages Are **delimited** by `newlines`."])
+        self.turn("a", a, 0, 1)
+        self.turn("b", b, 1, 2)
+        self.assertNotIn("skill_overlap", self.codes())  # 2 shared sentences of 5 words or more: below the bar
+        c = self.skill("c", "vectors", ["messages are delimited by newlines"] + rules[:2])  # 3 with b: one of exactly 5 words
+        self.turn("c", c, 2, 3)
+        d = self.skill("a", "rules", rules[:3] + ["a fourth rule of the same kind"], parents=[a])  # a revision of a
+        self.turn("a", d, 3, 4)
+        f = self.codes()["skill_overlap"]
+        self.assertEqual(f["numbers"], {"pairs": 1, "shared": 3})  # b and c; a and d share 3 too, but d revises a
+        self.assertIn(f"{b} and {c} (3)", f["title"])
+        self.assertNotIn(f"{a} and {d}", f["title"])  # a revision restates what it revises
+
+    def test_a_skill_of_another_name_built_on_one_still_restates_it(self):
+        rules = ["the server must not write anything else", "every result must include a resultType",
+                 "a request missing a field must be rejected"]
+        a = self.skill("a", "rules", rules)
+        b = self.skill("b", "checks", rules, parents=[a])
+        self.turn("a", a, 0, 1)
+        self.turn("b", b, 1, 2)
+        self.assertEqual(self.codes()["skill_overlap"]["numbers"], {"pairs": 1, "shared": 3})
+
+    def test_references_brought_from_other_tasks_and_which_were_opened(self):
+        e = self.entry("a", "1", ok(1))
+        self.turn("a", e, 0, 1)
+        ref = os.path.join(self.run, "board", "reference", "other")
+        os.makedirs(ref)
+        for name in ("x.txt", "y.txt"):
+            open(os.path.join(ref, name), "w").close()
+        open(os.path.join(self.run, "board", "reference", "INDEX.md"), "w").close()
+        self.assertEqual(self.codes()["references"]["numbers"], {"files": 2, "opened": 0})
+        os.makedirs(os.path.join(self.run, "members", "claude"))
+        with open(os.path.join(self.run, "members", "claude", "events.jsonl"), "w") as handle:
+            for agent, path in (("a", "/w/a/reference/other/x.txt"), ("b", "reference/other/x.txt"), ("b", "/w/b/reference/INDEX.md"),
+                                ("b", "/w/b/notreference/other/y.txt")):
+                handle.write(json.dumps({"t": 1, "agent": agent, "event": {"type": "assistant", "message": {"content": [
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": path}}]}}}) + "\n")
+        f = self.codes()["references"]
+        self.assertEqual(f["numbers"], {"files": 2, "opened": 1})
+        self.assertEqual(f["args"]["who"], "a 1, b 1")
+
     def test_a_quiet_run_says_nothing_and_an_empty_folder_does_not_break_it(self):
         e = self.entry("a", "1", ok(1))
         self.turn("a", e, 0, 1)

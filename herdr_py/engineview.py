@@ -89,7 +89,7 @@ def load(out):
             if op == "take":
                 todo.update(state="taken", member=e.get("member"), taken=e.get("t"))
             elif op == "end":
-                todo.update(state="done" if e.get("outcome") == "done" else "failed", ended=e.get("t"), entry=e.get("entry"),
+                todo.update(state=e.get("outcome") if e.get("outcome") in ("done", "dropped") else "failed", ended=e.get("t"), entry=e.get("entry"),
                             status=e.get("status"), score=e.get("score"), detail=e.get("detail"))
             elif op == "drop":
                 todo.update(state="dropped", ended=e.get("t"))

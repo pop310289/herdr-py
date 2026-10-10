@@ -219,6 +219,22 @@ class TeamworkTest(Base):
         self.assertEqual(self.kb.brief("indB"), "Nothing verified or failed yet.")
 
 
+class TodoEndTest(Base):
+    def test_a_taken_todo_ends_done_failed_or_dropped_and_nothing_else(self):
+        ends = {}
+        for outcome in ("done", "failed", "dropped"):
+            tid = self.kb.add_todo("work " + outcome)
+            self.assertEqual(self.kb.take_todo("m")["id"], tid)
+            self.kb.end_todo(tid, "m", outcome, detail="cancelled: the target was reached" if outcome == "dropped" else None)
+            ends[tid] = outcome
+        states = {t["id"]: t["state"] for t in TeamKB(self.dir).todo_list()}  # as read back from the file
+        self.assertEqual(states, ends)
+        tid = self.kb.add_todo("one more")
+        self.kb.take_todo("m")
+        with self.assertRaisesRegex(TeamKBError, "outcome: done, failed or dropped"):
+            self.kb.end_todo(tid, "m", "skipped")
+
+
 class DurabilityTest(Base):
     def test_another_reader_sees_the_same_state(self):
         a = self.kb.propose("drawA", "result", "one", candidate(1), name="a.json")

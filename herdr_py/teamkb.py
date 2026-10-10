@@ -12,7 +12,8 @@ content hash under FOLDER/artifacts, so:
 - every brief records which entries it showed to whom, so adoption can be traced to what a member was shown;
 - entries can be private ("private" scope: only their author sees them), for teams whose members must not share;
 - a team can keep a shared todo list in the same log (engine.py): a todo is added, taken by one member at a time, then
-  ended (done or failed, with the entry it produced) or dropped; taking chooses and records under the file lock, so two
+  ended (done or failed, with the entry it produced; dropped when its work was cancelled) or dropped while open; taking
+  chooses and records under the file lock, so two
   members never take the same todo. A todo can come after others: it cannot be taken until they have ended. A review
   todo is never taken by whoever made what it reviews (the members of its parents, whoever took the todos it comes
   after): nobody reviews their own work.
@@ -124,7 +125,7 @@ class TeamKB:
                 self.double_takes += 1
             todo.update(state="taken", taken_by=event.get("member"), takes=todo["takes"] + 1, taken_t=event.get("t"))
         elif op == "end" and todo["state"] == "taken":
-            todo.update(state="done" if event.get("outcome") == "done" else "failed", entry=event.get("entry"),
+            todo.update(state=event.get("outcome") if event.get("outcome") in ("done", "dropped") else "failed", entry=event.get("entry"),
                         status=event.get("status"), score=event.get("score"), detail=event.get("detail"), ended_t=event.get("t"))
         elif op == "drop" and todo["state"] == "open":
             todo.update(state="dropped", dropped_by=event.get("by"))
@@ -359,9 +360,10 @@ class TeamKB:
             return [t["id"] for t in self.todos.values() if self._takeable(t, member)]
 
     def end_todo(self, tid, member, outcome, entry=None, status=None, score=None, detail=None):
-        """End a taken todo: outcome "done" (a valid answer) or "failed" (anything else), with what it produced."""
-        if outcome not in ("done", "failed"):
-            raise TeamKBError("outcome: done or failed")
+        """End a taken todo: outcome "done" (a valid answer), "failed" (anything else) or "dropped" (the work was cancelled:
+        what it worked toward was reached), with what it produced."""
+        if outcome not in ("done", "failed", "dropped"):
+            raise TeamKBError("outcome: done, failed or dropped")
         self._write({"type": "todo", "op": "end", "id": tid, "t": round_t(), "member": member, "outcome": outcome,
                      "entry": entry, "status": status, "score": score, "detail": None if detail is None else str(detail)[:300]})
 

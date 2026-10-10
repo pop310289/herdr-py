@@ -217,6 +217,9 @@ class EngineRun:
         self.now_running = {}  # member -> {"turn", "wrap_up"} of its turn now running
         self.cut = False  # the turns running when the target was reached have been cancelled
         self.cancelled = {}  # member -> why its running turn was cancelled
+        # once the target is reached, no member takes a todo until the planner's next wake has run (it drops the todos
+        # that worked toward the target): the wake that releases the hold
+        self.holding, self.hold_wake = False, None
         if member_access not in ("read", "research"):
             raise ValueError("member_access: read or research")
         self.member_access = member_access  # research: read the folder and search the web (Claude members)
@@ -452,6 +455,8 @@ class EngineRun:
             self.view()
             with self.cond:
                 self.planner_running = False
+                if self.hold_wake == wake:
+                    self.holding = False
                 self.cond.notify_all()
 
     # ---- a member's turn
@@ -554,6 +559,8 @@ class EngineRun:
             except Exception as exc:  # a member backend that breaks fails its turn
                 text, state = f"({type(exc).__name__}: {exc})", "error"
             rec.update(state=state, seconds=round(time.monotonic() - clock, 2), tokens=used(before, self.tokens(name)))
+            if state in ("timeout", "aborted"):
+                rec["tokens_partial"] = True  # a member killed mid-turn never says its total: what it said so far
             outcome, status, score, entry, detail = self.take_answer(name, todo, turn, text, state, shown, rec)
             best = (outcome, status, score, entry, detail)
             last, repairs = entry, []
@@ -598,7 +605,7 @@ class EngineRun:
                 why = self.cancelled.pop(name, None)
             if why:  # stopped because what it worked toward was reached: not a failure of the member
                 rec["cancelled"] = why
-                detail = f"cancelled: {why}"
+                outcome, detail = "dropped", f"cancelled: {why}"
             try:
                 self.kb.end_todo(todo["id"], name, outcome, entry=entry, status=status, score=score, detail=detail)
             finally:
@@ -611,7 +618,7 @@ class EngineRun:
                     self.idle_since[name] = None if self.paused else time.monotonic()
                     self.running -= 1
                     self.now_running.pop(name, None)
-                    if rec.get("state") in BROKEN:
+                    if rec.get("state") in BROKEN and not why:
                         self.broken.append(f"{name} turn {turn}: the backend ended {rec['state']}")
                     if status == "infra_error":
                         self.broken.append(f"{name} turn {turn}: the judge failed on {entry}")
@@ -621,7 +628,8 @@ class EngineRun:
                         else:
                             self.since_best += 1
                         self.progress.append({"turn": turn, "t": round(time.time(), 3), "best": self.best})
-                    self.ended_since_wake.append(f"{name} ended todo {todo['id']}: {outcome}")
+                    if not why:  # a cancelled turn: the wake for the target says why
+                        self.ended_since_wake.append(f"{name} ended todo {todo['id']}: {outcome}")
                     self.cond.notify_all()
 
     # ---- the engine
@@ -681,10 +689,12 @@ class EngineRun:
         if self.target is not None and self.best is not None and self.best >= self.target:
             if self.wrap_up and self.wrap_from is None:  # once: the planner may use a few turns to write down what worked
                 self.wrap_from = self.turns_used
+                self.holding = self.wakes < self.planner_wakes
                 self.wake_reasons.append(f"the target {self.target:g} was reached: the run ends after at most {self.wrap_up} more "
                                          "member turns; use them to write down what worked (skills) for a next run, or say done. "
                                          "Improve an existing skill (give it as the todo's parent) rather than adding one that "
-                                         "overlaps it, and keep each skill under 3000 characters")
+                                         "overlaps it, and keep each skill under 3000 characters. No member takes a todo until "
+                                         "you reply: drop the open todos that worked toward the target")
             if not self.wrap_up or self.turns_used - self.wrap_from >= self.wrap_up:
                 return f"the target {self.target:g} was reached"
         if self.patience and self.since_best >= self.patience:
@@ -725,7 +735,7 @@ class EngineRun:
                             self.cancelled[name] = f"the target {self.target:g} was reached"
                             self.record(self.elog, self.wake_records, {"t": round(time.time(), 3), "kind": "cancel", "member": name,
                                                                        "turn": cur["turn"], "why": self.cancelled[name]})
-                if self.stopping is None and not self.paused:
+                if self.stopping is None and not self.paused and not self.holding:
                     for name in self.names:
                         if not self.free[name] or self.turns_used >= self.turns:
                             continue
@@ -750,6 +760,8 @@ class EngineRun:
                         reason = "; ".join(reasons[:6]) + (f" (and {len(reasons) - 6} more)" if len(reasons) > 6 else "")
                         self.wake_reasons, self.ended_since_wake = [], []
                         self.planner_running, self.wakes = True, self.wakes + 1
+                        if self.holding and self.hold_wake is None:
+                            self.hold_wake = self.wakes  # the wake told that the target was reached
                         threads.append(threading.Thread(target=self.plan, args=(self.wakes, reason), daemon=True))
                         threads[-1].start()
                 if self.stopping is not None and self.running == 0 and not self.planner_running:

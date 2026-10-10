@@ -16,17 +16,28 @@ The rules (codes):
 - repairs: turns that repaired an answer in the turn, and how many repairs helped.
 - team_tools: the MCP tools members made for each other (verified ARTIFACT: mcp answers), how many answered the
   engine's probe, and how often members called them.
+- lost: member turns that left nothing (no answer recorded: they ran out of time, broke, or answered without the
+  format), with the tokens they used.
+- cancelled: member turns the engine cancelled when the target was reached.
+- skill_overlap: pairs of skills that quote the same sentences (three or more, of five words or more), unless one is a
+  revision of the other (it builds on it and keeps its name): the same rules written down twice.
+- references: the files brought from other tasks (reference/), and how many of them members opened.
 - broken: what broke in the setup (a backend, the judge)."""
 import argparse
 import collections
+import itertools
 import json
 import os
+import re
 import sys
 
 from . import engineview
 from .teamkb import TAG, TeamKB
 
 WAIT_SHARE = 0.25  # a member free this share of the run (or more) waited too long
+QUOTE = re.compile(r'"([^"\n]{20,})"|\u201c([^\u201d\n]{20,})\u201d')  # a quoted sentence ("..." or curly quotes)
+QUOTE_WORDS = 5  # a quote counts when it has this many words or more (a field's name alone does not)
+SHARED_QUOTES = 3  # two skills quoting this many of the same sentences restate each other
 
 
 def jsonl(path):
@@ -59,6 +70,31 @@ def artifact_kind(run, entry):
         return entry.get("kind")
     m = TAG.match(first)
     return m.group(2).lower() if m else entry.get("kind")
+
+
+def quotes(text):
+    """The sentences a text quotes, each lower case with its white space and markup (* and `) taken out."""
+    out = set()
+    for m in QUOTE.finditer(text):
+        q = " ".join(re.sub(r"[*`]", "", m.group(1) or m.group(2)).lower().split()).rstrip(".")
+        if len(q.split()) >= QUOTE_WORDS:
+            out.add(q)
+    return out
+
+
+def skill_name(text):
+    m = re.search(r"^name:\s*(\S.*?)\s*$", text, re.M)
+    return m.group(1).lower() if m else None
+
+
+def ancestors(eid, by_id):
+    seen, todo = set(), list((by_id.get(eid) or {}).get("parents") or [])
+    while todo:
+        p = todo.pop()
+        if p not in seen:
+            seen.add(p)
+            todo.extend((by_id.get(p) or {}).get("parents") or [])
+    return seen
 
 
 def tok(n):
@@ -218,6 +254,67 @@ def findings(run):
             {"made": len(made), "answered": answered, "calls": sum(calls.values())},
             "a tool pays off when teammates call it: name it in the todos it is for",
             who=", ".join(f"{m} {n}" for m, n in sorted(calls.items())) or "-")
+
+    # turns that left nothing, and turns cancelled when the target was reached
+    lost = [r for r in turns if not r.get("entry") and not any(a.get("entry") for a in r.get("repairs") or [])]
+    for code, group in (("lost", [r for r in lost if not r.get("cancelled")]), ("cancelled", [r for r in lost if r.get("cancelled")])):
+        if group:
+            spent = sum(r.get("tokens") or 0 for r in group)
+            at_least = "at least " if any(r.get("tokens_partial") for r in group) else ""  # a killed member's count stops short
+            which = ", ".join(f"{r['member']} {r.get('state') or '?'} {'≥' if r.get('tokens_partial') else ''}{tok(r.get('tokens') or 0)}"
+                              for r in group[:4])
+            if code == "lost":
+                add(code, f"{len(group)} member turns left nothing ({which}; {at_least}{tok(spent)} tokens)",
+                    {"turns": len(group), "tokens": spent},
+                    "a turn that runs out of time loses all it did: give one part of the work per todo, or a longer "
+                    "budget.turn_timeout", which=which, tokens_text=at_least + tok(spent))
+            else:
+                add(code, f"{len(group)} member turns were cancelled when the target was reached ({which}; {at_least}{tok(spent)} tokens)",
+                    {"turns": len(group), "tokens": spent},
+                    "what they were making was no longer needed; the tokens before the cancel were spent all the same",
+                    which=which, tokens_text=at_least + tok(spent))
+
+    # skills that restate each other
+    said, names = {}, {}
+    for e in entries:
+        if e["status"] == "valid" and kinds.get(e["id"]) == "skill" and e.get("artifact"):
+            try:
+                with open(os.path.join(run, "kb", e["artifact"]), encoding="utf-8", errors="replace") as handle:
+                    text = handle.read()
+            except OSError:
+                continue
+            said[e["id"]], names[e["id"]] = quotes(text), skill_name(text)
+    pairs = []
+    for a, b in itertools.combinations([e["id"] for e in entries if e["id"] in said], 2):
+        both = said[a] & said[b]
+        revision = names[a] == names[b] and (a in ancestors(b, by_id) or b in ancestors(a, by_id))
+        if len(both) >= SHARED_QUOTES and not revision:
+            pairs.append((a, b, len(both)))
+    if pairs:
+        which = ", ".join(f"{a} and {b} ({n})" for a, b, n in pairs[:4])
+        add("skill_overlap", f"{len(pairs)} pairs of skills quote the same sentences: {which}",
+            {"pairs": len(pairs), "shared": sum(n for _, _, n in pairs)},
+            "one skill per subject: improve the earlier skill (with it as the todo's parent) or point to it, instead of "
+            "restating it", which=which)
+
+    # material brought from other tasks, and whether members opened it
+    refdir = os.path.join(run, "board", "reference")
+    brought = []
+    for root, _, names in os.walk(refdir):
+        brought += [os.path.relpath(os.path.join(root, n), refdir).replace(os.sep, "/") for n in names if n != "INDEX.md"]
+    if brought:
+        reads = collections.defaultdict(set)
+        for c in tools:
+            what = str(c.get("what") or "").replace(os.sep, "/")
+            for f in brought:
+                if what == "reference/" + f or what.endswith("/reference/" + f):
+                    reads[f].add(c.get("agent"))
+        who = collections.Counter(a for f in reads for a in reads[f])
+        add("references", f"{len(brought)} files were brought from other tasks; members opened {len(reads)} of them"
+            + (" (" + ", ".join(f"{m} {n}" for m, n in sorted(who.items())) + ")" if who else ""),
+            {"files": len(brought), "opened": len(reads)},
+            "what is brought pays off when someone reads it: name the files in the todos they are for",
+            who=", ".join(f"{m} {n}" for m, n in sorted(who.items())) or "-")
 
     for item in summary.get("broken") or []:
         add("broken", f"the setup broke: {item}", {}, "fix the setup before reading the results", what=str(item))

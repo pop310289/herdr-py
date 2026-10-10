@@ -812,7 +812,38 @@ class PartsTest(Base):
         self.assertNotIn("cancelled", turns["a"])
         self.assertEqual([r["member"] for r in self.records("engine.jsonl") if r.get("kind") == "cancel"], ["b"])
         todo = next(t for t in TeamKB(os.path.join(self.out, "kb")).todo_list() if t.get("taken_by") == "b")
-        self.assertEqual(todo["detail"], "cancelled: the target 100 was reached")
+        self.assertEqual((todo["state"], todo["detail"]), ("dropped", "cancelled: the target 100 was reached"))
+        shown = next(t for t in engineview.load(self.out)[2] if t["id"] == todo["id"])
+        self.assertEqual(shown["state"], "dropped")  # the replay page reads the same
+        self.assertEqual(self.summary()["broken"], [])  # cancelled, not broken
+        self.assertTrue(turns["b"]["tokens_partial"])  # killed: its count stops short
+        self.assertNotIn("tokens_partial", turns["a"])
+
+    def wrap_up_run(self, *extra):
+        self.script(planner=[add({"text": "give a number", "for": "a"}, {"text": "take long", "for": "b"}, "polish the best"),
+                             {"add": [{"text": "write down what worked", "for": None, "parents": []}], "drop": ["$open"],
+                              "done": False, "why": "test"}, add()],
+                    members={"a": [{"answer": "100"}, {"answer": "5"}], "b": [{"answer": "5", "sleep": 8}]})
+        code, said, err = self.run_main("--turns", "5", "--target", "100", "--wrap-up", "1", *extra)
+        self.assertEqual(code, 0, said + err)
+        texts = {t["id"]: t for t in TeamKB(os.path.join(self.out, "kb")).todo_list()}
+        return [(r["member"], texts[r["todo"]]["text"], r.get("wrap_up")) for r in self.member_records()], texts
+
+    def test_at_the_target_no_todo_is_taken_until_the_planner_has_dropped_what_worked_toward_it(self):
+        turns, texts = self.wrap_up_run()
+        self.assertEqual(sorted(turns, key=lambda x: x[1]), [("a", "give a number", None), ("b", "take long", None),
+                                                             ("a" if turns[-1][0] == "a" else "b", "write down what worked", True)])
+        polish = next(t for t in texts.values() if t["text"] == "polish the best")
+        self.assertEqual(polish["state"], "dropped")
+        wakes = [w for w in self.records("engine.jsonl") if w["kind"] == "wake"]
+        self.assertEqual(len(wakes), 2)  # the start and the target: the cancelled turn did not wake the planner
+        self.assertIn("No member takes a todo until you reply: drop the open todos that worked toward the target", wakes[1]["reason"])
+        self.assertIn("a ended todo", wakes[1]["reason"])
+        self.assertNotIn("b ended todo", wakes[1]["reason"])  # b's turn was cancelled: the target says why
+
+    def test_with_no_wake_left_at_the_target_the_open_todos_are_taken_as_they_are(self):
+        turns, _ = self.wrap_up_run("--planner-wakes", "1")
+        self.assertEqual([t[1:] for t in turns if t[2]], [("polish the best", True)])
 
     def test_without_a_target_a_long_turn_finishes(self):
         self.script(planner=[add("try", "try too"), add(done=True)], members={"a": [{"answer": "100"}], "b": [{"answer": "5", "sleep": 1}]})

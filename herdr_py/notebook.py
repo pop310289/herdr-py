@@ -162,6 +162,11 @@ S = {  # (English, 繁體中文)
     "refs_head": ("## Reference material from other tasks (not this task's verified results; their old scores do not apply here)",
                   "## 參考資料（來自其他 task；不是這個 task 已驗證的成果，舊分數不適用）"),
     "refs_where": ("In your folder, under reference/ (listed in reference/INDEX.md):", "在你的資料夾 reference/ 底下（清單在 reference/INDEX.md）："),
+    "refs_skills": ("The skills among them hold what an earlier team found out. Start the work from them: look up again only "
+                    "what they leave out or what turns out wrong, and improve one into a new version rather than writing "
+                    "another skill on the same subject.",
+                    "其中的 skill 是先前團隊查到的東西。工作從它們開始：只重查它們沒寫到、或證實寫錯的部分；要改進就把它改成新版，"
+                    "不要另寫一份同主題的 skill。"),
     "refs_index": ("# Reference material from other tasks\n\nNot this task's verified results, and their old scores do not apply here: "
                    "that task was judged by another rule. Read them, follow them where they help; your answers are judged here.",
                    "# 參考資料（來自其他 task）\n\n這些不是這個 task 已驗證的成果，也不沿用原本的分數：那個 task 的評分標準不同。"
@@ -787,7 +792,8 @@ def task_with_notes(page, notes, picks=(), refs=()):
     lines = [f"- {ref_file(r, e)}: {e['kind']} {e.get('name') or one_line(e.get('summary') or '', 80)} "
              f"({r['title']}, {say(lang, 'run_n', n=e.get('run') or r['run'])}, {e['member']})" for r in refs for e in r["entries"]]
     if lines:
-        parts.append("\n".join([say(lang, "refs_head"), say(lang, "refs_where")] + lines))
+        skills = any(e["kind"] == "skill" for r in refs for e in r["entries"])
+        parts.append("\n".join([say(lang, "refs_head"), say(lang, "refs_where")] + lines + ([say(lang, "refs_skills")] if skills else [])))
     task = read_text(page.task_path())
     return task.rstrip("\n") + "".join("\n\n" + x for x in parts) + "\n" if parts else task
 
@@ -855,7 +861,9 @@ def write_references(folder, refs, lang):
                         f"{r['title']} ({say(lang, 'run_n', n=e.get('run') or r['run'])}) | {e['member']} |")
     if rows:
         with open(os.path.join(board, "reference", "INDEX.md"), "w", encoding="utf-8") as handle:
-            handle.write(say(lang, "refs_index") + "\n\n| file | kind | name | from | by |\n|---|---|---|---|---|\n" + "\n".join(rows) + "\n")
+            skills = any(e["kind"] == "skill" for r in refs for e in r["entries"])
+            handle.write(say(lang, "refs_index") + ("\n\n" + say(lang, "refs_skills") if skills else "")
+                         + "\n\n| file | kind | name | from | by |\n|---|---|---|---|---|\n" + "\n".join(rows) + "\n")
     return len(rows)
 
 

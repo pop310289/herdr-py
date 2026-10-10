@@ -267,8 +267,10 @@ class PageTest(Base):
         index = read(os.path.join(board, "reference", "INDEX.md"))
         self.assertIn("Not this task's verified results", index)
         self.assertIn(f"reference/p1/{made['skill']}.txt", index)
+        self.assertIn("Start the work from them: look up again only what they leave out", index)
         task = read(os.path.join(run["folder"], "task.md"))
         self.assertIn("Reference material from other tasks", task)
+        self.assertIn("Start the work from them: look up again only what they leave out", task)  # a skill is brought
         self.assertIn(f"reference/p1/{made['result']}.txt", task)
         self.assertEqual(run["references"], [{"page": "p1", "run": 1, "entries": [made["skill"], made["result"]]}])
         self.assertFalse(os.path.exists(os.path.join(board, "reference", "p1", eight + ".txt")))
@@ -279,6 +281,7 @@ class PageTest(Base):
         dry = self.dry("p2")
         self.assertNotIn(made["skill"], dry)  # what its own page excluded is not brought
         self.assertIn(made["result"], dry)
+        self.assertNotIn("Start the work from them", dry)  # no skill is brought now: nothing to start from
 
     def test_what_a_request_asked_to_bring_becomes_the_pages_from(self):
         self.draft()
