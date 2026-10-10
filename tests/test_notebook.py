@@ -621,6 +621,41 @@ class ViewTest(Base):
             self.assertNotIn("…", svg, lang)  # a label too wide for its box is cut with an ellipsis
             self.assertEqual(len(re.findall(r'<rect class="box', svg)), 6, lang)
 
+    def test_the_home_page_shows_every_task_once_what_needs_a_person_first(self):
+        self.draft()  # p1: a draft, to approve
+        self.draft(id="p2", title="Second")  # p2: approved, never run
+        notebook.approve(self.page("p2"), "person")
+        self.draft(id="p3", title="Third", outputs=["result"])  # p3: ran, to review
+        notebook.attach(self.page("p3"), self.engine_run("outside", answers=("5",)), "claude")
+        self.draft(id="p4", title="Fourth")  # p4: on hold
+        self.cli("hold", "p4", "--why", "later")
+        self.draft(id="p5", title="Fifth")  # p5: a second draft, the latest change of all
+        out = os.path.join(self.dir, "site")
+
+        def board():
+            self.cli("view", "--out", out)
+            home = read(os.path.join(out, "index.html"))
+            self.assertLess(home.index('<ul class="board">'), home.index('class="panel inbox"'))  # at a glance, first
+            board_ = home.split('<ul class="board">')[1].split("</ul>")[0]
+            rows = board_.split("<li ")[2:]
+            return home, {re.search(r'data-page="([^"]+)"', r).group(1): r for r in rows}, re.findall(r'<li data-page="([^"]+)"', board_)
+
+        home, rows, order = board()
+        self.assertEqual(order, ["p3", "p5", "p1", "p2", "p4"])  # to review, drafts (latest first), approved, on hold: each once
+        for chip in ("to review 1", "draft 2", "approved 1", "on hold 1"):
+            self.assertIn(f">{chip}</span>", home)
+        self.assertIn("review run 1", rows["p3"])  # what it waits for
+        self.assertIn("approve it before it runs", rows["p1"])
+        self.assertRegex(rows["p3"], r"run 1, ended .*result 5\b")  # its latest run, from the records
+        self.assertIn("result：<span class=\"faint\">not picked</span>", rows["p3"])
+        self.assertIn("not run yet", rows["p2"])
+        pick = next(e["id"] for e in self.page("p3").facts(1)["made"])
+        notebook.pick(self.page("p3"), pick, "person")
+        home, rows, order = board()
+        self.assertIn(f'result：<span class="mono">{pick}</span> run 1', rows["p3"])  # the current version, once picked
+        self.assertEqual(order, ["p5", "p1", "p2", "p3", "p4"])  # looked at (never approved: reviewed), no longer to review
+        self.assertIn(">reviewed 1</span>", home)
+
     def test_a_text_file_opens_as_a_page_that_says_it_is_utf8(self):
         # sent as text/plain with no charset (python -m http.server does), a skill was read as Big5 on a phone set to
         # Traditional Chinese; the page it opens as says UTF-8, whatever the server sends

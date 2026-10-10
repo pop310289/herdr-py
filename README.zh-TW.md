@@ -155,7 +155,9 @@ python3 -m herdr_py.notebook ~/notebook view --out site/ --runs runs/   # --runs
 ```
 
 `view` 把筆記本寫成給電腦螢幕看的 app，不需要 JavaScript 也完整：左邊一排是所有 task（標題第一個字或 page.json 的 `icon`，
-加上狀態點），最下面的「＋」開新 task；點開的 task 佔滿右邊，分成幾個分頁。總覽：由紀錄算出的數字（執行次數、成員回合、通過的條目、
+加上狀態點），最下面的「＋」開新 task。首頁一開始是「全部 task」：先列各狀態的數量，再每個 task 一列（需要人處理的排前面），
+寫著狀態與要你做的事、最近一次執行（何時結束、最好的成果、花費）、每種成果的現行版；下面才是附按鈕的「待你處理」。點開的 task
+佔滿右邊，分成幾個分頁。總覽：由紀錄算出的數字（執行次數、成員回合、通過的條目、
 待你處理），每個 Agent 一張卡片，寫著紀錄裡的狀態（最後一個回合怎麼結束，執行中則是在做或在等）和它的待辦；點卡片從右側打開它的
 面板：角色、待辦、寫了和用了哪些 skill、產出、每個回合。架構：團隊樹狀圖（planner 分派待辦、成員回答、評分決定什麼通過；圖裡每個
 Agent 都能點開面板）。回放：每次執行的回放（engineview 的頁面，直接在分頁裡）。除錯：每次執行出了什麼錯（被退回的 planner 回覆和理由、
@@ -272,7 +274,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 489 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 490 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

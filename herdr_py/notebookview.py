@@ -80,6 +80,16 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "requests": ("New tasks waiting for Claude to draft", "等 Claude 起草的新 task"),
     "request_line": ("{id}: {goal}", "{id}：{goal}"),
     "by_day": ("By day", "依日期"),
+    "all_tasks": ("Every task", "全部 task"),
+    "col_task": ("task", "task"), "col_state": ("state", "狀態"), "col_run": ("latest run", "最近一次執行"),
+    "col_current": ("current versions", "現行版"),
+    "never_ran": ("not run yet", "還沒執行"),
+    "run_ended": ("run {n}, ended {when}", "第 {n} 次 · {when} 結束"),
+    "run_going": ("run {n}, going since {when}", "第 {n} 次 · {when} 開始，執行中"),
+    "run_stuck": ("run {n}, nothing written since {when}", "第 {n} 次 · {when} 之後沒有動靜"),
+    "run_unknown": ("run {n}, its records are missing", "第 {n} 次 · 紀錄不完整"),
+    "not_picked": ("not picked", "未選"),
+    "last_change": ("last change {when}", "最後動作 {when}"),
     "planner_role": ("hands out todos", "分派待辦"),
     "judge_role": ("judges every answer", "評分：通過的才進知識庫"), "judge_title": ("judge · {f}", "評分 · {f}"),
     "skill_line": ("skills: wrote {w} · used {u}", "skill：寫 {w} · 用 {u}"),
@@ -249,6 +259,16 @@ a.chip { color:var(--ice); }
 @keyframes breathe { 50% { opacity:.3; } }
 .inbox { border-color:rgba(212,162,76,.35); }
 .items { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:10px; min-width:0; }
+.board { list-style:none; margin:10px 0 0; padding:0; font-size:var(--fs-2); }
+.board > li { display:grid; grid-template-columns:minmax(0,2.2fr) minmax(0,1.4fr) minmax(0,2fr) minmax(0,1.4fr); gap:4px 16px;
+  padding:10px 4px; border-top:1px solid var(--line); align-items:start; min-width:0; overflow-wrap:anywhere; }
+.board > li:first-child { border-top:0; } .board > li.head { font-size:var(--fs-1); color:var(--faint); padding-top:0; }
+.board .tk { display:flex; gap:10px; align-items:flex-start; min-width:0; } .board .tk > div { min-width:0; }
+.board .tk .av { width:32px; height:32px; border-radius:9px; font-size:13px; } .board .tk b a { color:var(--ink); }
+.board small { display:block; color:var(--muted); font-size:var(--fs-1); margin-top:2px; } .board small.need { color:#E9C27A; }
+.board .goal { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .board small.run { color:var(--ink); }
+.board .mono { font-family:ui-monospace, SFMono-Regular, Menlo, monospace; } .board .faint { color:var(--faint); }
+.board small.lbl { display:none; }  /* the column's name, for a style that drops the header row */
 .items > li { background:var(--inset); border:1px solid var(--line); border-radius:10px; padding:10px 12px; overflow-wrap:anywhere;
   display:flex; flex-direction:column; gap:5px; min-width:0; }
 .items > li > * { min-width:0; max-width:100%; }
@@ -1023,6 +1043,62 @@ def needs_card(nb, page, lang, root, need, own=False):
     return "<li>" + "".join(out) + "</li>"
 
 
+BOARD_ORDER = ("stuck", "running", "review", "draft", "approved", "reviewed", "hold", "done")  # what needs a person first
+
+
+def last_run_lines(page, lang):
+    """The latest run as its records tell it: when it ended (or that it is going, or stuck), its best outputs, its cost."""
+    runs = page.runs()
+    if not runs:
+        return [t(lang, "never_ran")]
+    r = runs[-1]
+    f = page.facts(r["n"])
+    if f["state"] == "ended":
+        head = t(lang, "run_ended", n=r["n"], when=local(f.get("end") or r["t"]))
+    elif f["state"] == "running":
+        head = t(lang, "run_going", n=r["n"], when=local(f.get("start") or r["t"]))
+    elif f["state"] == "stuck":
+        head = t(lang, "run_stuck", n=r["n"], when=local(f.get("end") or r["t"]))
+    else:
+        head = t(lang, "run_unknown", n=r["n"])
+    made = made_text(page, [f], lang, who=False)
+    cost = cost_text(lang, f.get("tokens") or 0, f.get("member_turns") or 0, f.get("seconds") or 0, f["state"] == "ended")
+    return [head] + [x for x in (made, cost) if x]
+
+
+def board_html(pages, lang, root):
+    """Every task in one place, a row each, what needs a person first: its state and what waits, its latest run, and
+    the current version of each output it names (or that it picked). Only what the records hold."""
+    counts, rows = collections.Counter(), []
+    for p in pages:
+        state, needs = p.state()
+        counts[state] += 1
+        rows.append((BOARD_ORDER.index(state), -last_active(p), p.id, p, state, needs))
+    chips = "".join(f'<span class="chip {STATE_CHIP[st]}">{esc(say(lang, "st_" + st))} {counts[st]}</span>'
+                    for st in BOARD_ORDER if counts[st])
+    items = [f'<li class="head"><span>{esc(t(lang, "col_task"))}</span><span>{esc(t(lang, "col_state"))}</span>'
+             f'<span>{esc(t(lang, "col_run"))}</span><span>{esc(t(lang, "col_current"))}</span></li>']
+    for _, _, _, p, state, needs in sorted(rows, key=lambda x: x[:3]):
+        picks = p.picks()
+        kinds = p.d.get("outputs") or sorted(k for k in picks if k)
+        current = "".join(f'<small>{esc(k)}：' + (f'<span class="mono">{esc(picks[k].get("entry"))}</span> '
+                                                  f'{esc(say(lang, "run_n", n=picks[k].get("run")))}' if k in picks
+                                                  else f'<span class="faint">{esc(t(lang, "not_picked"))}</span>') + "</small>"
+                          for k in kinds) or '<small class="faint">—</small>'
+        run_lines = last_run_lines(p, lang)
+        items.append(
+            f'<li data-page="{esc(p.id)}"><div class="tk"><span class="av">{esc(letter(p))}</span><div>'
+            f'<b><a href="{root}p/{esc(p.id)}/">{esc(p.d.get("title") or p.id)}</a></b>'
+            f'<small class="goal">{esc(p.d.get("goal") or "")}</small></div></div>'
+            f'<div><span class="chip {STATE_CHIP[state]}">{esc(say(lang, "st_" + state))}</span>'
+            + "".join(f'<small class="need">{esc(need_text(lang, need, p))}</small>' for need in needs)
+            + f'<small class="faint">{esc(t(lang, "last_change", when=local(last_active(p))))}</small></div>'
+            f'<div><small class="run">{esc(run_lines[0])}</small>' + "".join(f'<small>{esc(x)}</small>' for x in run_lines[1:]) + "</div>"
+            f'<div><small class="lbl">{esc(t(lang, "col_current"))}</small>{current}</div></li>')
+    return (f'<section class="panel"><h2>{esc(t(lang, "all_tasks"))}</h2><div class="chips">{chips}</div>'
+            f'<ul class="board">{"".join(items)}</ul></section>')
+
+
 def home_main(nb, pages, lang, root, roots, live):
     items = [needs_card(nb, p, lang, root, need) for p in pages for need in p.state()[1]]
     requests = [r for r in nb.requests() if r["state"] == "open"]
@@ -1036,6 +1112,8 @@ def home_main(nb, pages, lang, root, roots, live):
     req = "".join(f'<li><div class="row"><h3>{esc(r.get("title") or r["goal"][:40])}</h3><span class="chip warn">{esc(t(lang, "requests"))}</span></div>'
                   f'<div class="muted">{esc(t(lang, "request_line", id=r["id"], goal=r["goal"]))}</div>'
                   f'<div class="faint">{esc(r.get("by"))} · {esc(local(r.get("t")))}</div></li>' for r in requests)
+    if pages:  # every task at a glance first; what waits for you, with its buttons, under it
+        out.append(board_html(pages, lang, root))
     out.append(f'<section class="panel inbox"><h2>{esc(t(lang, "home"))}</h2>'
                + (f'<ul class="items">{"".join(items)}{req}</ul>' if items or req else f'<div class="muted">{esc(say(lang, "inbox_none"))}</div>')
                + "</section>")

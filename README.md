@@ -279,8 +279,10 @@ python3 -m herdr_py.notebook ~/notebook view --out site/ --runs runs/   # --runs
 ```
 
 `view` writes the notebook as an app for a computer's screen, complete without JavaScript: a rail on the left with
-every task (the first letter of its title or its `icon`, and a dot for its state) and a + for a new one; the task you
-open fills the rest, in tabs. Overview: the numbers from the records (runs, member turns, entries passed, what waits
+every task (the first letter of its title or its `icon`, and a dot for its state) and a + for a new one. The home page
+starts with every task at a glance: a count per state, then a row per task, what needs a person first, with its state
+and what waits, its latest run (when it ended, its best outputs, what it cost) and the current version of each
+output; what waits for you, with its buttons, comes under it. The task you open fills the rest, in tabs. Overview: the numbers from the records (runs, member turns, entries passed, what waits
 for you) and a card per agent with its state as the records say (how its last turn ended, or working and waiting
 while a run goes on) and its todos; a card opens the agent's panel on the right: its role, its todos, the skills it
 wrote and used, what it made and every turn. Team: the team drawn as a tree (the planner hands out todos, the members
@@ -535,7 +537,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 489 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 490 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
