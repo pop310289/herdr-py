@@ -33,6 +33,22 @@ cd herdr-py && ./scripts/install.sh          # puts a `herdr-py` wrapper in ~/.l
 
 Or run it in place: `python3 -m herdr_py ...` from the repository folder.
 
+### A machine that cannot clone
+
+`scripts/oneshot.py` writes one bash script that holds every file of a commit: copy that one file to the machine, run
+it, and it writes the repository and checks every file's sha256, so a copy that changed on the way (a paste, a mail)
+says which files differ.
+
+```bash
+python3 scripts/oneshot.py                     # herdr-py-<commit>-packed.sh and herdr-py-<commit>-files.sh
+# on the other machine:
+bash herdr-py-<commit>-packed.sh && cd herdr-py && ./scripts/install.sh
+```
+
+The packed script (the files as a tar.gz in base64, about 0.75 MB) needs tar and gzip there; the files script (about
+2 MB: a mkdir for the folders and a here-document for each file, readable as it is) needs only bash and coreutils.
+No line of either is 1000 bytes or more, so a paste into a terminal does not cut one.
+
 ## Quick start
 
 ```bash
@@ -570,7 +586,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 534 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 539 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
