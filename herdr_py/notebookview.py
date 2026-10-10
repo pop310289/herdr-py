@@ -62,6 +62,7 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "refs": ("Reference material from other tasks", "參考資料（來自其他 task）"),
     "kinds_all": ("every verified entry", "全部通過的條目"),
     "raw_file": ("the file itself (UTF-8 plain text)", "原始檔（UTF-8 純文字）"),
+    "left_out": ("left out", "已排除"), "all_left_out": ("every version is left out", "每一版都已排除"),
     "refs_note": ("Not this task's verified results; their old scores do not apply here.", "不算這個 task 已驗證的成果，舊分數不適用。"),
     "refs_line": ("reference material: {items}", "參考資料：{items}"),
     "refs_item": ("{title}, run {n}: {k}", "{title} 第 {n} 次 {k} 條"),
@@ -1028,10 +1029,15 @@ def needs_card(nb, page, lang, root, need, own=False):
         f = page.facts(need[1])
         out.append(f'<div class="muted">{esc(cost_text(lang, f.get("tokens"), f.get("member_turns"), f.get("seconds"), f["state"] == "ended"))}</div>')
         out.append(f'<div class="faint">{esc(say(lang, "todo_review"))}</div>')
-        picks = page.picks()
+        picks, excluded = page.picks(), page.excluded()
         for kind, versions in outputs_of(page).items():
-            best = best_of([v for v in versions if v["run"] == need[1]]) or best_of(versions)
-            if kind in picks or not best:
+            usable = [v for v in versions if v["id"] not in excluded]
+            best = best_of([v for v in usable if v["run"] == need[1]]) or best_of(usable)
+            if kind in picks:
+                continue
+            if not best:
+                if versions:
+                    out.append(f'<div class="muted">{esc(kind)}: {esc(say(lang, "no_pick"))}; {esc(t(lang, "all_left_out"))}</div>')
                 continue
             link = f'{root}p/{esc(page.id)}/files/{esc(best["file"])}' if best.get("file") else None
             ident = f'<a href="{link}">{esc(best["id"])}</a>' if link else esc(best["id"])
@@ -1398,7 +1404,7 @@ def kb_lists_html(page, lang, outs):
 def versions_html(page, lang, outs):
     if not any(outs.values()):
         return f'<div class="muted">{esc(t(lang, "outputs_none"))}</div>'
-    picks = page.picks()
+    picks, excluded = page.picks(), page.excluded()
     blocks = []
     for kind, versions in outs.items():
         if not versions:
@@ -1407,12 +1413,16 @@ def versions_html(page, lang, outs):
         rows = []
         for v in versions[:12]:
             is_cur = cur is not None and cur.get("entry") == v["id"]
+            gone = excluded.get(v["id"])  # a person left it out: not offered as the current version
             link = f'<a href="files/{esc(v["file"])}">{esc(say(lang, "open"))}</a>' if v.get("file") else ""
-            tag = f'<span class="chip good">{esc(say(lang, "current"))}</span>' if is_cur else ""
-            button = "" if is_cur else act_button(lang, page, "pick", entry=v["id"], kind=kind)
+            tag = (f'<span class="chip good">{esc(say(lang, "current"))}</span>' if is_cur else "") + (
+                f'<span class="chip bad">{esc(t(lang, "left_out"))}</span>' if gone else "")
+            button = (act_button(lang, page, "include", entry=v["id"]) if gone
+                      else "" if is_cur else act_button(lang, page, "pick", entry=v["id"], kind=kind))
+            why = f'<span class="faint">{esc(gone.get("why"))}</span>' if gone and gone.get("why") else ""
             rows.append(f'<li class="{"cur" if is_cur else ""}" data-said>{tag}<span class="mono">{esc(v["id"])}</span>'
                         f'<span>{esc(say(lang, "run_n", n=v["run"]))} · {esc(v["member"])} · {esc(score_text(v["score"]))}</span>'
-                        f'<span class="faint">{esc(local(v.get("t")))}</span>{link} {button} <span class="said"></span></li>')
+                        f'<span class="faint">{esc(local(v.get("t")))}</span>{why}{link} {button} <span class="said"></span></li>')
         note = say(lang, "picked", by=cur.get("by"), when=local(cur.get("t"))) if cur else say(lang, "no_pick")
         more = f'<div class="faint">… {len(versions) - 12}</div>' if len(versions) > 12 else ""
         blocks.append(f'<div><div class="row"><b>{esc(say(lang, "kind_versions", kind=kind, n=len(versions)))}</b>'
@@ -1621,13 +1631,16 @@ def overview_html(nb, page, lang, needs, agents, outs):
         r, f = (page.runs()[-1], page.facts(page.runs()[-1]["n"])) if runs else (None, None)
         if f and f["type"] == "dag":
             out.append(f'<h2 style="margin-top:16px">{esc(say(lang, "steps"))}</h2><div class="muted">{esc(steps_text(lang, f))}</div>')
-    picks = page.picks()
+    picks, excluded = page.picks(), page.excluded()
     rows = []
     for kind, versions in outs.items():
         if not versions:
             continue
         cur = next((v for v in versions if picks.get(kind, {}).get("entry") == v["id"]), None)
-        v = cur or best_of(versions)
+        v = cur or best_of([x for x in versions if x["id"] not in excluded])
+        if v is None:
+            rows.append(f'<li><span class="kbadge">{esc(kind)}</span> <span class="faint">{esc(t(lang, "all_left_out"))}</span></li>')
+            continue
         tag = say(lang, "current") if cur else say(lang, "suggest")
         link = f' <a href="files/{esc(v["file"])}">{esc(say(lang, "open"))}</a>' if v.get("file") else ""
         rows.append(f'<li><span class="kbadge">{esc(kind)}</span> <b>{esc(tag)}</b> <span class="mono">{esc(v["id"])}</span> '

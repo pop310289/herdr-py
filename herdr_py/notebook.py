@@ -960,6 +960,9 @@ def pick(page, eid, by, at=None):
     entry = find_entry(page, eid)
     if entry["status"] != "valid":
         raise NotebookError(f"{eid} did not pass its judge ({entry['status']}); only a verified version can be current")
+    if eid in page.excluded():
+        raise NotebookError(f"{eid} is left out ({page.excluded()[eid].get('why') or 'excluded'}); include it again before "
+                            "making it current")
     return page.append("pick", by, at=at, entry=eid, run=entry["run"], of=entry["kind"])
 
 

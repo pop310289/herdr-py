@@ -656,6 +656,44 @@ class ViewTest(Base):
         self.assertEqual(order, ["p5", "p1", "p2", "p3", "p4"])  # looked at (never approved: reviewed), no longer to review
         self.assertIn(">reviewed 1</span>", home)
 
+    def test_a_version_left_out_is_never_offered_as_the_current_one(self):
+        # four answers a format-only judge passed were made up; left out, they were still offered as the current version
+        self.draft(outputs=["result"])
+        notebook.attach(self.page(), self.engine_run("outside", answers=("5", "8")), "claude")
+        five, eight = [e["id"] for e in self.page().facts(1)["made"]]
+        self.cli("exclude", "p1", eight, "--why", "made up")
+        with self.assertRaisesRegex(NotebookError, r"left out \(made up\)"):
+            notebook.pick(self.page(), eight, "person")
+        out = os.path.join(self.dir, "site")
+
+        def tabs():
+            self.cli("view", "--out", out)
+            page_ = read(os.path.join(out, "p", "p1", "index.html"))
+            home = read(os.path.join(out, "index.html"))
+            cut = lambda html_, i: html_.split(f'id="{i}"')[1].split('<section class="panel tab"')[0]
+            now = cut(page_, "overview").split(">Outputs</h2>")[1].split("</ul>")[0]  # what the overview offers as current
+            return cut(page_, "outputs"), now, home.split('class="panel inbox"')[1].split("</section>")[0]
+
+        outputs, now, _ = tabs()
+        row = next(li for li in outputs.split("<li ")[1:] if eight in li.split("</li>")[0]).split("</li>")[0]
+        self.assertIn("left out", row)
+        self.assertIn("made up", row)  # and why
+        self.assertNotIn('data-act="pick"', row)
+        self.assertIn('data-act="include"', row)  # carry it again, if the person changes their mind
+        self.assertIn(f'data-act="pick" data-page="p1"', outputs)  # the other one still can be current
+        self.assertIn(five, now)  # an agent's own record still lists what it made: history, not an offer
+        self.assertNotIn(eight, now)
+        notebook.attach(self.page(), self.engine_run("outside2", answers=("oops",)), "claude")  # made no result: to review
+        _, _, inbox = tabs()
+        self.assertIn(five, inbox)  # the highest version of any run, among those not left out
+        self.assertNotIn(eight, inbox)
+        self.cli("exclude", "p1", five, "--why", "made up too")
+        notebook.attach(self.page(), self.engine_run("outside3", answers=("oops",)), "claude")
+        _, now, inbox = tabs()
+        for where in (now, inbox):
+            self.assertIn("every version is left out", where)
+            self.assertNotIn('data-act="pick"', where)
+
     def test_a_text_file_opens_as_a_page_that_says_it_is_utf8(self):
         # sent as text/plain with no charset (python -m http.server does), a skill was read as Big5 on a phone set to
         # Traditional Chinese; the page it opens as says UTF-8, whatever the server sends
