@@ -192,10 +192,18 @@ class RunDiagTest(unittest.TestCase):
                            "repairs": [{"entry": fixed, "status": "valid", "score": 2, "tokens": 5}]})
         self.turns.append({"member": "d", "start": 1, "end": 2, "tokens": 300, "state": "aborted", "entry": None,
                            "cancelled": "the target 1 was reached"})
+        self.turns.append({"member": "e", "start": 1, "end": 80, "tokens": 0, "state": "aborted", "entry": None,
+                           "cancelled": "the target 1 was reached", "tokens_partial": True})  # killed before its first reply
         codes = self.codes()
         self.assertEqual(codes["lost"]["numbers"], {"turns": 1, "tokens": 800000})
         self.assertIn("b timeout 800.0k", codes["lost"]["title"])
-        self.assertEqual(codes["cancelled"]["numbers"], {"turns": 1, "tokens": 300})
+        self.assertEqual(codes["cancelled"]["numbers"], {"turns": 2, "tokens": 300})
+        self.assertIn("d aborted 300, e aborted tokens unknown; at least 300 tokens", codes["cancelled"]["title"])
+        self.assertEqual(codes["cancelled"]["args"]["tokens_text"], "≥300")
+        self.turns = [t for t in self.turns if t["member"] != "d"]
+        f = self.codes()["cancelled"]
+        self.assertIn("(e aborted tokens unknown; tokens unknown)", f["title"])  # not "at least 0"
+        self.assertEqual(f["args"]["tokens_text"], "?")
 
     def skill(self, member, name, said, parents=()):
         body = "".join(f'{i + 1}. WebFetch the page; it says "{q}"\n' for i, q in enumerate(said))

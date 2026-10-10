@@ -261,18 +261,23 @@ def findings(run):
         if group:
             spent = sum(r.get("tokens") or 0 for r in group)
             at_least = "at least " if any(r.get("tokens_partial") for r in group) else ""  # a killed member's count stops short
-            which = ", ".join(f"{r['member']} {r.get('state') or '?'} {'≥' if r.get('tokens_partial') else ''}{tok(r.get('tokens') or 0)}"
-                              for r in group[:4])
+            total = f"{at_least}{tok(spent)} tokens" if spent or not at_least else "tokens unknown"
+            short = ("≥" if at_least else "") + tok(spent) if spent or not at_least else "?"  # for a view in any language
+            def used(r):  # a member killed before its first reply said nothing: its tokens are not known
+                if r.get("tokens_partial"):
+                    return f"≥{tok(r['tokens'])}" if r.get("tokens") else "tokens unknown"
+                return tok(r.get("tokens") or 0)
+            which = ", ".join(f"{r['member']} {r.get('state') or '?'} {used(r)}" for r in group[:4])
             if code == "lost":
-                add(code, f"{len(group)} member turns left nothing ({which}; {at_least}{tok(spent)} tokens)",
+                add(code, f"{len(group)} member turns left nothing ({which}; {total})",
                     {"turns": len(group), "tokens": spent},
                     "a turn that runs out of time loses all it did: give one part of the work per todo, or a longer "
-                    "budget.turn_timeout", which=which, tokens_text=at_least + tok(spent))
+                    "budget.turn_timeout", which=which, tokens_text=short)
             else:
-                add(code, f"{len(group)} member turns were cancelled when the target was reached ({which}; {at_least}{tok(spent)} tokens)",
+                add(code, f"{len(group)} member turns were cancelled when the target was reached ({which}; {total})",
                     {"turns": len(group), "tokens": spent},
                     "what they were making was no longer needed; the tokens before the cancel were spent all the same",
-                    which=which, tokens_text=at_least + tok(spent))
+                    which=which, tokens_text=short)
 
     # skills that restate each other
     said, names = {}, {}
