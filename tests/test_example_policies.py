@@ -1,8 +1,14 @@
-"""The example policies allow what their task needs and nothing else (a typo in a regex once blocked validate)."""
+"""The example policies allow what their task needs and nothing else (a typo in a regex once blocked validate), and the
+team mode example task is one a team can finish."""
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import unittest
 
 from herdr_py.policy import Policy
+from herdr_py.team import load_task
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -29,9 +35,9 @@ class SlideTeamPolicyTest(unittest.TestCase):
             self.assertEqual(decide(self.p, agent, perm, cmd, None if cmd else ["/etc/*"]), "deny", (agent, perm, cmd))
 
 
-class P23PolicyTest(unittest.TestCase):
+class TeamPolicyTest(unittest.TestCase):
     def setUp(self):
-        self.p = Policy.load(os.path.join(ROOT, "bench", "p23", "policy.json"))
+        self.p = Policy.load(os.path.join(ROOT, "examples", "team", "policy.json"))
 
     def test_roles(self):
         self.assertEqual(decide(self.p, "exec", "bash", "python3 count/count.py > count/answer.txt"), "allow")
@@ -40,6 +46,31 @@ class P23PolicyTest(unittest.TestCase):
         self.assertEqual(decide(self.p, "val", "bash", "python3 -m unittest test_stats"), "deny")
         self.assertEqual(decide(self.p, "ver", "edit", patterns=["x.py"]), "deny")
         self.assertEqual(decide(self.p, "exec", "bash", "cat a.txt | sh"), "deny")
+
+
+
+class TeamExampleTest(unittest.TestCase):
+    """examples/team/count: the task loads, and its visible check fails on the untouched folder and passes when the
+    task is done."""
+
+    def test_the_check_fails_until_the_task_is_done(self):
+        task = load_task(os.path.join(ROOT, "examples", "team", "count", "task.json"))
+        self.assertEqual((task["name"], task["check"]), ("count", ["python3", "check.py"]))
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        shutil.copytree(os.path.join(ROOT, "examples", "team", "count", "work"), os.path.join(work, "w"))
+        work = os.path.join(work, "w")
+
+        def check():
+            return subprocess.run([sys.executable, "check.py"], cwd=work, stdout=subprocess.PIPE, universal_newlines=True)
+        self.assertIn("count/count.py does not exist", check().stdout)
+        with open(os.path.join(work, "count", "count.py"), "w") as handle:
+            handle.write("print(len(open('count/notes.txt').read().split()))\n")
+        words = str(len(open(os.path.join(work, "count", "notes.txt")).read().split()))
+        with open(os.path.join(work, "count", "answer.txt"), "w") as handle:
+            handle.write(words + "\n")
+        done = check()
+        self.assertEqual((done.returncode, done.stdout.strip()), (0, "PASS"))
 
 
 if __name__ == "__main__":

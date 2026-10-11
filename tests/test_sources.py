@@ -9,6 +9,9 @@ import warnings
 
 BIDI = frozenset(chr(c) for c in (0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069))
 TEXT = (".py", ".sh", ".md", ".json", ".toml", ".yml", ".yaml", ".txt", ".html", ".js", ".css", ".service")
+# files the walks must see, whatever else comes and goes: a count would fail when a folder is removed
+KNOWN_PY = {os.path.join("herdr_py", "engine.py"), os.path.join("tests", "test_sources.py"), os.path.join("scripts", "oneshot.py")}
+KNOWN_TEXT = KNOWN_PY | {"README.md", "herdr-py-oneshot.sh", os.path.join("examples", "policy.json")}
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -23,9 +26,9 @@ def sources(ends=(".py",)):
 
 class SourcesTest(unittest.TestCase):
     def test_every_python_file_compiles_without_warnings(self):
-        bad, seen = [], 0
+        bad, seen = [], set()
         for path in sources():
-            seen += 1
+            seen.add(os.path.relpath(path, ROOT))
             with open(path, encoding="utf-8") as handle:
                 text = handle.read()
             with warnings.catch_warnings():
@@ -34,18 +37,18 @@ class SourcesTest(unittest.TestCase):
                     compile(text, path, "exec", dont_inherit=True)
                 except (SyntaxError, SyntaxWarning, DeprecationWarning) as exc:
                     bad.append("%s: %s" % (os.path.relpath(path, ROOT), exc))
-        self.assertGreater(seen, 100)  # the walk found the repository, not an empty folder
+        self.assertTrue(KNOWN_PY <= seen, KNOWN_PY - seen)  # the walk found the repository, not an empty folder
         self.assertEqual(bad, [])
 
     def test_no_bidirectional_control_characters(self):
-        found, seen = [], 0
+        found, seen = [], set()
         for path in sources(TEXT):
-            seen += 1
+            seen.add(os.path.relpath(path, ROOT))
             with open(path, encoding="utf-8", errors="replace") as handle:
                 for n, line in enumerate(handle, 1):
                     if BIDI.intersection(line):
                         found.append("%s:%d %s" % (os.path.relpath(path, ROOT), n, sorted("U+%04X" % ord(c) for c in BIDI.intersection(line))))
-        self.assertGreater(seen, 150)
+        self.assertTrue(KNOWN_TEXT <= seen, KNOWN_TEXT - seen)
         self.assertEqual(found, [])
 
 

@@ -72,7 +72,7 @@ OpenCode 只會為它自己設定成 "ask" 的動作送權限請求給 herdr-py�
 
 ## 團隊模式（監工）
 
-`herdr-py team task.json --condition T --workdir 資料夾` 用三個角色做一題：執行者（可改檔）、唯讀的驗證者（解釋公開檢查為什麼沒過）、唯讀的確認者（對照原始需求）。監工是程式不是模型：執行者停下時跑公開檢查；除非檢查通過而且確認者接受，否則用「檢查輸出、角色的證據、執行者的 `NOTES.md`、最近的工具紀錄」組成「從哪裡繼續」的提示送回去。執行者連續 `--stall` 秒沒有進展，就換一個新的 session 並交接（這就是跨 session 的記憶）。`--condition S`（單一 agent）和 `N`（泛用的「檢查一下」提醒）是對照組。實驗程式：[`bench/p23`](bench/p23)。
+`herdr-py team task.json --condition T --workdir 資料夾` 用三個角色做一題：執行者（可改檔）、唯讀的驗證者（解釋公開檢查為什麼沒過）、唯讀的確認者（對照原始需求）。監工是程式不是模型：執行者停下時跑公開檢查；除非檢查通過而且確認者接受，否則用「檢查輸出、角色的證據、執行者的 `NOTES.md`、最近的工具紀錄」組成「從哪裡繼續」的提示送回去。執行者連續 `--stall` 秒沒有進展，就換一個新的 session 並交接（這就是跨 session 的記憶）。`--condition S`（單一 agent）和 `N`（泛用的「檢查一下」提醒）是對照組。範例：[`examples/team`](examples/team)（一題任務、它的公開檢查、三個角色的權限策略）。
 
 ## 協作迴圈與團隊知識庫
 
@@ -323,12 +323,21 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
     --workdir OPENCODE_的工作資料夾 --model opencode/big-pickle      # daemon 的策略用 scripts/check_opencode_policy.json
 ```
 
+herdr-py 不會自己啟動 OpenCode：用你自己的 launcher 啟動（容器、systemd 服務，daemon 可參考 [`examples/herdr-py.service`](examples/herdr-py.service)，或手動 `opencode serve`），再把網址交給 daemon。launcher 要提供的：
+
+| | |
+|---|---|
+| daemon 連得到的 `http://` 網址 | OpenCode 以純 HTTP 提供服務，事件串流也這樣讀；前面有 TLS 的話，給 daemon 一條本機通道 |
+| `OPENCODE_SERVER_PASSWORD` | 對應 daemon 的 `--password-file`（與 `--username`，預設 `opencode`） |
+| OpenCode 在 bash、改檔、抓網頁之前先詢問 | 照〈權限策略〉設定 `OPENCODE_CONFIG_CONTENT`；沒設的話這些動作到不了策略，`serve` 會警告，驗證腳本的「拒絕」「核准」兩項會失敗 |
+| 通過驗證的版本 | OpenCode 1.18.32 通過；其他版本先跑 `check_opencode.py` |
+| 你要的隔離 | 策略決定 agent 能執行什麼；OpenCode 跑在哪裡（容器或這台機器）決定被允許的指令碰得到什麼 |
+
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 596 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 597 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # docker 能用時，沙箱在真的容器裡測
-python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 
 GitHub Actions（`.github/workflows/tests.yml`）會在 RHEL 8 自己的 Python 3.6（UBI 8 容器）和最新版 Python 上跑測試（repo 裡每個 Python 檔，包括範例和實驗，都要能在這兩版編譯、而且不能有警告）；`scripts/ci_privacy.py` 會擋下帶 Claude 署名、家目錄路徑或 GitHub noreply 以外信箱的提交。

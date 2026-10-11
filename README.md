@@ -103,7 +103,8 @@ The supervisor is code, not a model: when the executor stops it runs the task's 
 validator accepts, it sends a "continue from here" prompt built from the check output, the roles' evidence, the
 executor's `NOTES.md` and its recent tool log. If the executor makes no progress for `--stall` seconds, it is replaced by
 a new session that receives a hand-off (that is how memory carries across sessions). `--condition S` (single agent) and
-`N` (generic "check your work" reminders) exist for comparison. Bench: [`bench/p23`](bench/p23).
+`N` (generic "check your work" reminders) exist for comparison. Example: [`examples/team`](examples/team) (a task, its
+visible check and a policy for the three roles).
 
 ## Cooperative loops and the team knowledge base
 
@@ -653,12 +654,23 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
     --workdir THE_OPENCODE_FOLDER --model opencode/big-pickle      # daemon policy: scripts/check_opencode_policy.json
 ```
 
+herdr-py never starts OpenCode itself: start it with your own launcher (a container, a systemd unit such as
+[`examples/herdr-py.service`](examples/herdr-py.service) for the daemon next to it, or `opencode serve` by hand) and
+give the daemon its URL. What the launcher has to provide:
+
+| | |
+|---|---|
+| an `http://` URL the daemon can reach | OpenCode serves plain HTTP and the event stream reads it so; behind TLS, give the daemon a local tunnel |
+| `OPENCODE_SERVER_PASSWORD` | the daemon's `--password-file` (and `--username`, default `opencode`) |
+| OpenCode asks before bash, edits and web fetches | `OPENCODE_CONFIG_CONTENT` as in [Permission policy](#permission-policy); otherwise those calls never reach the policy, `serve` warns, and the check's "denied" and "asked" fail |
+| a version that passes the check | OpenCode 1.18.32 does; run `check_opencode.py` on any other |
+| the isolation you want | the policy decides what an agent may run; where OpenCode runs (a container or this machine) decides what an allowed command can reach |
+
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 596 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 597 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # the sandbox in real containers when docker answers
-python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
 GitHub Actions (`.github/workflows/tests.yml`) runs the suite on RHEL 8's own Python 3.6 (UBI 8 container) and on the
