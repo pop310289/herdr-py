@@ -766,7 +766,7 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 594 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 596 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # the sandbox in real containers when docker answers
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
@@ -1593,7 +1593,7 @@ ZSBodHRwOi8vMTI3LjAuMC4xOjQwOTYgLS1wYXNzd29yZC1maWxlIFBBU1NGSUxFIFwKICAgIC0t
 d29ya2RpciBPUEVOQ09ERV/nmoTlt6XkvZzos4fmlpnlpL4gLS1tb2RlbCBvcGVuY29kZS9iaWct
 cGlja2xlICAgICAgIyBkYWVtb24g55qE562W55Wl55SoIHNjcmlwdHMvY2hlY2tfb3BlbmNvZGVf
 cG9saWN5Lmpzb24KYGBgCgojIyDmuKzoqaYKCmBgYGJhc2gKcHl0aG9uMyAtbSB1bml0dGVzdCBk
-aXNjb3ZlciAtcyB0ZXN0cyAgICAgICAgIyA1OTQg6aCF77yM55So5YGH55qEIE9wZW5Db2RlIOS8
+aXNjb3ZlciAtcyB0ZXN0cyAgICAgICAgIyA1OTYg6aCF77yM55So5YGH55qEIE9wZW5Db2RlIOS8
 uuacjeWZqOWSjOWBh+eahCBDb2RleOOAgUNsYXVkZSBDb2RlIENMSe+8jOS4jemcgOimgeaooeWe
 iwpIRVJEUl9QWV9URVNUX0lNQUdFPXB5dGhvbjozLXNsaW0gcHl0aG9uMyAtbSB1bml0dGVzdCBk
 aXNjb3ZlciAtcyB0ZXN0cyAtcCAndGVzdF9zYW5kYm94LnB5JyAgIyBkb2NrZXIg6IO955So5pmC
@@ -12931,6 +12931,7 @@ class EngineRun:
         self.seeded = seeded  # what the knowledge base was started with (TeamKB.seed), recorded in the start record
         self.paused, self.paused_at, self.paused_seconds, self.control_at = False, None, 0.0, 0  # a person's commands
         self.said_done, self.stopping, self.broken = False, None, []
+        self.halt = None  # why the turns running stop repairing too: a person's stop or a broken setup (out_of_time)
         self.best, self.since_best, self.progress = None, 0, []
         self.turn_records, self.wake_records = [], []
         self.log = open(os.path.join(out, "run.jsonl"), "a", encoding="utf-8", buffering=1)
@@ -13237,7 +13238,12 @@ class EngineRun:
                 and (not self.repair_kinds or kind in self.repair_kinds))
 
     def out_of_time(self):
-        return bool(self.stopping) or bool(self.time_limit and time.monotonic() - self.started >= self.time_limit)
+        """Whether a running turn stops repairing: the time limit has passed, a person said stop, or the setup broke.
+        The other reasons a run ends (its member turns or the planner's wakes used up, the planner done, no progress)
+        keep new work from starting only: a turn already running finishes its repairs. (Until 10-11 any of them cut the
+        repairs, so a run's last turns, whose start uses up the turns, lost theirs whenever a reply took longer than the
+        engine's quarter-second tick.)"""
+        return bool(self.halt) or bool(self.time_limit and time.monotonic() - self.started >= self.time_limit)
 
     def member_turn(self, name, todo, turn):
         rec = {"t": round(time.time(), 3), "start": round(time.time(), 3), "turn": turn, "member": name, "todo": todo["id"]}
@@ -13375,6 +13381,7 @@ class EngineRun:
                         self.idle_since[name] = now
             elif command == "stop":
                 self.stopping = self.stopping or "stopped by a person"
+                self.halt = "stopped by a person"  # a person's stop ends the repairs of the turns running too
             elif command == "turns" and isinstance(value, int) and value > 0:
                 self.turns = max(value, self.turns_used)
                 rec["applied"] = self.turns
@@ -13410,7 +13417,8 @@ class EngineRun:
         if self.patience and self.since_best >= self.patience:
             return f"{self.patience} judged answers in a row did not beat the best"
         if self.broken and self.stop_on_infra_error:
-            return "the setup broke: " + "; ".join(self.broken[:3])
+            self.halt = "the setup broke: " + "; ".join(self.broken[:3])  # a broken judge would judge the repairs too
+            return self.halt
         if self.said_done:
             return "the planner says the task is done"
         if self.turns_used >= self.turns:
@@ -28746,6 +28754,7 @@ import shutil
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 
@@ -29455,6 +29464,35 @@ class PartsTest(Base):
         self.run_main("--turns", "1", "--repairs", "1", "--repair-below", "100", members=("a",))
         turn = self.member_records()[0]
         self.assertEqual((turn["status"], turn["score"], turn["best_of"]), ("valid", 40.0, 2))  # a worse repair is not kept as the turn's
+
+    def test_the_last_turns_repairs_are_not_cut_when_the_turns_run_out(self):
+        # each reply takes longer than the engine's quarter-second tick, which notices that the only turn is taken
+        self.script(planner=[add("give a number"), add(done=True)],
+                    members={"a": [{"answer": "40", "sleep": 0.4}, {"answer": "oops", "sleep": 0.4}, {"answer": "90", "sleep": 0.4}]})
+        self.run_main("--turns", "1", "--repairs", "3", "--repair-below", "100", members=("a",))
+        turn = self.member_records()[0]
+        self.assertEqual([r["status"] for r in turn["repairs"]], ["invalid", "valid", "valid"])
+        self.assertEqual(self.summary()["stopped"], "the member turns are used up")
+
+    def test_a_persons_stop_ends_the_repairs_of_a_running_turn(self):
+        gate = os.path.join(self.dir, "go")
+        self.script(planner=[add("give a number"), add(done=True)],
+                    members={"a": [{"answer": "40", "until_file": gate}, {"answer": "90"}]})
+
+        def stop_then_answer():
+            deadline = time.time() + 10
+            while not os.path.exists(os.path.join(self.log, "a-01.prompt")) and time.time() < deadline:
+                time.sleep(0.02)
+            engine.send_control(self.out, "stop", by="test")
+            time.sleep(0.6)  # the engine reads control.jsonl within a quarter second
+            open(gate, "w").close()
+        helper = threading.Thread(target=stop_then_answer)
+        helper.start()
+        self.run_main("--turns", "1", "--repairs", "3", "--repair-below", "100", members=("a",))
+        helper.join()
+        turn = self.member_records()[0]
+        self.assertEqual((turn["score"], turn.get("repairs")), (40.0, None))  # 40 is under the bar, but a person said stop
+        self.assertEqual(self.summary()["stopped"], "stopped by a person")
 
     def test_the_bar_is_only_for_the_kinds_it_names_and_no_progress_stops_the_repairs(self):
         self.script(planner=[add("give a number"), add(done=True)],
@@ -35712,8 +35750,8 @@ cat > "$sums" <<'HERDR_PY_EOF'
 5bcfa4072040f3c9296fb2158707d4ee31ba5812d1fc54002c8c963142f4977b  .github/workflows/tests.yml
 60c9bdd905fcf45ac485c680d32e9773962cf061b6f041dcddd033911558a672  .gitignore
 59802752a201a64e0a49a358493da129b95007c88bdafe4c8744e92b2d6691a0  LICENSE
-df63fd16f0ac8f80bcfb2f308b45dd94e0cc53e3de4f5a531121270170ae59c9  README.md
-e17e3c931e6f08b6a60e7a8b35aa242720e583fb7d3117c0e3c4faa753c803e2  README.zh-TW.md
+040fd931c70a30526a64e2bb8447ecda21272bfd9c4084049d7b2d022a217c33  README.md
+538e07b2202a1ed7aaf1899492696f581e13e319cc1761d7e7c48bfa1be1a74a  README.zh-TW.md
 204a8f05aa212e8c50105ce9b4dca83c16691ea695b2d49181e5a58d0a7d8a98  bench/herdr_compare/herdr_driver.py
 d553ca36aeae3bf69847de968a516ad8ce562449420bb11c32846233ad4092e4  bench/p23/Dockerfile
 a1b6b01890afb5608647cbd6752f75b273ae8f812510943f1a875d4c6cb8de23  bench/p23/build-image.sh
@@ -35820,7 +35858,7 @@ dc0519940fe1333b3512943b149c4153ff72508d706129dfa6358041047e42e6  herdr_py/dagvi
 22d1e9ad594d20f9dd29fcbc5621afc048ddf71063c5a0fd82db49d0b557f218  herdr_py/dashboard.py
 c36ae3d20c139bb7465777bfb4d71b6f4d1573b7bb507a4f487f6ee398d2d6e5  herdr_py/diagnose.py
 d26bcdebdb32ff5d99969676f6dea71d54ac4338be4ad07e6b34f3a3531f9d56  herdr_py/display.py
-c105f8f57b09eab1eb88edfacc24808d45f35083563d390b2568e8d1a4157adb  herdr_py/engine.py
+f76a0a043bc0290e1c34f703d649673305ace4b86a55c9df15a6bc53cd991cfa  herdr_py/engine.py
 0c037257e937512837a772c0e97e43320e75dff6c5609196ca7f987ec0719b25  herdr_py/engineview.py
 79a4f22b104ae809b53af6455d54d5b0aea221979085960c3490176b8f5c05eb  herdr_py/lessons.py
 b4309f92353ea05656156c7df5f1991f4738bd4c058d5b946e6a5a3f78b2858b  herdr_py/members.py
@@ -35905,7 +35943,7 @@ e3ef8ddd8906e1fc247171c85238fda20c13633786d1e2b8346bcfbe596ff4c3  tests/test_dag
 c771075bc6cc29faab4b596f78c5cbee5c54deaba6e8fbca2faf3ac4bb766e57  tests/test_dashboard.py
 b4a91aafcec4a28c3f03520000b52ef2b0c54c3ba86557b1296b88b88b5211d1  tests/test_diagnose.py
 681e71ac2ff16eecf6c6230880a704c2670a1c1d11db4ecd2ab2a1121f75674a  tests/test_display.py
-e0af90e222283b13c3adb826c780ea5dc10d73569e6c1b7c93c9a3ae5a0730c1  tests/test_engine.py
+7107d78075c125b45666ec8ec816907983e7e31db3bc5282197dbe912b390891  tests/test_engine.py
 fae1d3ba88a9048a9e75f88c5dae21cd38f78e27a3d0eb03b2565503bd8fb3a8  tests/test_example_policies.py
 7f9aaac073cb4bb5c89edcafe12a90f322aa80270834bca0ffe6eae01d8e9fbc  tests/test_layout.py
 78ba7769c80654741866bbdd21e2daf5ff563a35f7ae3b3f281456b9c72f7b62  tests/test_lessons.py

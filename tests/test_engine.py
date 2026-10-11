@@ -11,6 +11,7 @@ import shutil
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 
@@ -720,6 +721,35 @@ class PartsTest(Base):
         self.run_main("--turns", "1", "--repairs", "1", "--repair-below", "100", members=("a",))
         turn = self.member_records()[0]
         self.assertEqual((turn["status"], turn["score"], turn["best_of"]), ("valid", 40.0, 2))  # a worse repair is not kept as the turn's
+
+    def test_the_last_turns_repairs_are_not_cut_when_the_turns_run_out(self):
+        # each reply takes longer than the engine's quarter-second tick, which notices that the only turn is taken
+        self.script(planner=[add("give a number"), add(done=True)],
+                    members={"a": [{"answer": "40", "sleep": 0.4}, {"answer": "oops", "sleep": 0.4}, {"answer": "90", "sleep": 0.4}]})
+        self.run_main("--turns", "1", "--repairs", "3", "--repair-below", "100", members=("a",))
+        turn = self.member_records()[0]
+        self.assertEqual([r["status"] for r in turn["repairs"]], ["invalid", "valid", "valid"])
+        self.assertEqual(self.summary()["stopped"], "the member turns are used up")
+
+    def test_a_persons_stop_ends_the_repairs_of_a_running_turn(self):
+        gate = os.path.join(self.dir, "go")
+        self.script(planner=[add("give a number"), add(done=True)],
+                    members={"a": [{"answer": "40", "until_file": gate}, {"answer": "90"}]})
+
+        def stop_then_answer():
+            deadline = time.time() + 10
+            while not os.path.exists(os.path.join(self.log, "a-01.prompt")) and time.time() < deadline:
+                time.sleep(0.02)
+            engine.send_control(self.out, "stop", by="test")
+            time.sleep(0.6)  # the engine reads control.jsonl within a quarter second
+            open(gate, "w").close()
+        helper = threading.Thread(target=stop_then_answer)
+        helper.start()
+        self.run_main("--turns", "1", "--repairs", "3", "--repair-below", "100", members=("a",))
+        helper.join()
+        turn = self.member_records()[0]
+        self.assertEqual((turn["score"], turn.get("repairs")), (40.0, None))  # 40 is under the bar, but a person said stop
+        self.assertEqual(self.summary()["stopped"], "stopped by a person")
 
     def test_the_bar_is_only_for_the_kinds_it_names_and_no_progress_stops_the_repairs(self):
         self.script(planner=[add("give a number"), add(done=True)],

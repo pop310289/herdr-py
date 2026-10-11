@@ -254,6 +254,7 @@ class EngineRun:
         self.seeded = seeded  # what the knowledge base was started with (TeamKB.seed), recorded in the start record
         self.paused, self.paused_at, self.paused_seconds, self.control_at = False, None, 0.0, 0  # a person's commands
         self.said_done, self.stopping, self.broken = False, None, []
+        self.halt = None  # why the turns running stop repairing too: a person's stop or a broken setup (out_of_time)
         self.best, self.since_best, self.progress = None, 0, []
         self.turn_records, self.wake_records = [], []
         self.log = open(os.path.join(out, "run.jsonl"), "a", encoding="utf-8", buffering=1)
@@ -560,7 +561,12 @@ class EngineRun:
                 and (not self.repair_kinds or kind in self.repair_kinds))
 
     def out_of_time(self):
-        return bool(self.stopping) or bool(self.time_limit and time.monotonic() - self.started >= self.time_limit)
+        """Whether a running turn stops repairing: the time limit has passed, a person said stop, or the setup broke.
+        The other reasons a run ends (its member turns or the planner's wakes used up, the planner done, no progress)
+        keep new work from starting only: a turn already running finishes its repairs. (Until 10-11 any of them cut the
+        repairs, so a run's last turns, whose start uses up the turns, lost theirs whenever a reply took longer than the
+        engine's quarter-second tick.)"""
+        return bool(self.halt) or bool(self.time_limit and time.monotonic() - self.started >= self.time_limit)
 
     def member_turn(self, name, todo, turn):
         rec = {"t": round(time.time(), 3), "start": round(time.time(), 3), "turn": turn, "member": name, "todo": todo["id"]}
@@ -698,6 +704,7 @@ class EngineRun:
                         self.idle_since[name] = now
             elif command == "stop":
                 self.stopping = self.stopping or "stopped by a person"
+                self.halt = "stopped by a person"  # a person's stop ends the repairs of the turns running too
             elif command == "turns" and isinstance(value, int) and value > 0:
                 self.turns = max(value, self.turns_used)
                 rec["applied"] = self.turns
@@ -733,7 +740,8 @@ class EngineRun:
         if self.patience and self.since_best >= self.patience:
             return f"{self.patience} judged answers in a row did not beat the best"
         if self.broken and self.stop_on_infra_error:
-            return "the setup broke: " + "; ".join(self.broken[:3])
+            self.halt = "the setup broke: " + "; ".join(self.broken[:3])  # a broken judge would judge the repairs too
+            return self.halt
         if self.said_done:
             return "the planner says the task is done"
         if self.turns_used >= self.turns:
