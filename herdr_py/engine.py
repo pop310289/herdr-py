@@ -46,8 +46,11 @@ import time
 from . import engineview
 from .coop import FENCE, REPLY, command_judge, exit_judge, parse_reply, used
 from .dag import resolve_args
+from .display import printable
+from .lessons import LessonError, Lessons, repeated, shown_text
+from .lessons import answer as handed_text
 from .members import BROKEN, MemberError, Members, parse_member
-from .teamkb import MAX_SUMMARY, TAG, TeamKB, TeamKBError, one_line
+from .teamkb import MAX_SUMMARY, TAG, TeamKB, TeamKBError, artifact_path, one_line
 from .teamtools import KIND as TOOL_KIND, TeamTools
 
 BOARD = "TEAM_BOARD.md"
@@ -191,7 +194,8 @@ class EngineRun:
     def __init__(self, task, judge, members, names, planner, out, turns, planner_wakes=None, max_open=None, max_todos=None,
                  target=None, patience=0, about=None, results=3, failures=3, answer_bytes=6000, answer_name="answer.txt",
                  turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2, member_access="read",
-                 time_limit=None, seeded=None, repairs=0, repair_below=None, wrap_up=0, repair_kinds=(), mcp_sandbox=None):
+                 time_limit=None, seeded=None, repairs=0, repair_below=None, wrap_up=0, repair_kinds=(), mcp_sandbox=None,
+                 lessons=None):
         if not names:
             raise ValueError("no members")
         if planner in names:
@@ -224,6 +228,13 @@ class EngineRun:
             raise ValueError("member_access: read or research")
         self.member_access = member_access  # research: read the folder and search the web (Claude members)
         os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, "task.md"), "w", encoding="utf-8") as handle:
+            handle.write(task)  # what this run was asked, for anyone who reads the run later (lessons.py reviews by it)
+        self.lessons = lessons  # corrections from earlier work, shown where their `when` matches (lessons.py)
+        if lessons is not None:  # what this run was given, for its page (the lessons file goes on changing)
+            with open(os.path.join(out, "lessons.json"), "w", encoding="utf-8") as handle:
+                json.dump([{k: l.get(k) for k in ("id", "status", "when", "wrong", "right", "detect", "by")}
+                           for l in lessons.active()], handle, ensure_ascii=False, indent=1)
         self.kb = TeamKB(os.path.join(out, "kb"))
         self.board_dir = os.path.join(out, "board")
         os.makedirs(self.board_dir, exist_ok=True)
@@ -271,8 +282,9 @@ class EngineRun:
             os.makedirs(files, exist_ok=True)
             for e in self.kb.entries():  # every verified result as a file members can open, however long it is
                 target = os.path.join(files, e["id"] + ".txt")
-                if e["status"] == "valid" and e.get("artifact") and not os.path.exists(target):
-                    with open(os.path.join(self.kb.folder, e["artifact"]), "rb") as src, open(target + ".tmp", "wb") as dst:
+                source = artifact_path(self.kb.folder, e["artifact"]) if e.get("artifact") else None
+                if e["status"] == "valid" and source and not os.path.exists(target):
+                    with open(source, "rb") as src, open(target + ".tmp", "wb") as dst:
                         dst.write(src.read())
                     os.replace(target + ".tmp", target)
             path = os.path.join(self.board_dir, BOARD)
@@ -409,6 +421,8 @@ class EngineRun:
         try:
             for attempt in range(1, self.planner_tries + 1):
                 prompt, version = self.planner_prompt(reason, problems)
+                told = self.lessons.matching(self.task) if self.lessons else []
+                prompt += shown_text(told)
                 before, start, clock = self.tokens(self.planner), time.time(), time.monotonic()
                 try:
                     reply, state = self.members.run_turn(self.planner, prompt, timeout=self.turn_timeout)
@@ -418,6 +432,8 @@ class EngineRun:
                 rec = {"t": round(end, 3), "start": round(start, 3), "end": round(end, 3), "kind": "wake", "wake": wake,
                        "attempt": attempt, "reason": reason, "board_version": version, "prompt_sha": sha_text(prompt),
                        "state": state, "seconds": round(took, 2), "tokens": used(before, self.tokens(self.planner))}
+                if told:
+                    rec["lessons"] = [l["id"] for l in told]
                 if state != "idle":
                     rec["problems"] = [f"the planner's turn ended {state}: {one_line(reply, 200)}"]
                     if state in BROKEN:
@@ -445,6 +461,9 @@ class EngineRun:
                         added.append(None)
                 added = [a for a in added if a]
                 rec.update(added=added, dropped=dropped, done=plan["done"], why=one_line(plan.get("why") or "", 300))
+                again = repeated(told, [item["text"] for item in plan["add"]])
+                if again:
+                    rec["lessons_repeated"] = again  # told, and the todos it added make the mistake anyway
                 self.record(self.elog, self.wake_records, rec)
                 if plan["done"]:
                     with self.cond:
@@ -512,6 +531,12 @@ class EngineRun:
                 detail = parsed["summary"]
         return outcome, status, score, entry, detail
 
+    def handed_in(self, rec):
+        """The text of every answer a turn handed in: the first and each repair."""
+        ids = [rec.get("entry")] + [x for r in rec.get("repairs") or [] for x in (r.get("of"), r.get("entry"))]
+        by_id = {e["id"]: e for e in self.kb.entries()}
+        return [handed_text(self.kb, by_id.get(i)) for i in collections.OrderedDict.fromkeys(i for i in ids if i)]
+
     def turn_notes(self, name, offer=None):
         """What a member is told about its turn besides the work: how long it may run, and (a Claude member, whose tools
         are known) which tools it has, the team's tools included."""
@@ -544,10 +569,15 @@ class EngineRun:
         with self.cond:
             self.now_running[name] = {"turn": turn, "wrap_up": bool(rec.get("wrap_up"))}
         outcome, status, score, entry, detail = "failed", None, None, None, None
+        told = []
         try:
             prompt, shown, version = self.member_prompt(name, todo, turn)
             offer = self.team_tools.config() if self.team_tools else None
             prompt += self.turn_notes(name, offer)
+            told = self.lessons.matching(self.task + "\n" + todo["text"]) if self.lessons else []
+            if told:
+                prompt += shown_text(told)
+                rec["lessons"] = [l["id"] for l in told]
             if offer:
                 rec["tools_offered"] = [r[len("mcp__"):] for r in offer[1]]
             mcp = offer[:2] if offer else None
@@ -598,6 +628,9 @@ class EngineRun:
                 rec["repairs"] = repairs
                 outcome, status, score, entry, detail = best  # the turn ends with its best version
                 rec.update(entry=entry, status=status, score=score, best_of=1 + len(repairs))
+            again = repeated(told, self.handed_in(rec))
+            if again:
+                rec["lessons_repeated"] = again  # told, and what it handed in makes the mistake anyway
         except Exception as exc:  # the engine's own mistake: recorded and the todo ended, never left taken
             rec["problem"] = detail = f"engine error: {type(exc).__name__}: {exc}"
         finally:
@@ -840,7 +873,11 @@ class EngineRun:
                 "tokens_planner": sum(planner_tokens) if planner_tokens else None,
                 "planner_share": ratio(sum(planner_tokens), total) if total else None,
                 "board_reads": self.board_reads(), "adoption_rate": s["adoption_rate"], "paused_seconds": round(self.paused_seconds, 1),
-                "duplicate_rate": s["duplicate_rate"], "stopped": self.stopping, "broken": self.broken}
+                "duplicate_rate": s["duplicate_rate"], "stopped": self.stopping, "broken": self.broken,
+                "lessons": None if self.lessons is None else {
+                    "turns_told": sum(1 for r in list(turns) + wakes if r.get("lessons")),
+                    "turns_repeated": sum(1 for r in list(turns) + wakes if r.get("lessons_repeated")),
+                    "repeated": dict(collections.Counter(i for r in list(turns) + wakes for i in r.get("lessons_repeated") or []))}}
 
 
 def report(s, out):
@@ -857,6 +894,10 @@ def report(s, out):
              + (f" (planner {s['planner_share']:.0%})" if s["planner_share"] is not None else ""),
              f"board reads: {s['board_reads']['by_member'] or 'none'} (measured for: {', '.join(s['board_reads']['measured']) or 'no member logs'})",
              f"entries and todos: python3 -m herdr_py.teamkb {os.path.join(out, 'kb')}"]
+    if s.get("lessons"):
+        lines.insert(-1, f"lessons: told in {s['lessons']['turns_told']} turns; the corrected mistake came back in "
+                         f"{s['lessons']['turns_repeated']}" + (f" ({', '.join(sorted(s['lessons']['repeated']))})"
+                                                                if s['lessons']['repeated'] else ""))
     if s["broken"]:
         lines.insert(1, "the setup broke: " + "; ".join(s["broken"][:5]))
     return "\n".join(lines)
@@ -929,6 +970,9 @@ def main(argv=None):
                     help="offer the members' own MCP tools (verified answers whose first line is ARTIFACT: mcp) to later "
                          "turns, each run by this command ({file}: the tool's code, {kb}: the knowledge base, {board}: the "
                          "board folder); Claude members only. Without it they are never run")
+    ap.add_argument("--lessons", metavar="FILE",
+                    help="corrections from earlier work (python3 -m herdr_py.lessons): each is told to the planner and to "
+                         "members where its `when` matches the task or the todo, and checked against what they hand in")
     ap.add_argument("--member-access", choices=["read", "research"], default="read",
                     help="read (default): members read the board folder; research: and search the web (Claude members)")
     a = ap.parse_args(argv)
@@ -1008,6 +1052,13 @@ def main(argv=None):
               + (f" ({', '.join(f'{n} {k}' for k, n in sorted(seeded['kinds'].items()))})" if seeded["kinds"] else "")
               + (f"; left out {', '.join(f'{n} {k}' for k, n in sorted(seeded['left_out'].items()))}" if seeded["left_out"] else ""),
               flush=True)
+    try:
+        lessons = Lessons(a.lessons) if a.lessons else None
+    except (LessonError, OSError) as exc:
+        print(f"herdr-py engine: --lessons: {exc}", file=sys.stderr)
+        return 2
+    if lessons is not None and lessons.bad_lines:
+        print(f"herdr-py engine: warning: {lessons.bad_lines} lines of {a.lessons} could not be read", file=sys.stderr)
     judge = (exit_judge if a.judge_mode == "exit" else command_judge)(resolve_args(a.judge, os.getcwd()), timeout=a.judge_timeout)
     members = Members(specs, os.path.join(os.path.abspath(a.out), "members"), socket=a.socket, sessions="fresh", cwd=os.getcwd())
     try:
@@ -1016,11 +1067,12 @@ def main(argv=None):
                         failures=a.show_failures, answer_bytes=a.answer_bytes, answer_name=a.answer_name,
                         turn_timeout=a.turn_timeout, stop_on_infra_error=a.stop_on_infra_error,
                         member_access=a.member_access, time_limit=a.time_limit, seeded=seeded, repairs=a.repairs,
-                        repair_below=a.repair_below, wrap_up=a.wrap_up, repair_kinds=a.repair_kind, mcp_sandbox=a.mcp_sandbox)
+                        repair_below=a.repair_below, wrap_up=a.wrap_up, repair_kinds=a.repair_kind, mcp_sandbox=a.mcp_sandbox,
+                        lessons=lessons)
         summary = run.run()
     finally:
         members.close()
-    print(report(summary, a.out))
+    print(printable(report(summary, a.out)))
     if summary["broken"] and a.stop_on_infra_error:
         return 3
     return 0 if summary["best"] is not None else 1

@@ -17,7 +17,6 @@ only unless --host says otherwise, and serves the teams' own files in a sandbox 
 token). Data is escaped, never written into a page as markup.
 """
 import collections
-import hmac
 import http.server
 import json
 import math
@@ -29,12 +28,12 @@ import sys
 import time
 import urllib.parse
 
-from . import coopview, dagview, engineview, rundiag
+from . import coopview, dagview, engineview, rundiag, webguard
 from .engineview import esc, fit
 from .members import MemberError, parse_member
 from .notebook import (LOOKED, S, Notebook, NotebookError, add_note, approve, command, day_of, find_entry, local,
                        need_text, one_line, pick, run_facts, say, score_text, span_text, tilde, tokens_text)
-from .teamkb import TAG
+from .teamkb import TAG, artifact_path
 from .viewstyle import TOKENS
 
 V = {  # (English, 繁體中文); the shared words are notebook.S
@@ -101,6 +100,10 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "dg_lost": ("{turns} member turns left nothing ({which}; {tokens_text} tokens)", "{turns} 個成員回合什麼都沒留下（{which}；{tokens_text} tokens）"),
     "dgs_lost": ("a turn that runs out of time loses all it did: give one part of the work per todo, or a longer budget.turn_timeout",
                  "超時的回合做的一切都會丟失：一個待辦只給一部分工作，或把 budget.turn_timeout 加長"),
+    "dg_lesson_repeated": ("{turns} turns made a mistake they had been told about ({which})",
+                           "{turns} 個回合被提醒過，還是犯了同樣的錯（{which}）"),
+    "dgs_lesson_repeated": ("telling it did not stop it: say the right way more plainly, or make it something the judge checks",
+                            "提醒沒有擋住：把對的做法寫得更直接，或改成評分程式會檢查的項目"),
     "dg_cancelled": ("{turns} member turns were cancelled when the target was reached ({which}; {tokens_text} tokens)",
                      "達標時取消了 {turns} 個成員回合（{which}；{tokens_text} tokens）"),
     "dgs_cancelled": ("what they were making was no longer needed", "它們在做的東西已經不需要了"),
@@ -644,7 +647,7 @@ def outputs_of(page):
 
 def artifact_body(entry):
     """(text, extension) of an entry's artifact for people to open: its kind line taken off, HTML kept as a page."""
-    src = os.path.join(entry["folder"], "kb", entry["artifact"]) if entry.get("artifact") else None
+    src = artifact_path(os.path.join(entry["folder"], "kb"), entry["artifact"]) if entry.get("artifact") else None
     if not src or not os.path.isfile(src):
         return None, None
     with open(src, "rb") as handle:
@@ -1488,6 +1491,12 @@ def versions_html(page, lang, outs):
     return f'<div class="items" style="gap:14px">{"".join(blocks)}</div>'
 
 
+def where_of(e):
+    """" (run 2, T7)" for a correction that names its run and step; "" when it names neither."""
+    parts = [f"run {e['run']}" if e.get("run") else "", str(e.get("step") or "")]
+    return " (" + ", ".join(p for p in parts if p) + ")" if any(parts) else ""
+
+
 def history_html(page, lang):
     rows = []
     for e in sorted(page.history, key=lambda e: e.get("t") or 0):
@@ -1498,6 +1507,8 @@ def history_html(page, lang):
             "run": lambda: (say(lang, "ev_attach", n=e.get("n"), dir=tilde(e.get("dir"))) if e.get("attached") else say(lang, "ev_run", n=e.get("n"))),
             "run_end": lambda: say(lang, "ev_run_end", n=e.get("n"), code=e.get("exit")),
             "note": lambda: say(lang, "ev_note", id=e.get("id"), text=e.get("text")),
+            "correct": lambda: say(lang, "ev_correct", lesson=e.get("lesson"), wrong=e.get("wrong"), right=e.get("right"),
+                                   when=e.get("when"), where=where_of(e)),
             "pick": lambda: say(lang, "ev_pick", entry=e.get("entry"), kind=e.get("of")),
             "exclude": lambda: say(lang, "ev_exclude", entry=e.get("entry"), why=why),
             "include": lambda: say(lang, "ev_include", entry=e.get("entry")),
@@ -1954,9 +1965,10 @@ class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):  # Threading
     allow_reuse_address = True
 
 
-def serve(folder, host="127.0.0.1", port=8790, token=None, roots=(), ready=None):
+def serve(folder, host="127.0.0.1", port=8790, token=None, roots=(), ready=None, allow_hosts=()):
     """Serve the notebook live: every GET draws the page from the records as they are; POST api/new and api/act take a
-    person's command, with the token. ready(url) is called once it listens."""
+    person's command, with the token. ready(url) is called once it listens. On this machine only, it answers requests
+    for localhost and the names in allow_hosts (webguard)."""
     token = token or secrets.token_urlsafe(18)
     folder = os.path.abspath(os.path.expanduser(folder))
 
@@ -1977,6 +1989,8 @@ def serve(folder, host="127.0.0.1", port=8790, token=None, roots=(), ready=None)
             self.wfile.write(data)
 
         def do_GET(self):
+            if webguard.refused(self, host, allow_hosts):
+                return
             path = urllib.parse.urlparse(self.path).path
             try:
                 code, body, ctype, headers = route(folder, path, roots, True)
@@ -1987,11 +2001,13 @@ def serve(folder, host="127.0.0.1", port=8790, token=None, roots=(), ready=None)
         def do_POST(self):
             def answer(code, obj):
                 self.reply(code, json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8")
-            if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
+            if webguard.refused(self, host, allow_hosts):
+                return
+            if not webguard.token_ok(webguard.bearer(self.headers), token):
                 return answer(403, {"error": "the token is missing or wrong"})
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > 20000:
-                return answer(413, {"error": "too long"})
+            length, problem = webguard.body_length(self.headers, 20000)
+            if problem:
+                return answer(problem[0], {"error": problem[1]})
             try:
                 body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
             except ValueError:

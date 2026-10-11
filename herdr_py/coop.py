@@ -39,6 +39,7 @@ import threading
 import time
 
 from . import coopview
+from .display import printable
 from .members import MemberError, Members, parse_member
 from .teamkb import TeamKB, one_line
 
@@ -345,7 +346,7 @@ def main(argv=None):
         summary = run.run()
     finally:
         members.close()
-    print(report(summary, a.out))
+    print(printable(report(summary, a.out)))
     return 3 if summary["stopped"] else 0
 
 

@@ -22,6 +22,7 @@ The rules (codes):
 - skill_overlap: pairs of skills that quote the same sentences (three or more, of five words or more), unless one is a
   revision of the other (it builds on it and keeps its name): the same rules written down twice.
 - references: the files brought from other tasks (reference/), and how many of them members opened.
+- lesson_repeated: turns told a correction from earlier work (--lessons) whose work still made that mistake.
 - broken: what broke in the setup (a backend, the judge)."""
 import argparse
 import collections
@@ -32,7 +33,7 @@ import re
 import sys
 
 from . import engineview
-from .teamkb import TAG, TeamKB
+from .teamkb import TAG, TeamKB, artifact_path
 
 WAIT_SHARE = 0.25  # a member free this share of the run (or more) waited too long
 QUOTE = re.compile(r'"([^"\n]{20,})"|\u201c([^\u201d\n]{20,})\u201d')  # a quoted sentence ("..." or curly quotes)
@@ -64,7 +65,10 @@ def artifact_kind(run, entry):
     if not entry.get("artifact"):
         return entry.get("kind")
     try:
-        with open(os.path.join(run, "kb", entry["artifact"]), encoding="utf-8", errors="replace") as handle:
+        path = artifact_path(os.path.join(run, "kb"), entry["artifact"])
+        if path is None:
+            return entry.get("kind")
+        with open(path, encoding="utf-8", errors="replace") as handle:
             first = handle.readline()
     except OSError:
         return entry.get("kind")
@@ -279,12 +283,25 @@ def findings(run):
                     "what they were making was no longer needed; the tokens before the cancel were spent all the same",
                     which=which, tokens_text=short)
 
+    # corrections from earlier work that a turn was told and made again anyway
+    again = [r for r in list(turns) + list(wakes) if r.get("lessons_repeated")]
+    if again:
+        ids = collections.Counter(i for r in again for i in r["lessons_repeated"])
+        which = ", ".join(f"{i} {n}x" for i, n in ids.most_common(4))
+        add("lesson_repeated", f"{len(again)} turns made a mistake they had been told about ({which})",
+            {"turns": len(again), "lessons": dict(ids)},
+            "telling it did not stop it: say the right way more plainly, or make it something the judge checks",
+            which=which)
+
     # skills that restate each other
     said, names = {}, {}
     for e in entries:
         if e["status"] == "valid" and kinds.get(e["id"]) == "skill" and e.get("artifact"):
+            path = artifact_path(os.path.join(run, "kb"), e["artifact"])
+            if path is None:
+                continue
             try:
-                with open(os.path.join(run, "kb", e["artifact"]), encoding="utf-8", errors="replace") as handle:
+                with open(path, encoding="utf-8", errors="replace") as handle:
                     text = handle.read()
             except OSError:
                 continue

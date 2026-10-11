@@ -3,9 +3,11 @@ a one-file MCP server (the rest of the answer); the engine offers it to the memb
 run only by the sandbox command the person gave (--mcp-sandbox), never on this machine as it is.
 
 The sandbox command is a template: {file} is the server's code, {kb} the run's knowledge base folder and {board} the
-members' board folder, for example (no network, read-only, the code and the knowledge base mounted read-only):
+members' board folder, for example (no network, read-only, no capabilities, no way to gain privileges, not root, the
+code and the knowledge base mounted read-only):
 
-    docker run --rm -i --network none --read-only --tmpfs /tmp:rw,size=16m --memory 256m --cpus 1 --pids-limit 64
+    docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user 65534:65534
+      --tmpfs /tmp:rw,size=16m --memory 256m --cpus 1 --pids-limit 64
       -v {file}:/srv/tool.py:ro -v {kb}:/kb:ro IMAGE python3 /srv/tool.py
 
 Before a tool is offered, the engine starts it once in the sandbox and asks server/discover and tools/list (MCP
@@ -19,7 +21,7 @@ import subprocess
 import threading
 import time
 
-from .teamkb import TAG
+from .teamkb import TAG, artifact_path
 
 KIND = "mcp"
 VERSION = "2026-07-28"
@@ -110,7 +112,9 @@ class TeamTools:
         for e in entries:
             if e.get("status") != "valid" or not e.get("artifact") or e["id"] in self.tools:
                 continue
-            path = os.path.join(folder, e["artifact"])
+            path = artifact_path(folder, e["artifact"])
+            if path is None:  # a log that names a file outside the knowledge base: never mounted into a sandbox
+                continue
             try:
                 with open(path, encoding="utf-8", errors="replace") as handle:
                     first, _, code = handle.read().partition("\n")

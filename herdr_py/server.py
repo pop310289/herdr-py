@@ -9,7 +9,6 @@
 
 Clients (CLI, TUI, web UI) can come and go: agents keep running in OpenCode and the daemon keeps answering permissions.
 """
-import hmac
 import http.server
 import json
 import os
@@ -20,7 +19,7 @@ import threading
 import time
 import urllib.parse
 
-from . import __version__
+from . import __version__, webguard
 from .core import Hub, HubError
 from .opencode import OpenCodeError, start_stream_thread
 
@@ -31,17 +30,19 @@ except AttributeError:  # Python 3.6 (RHEL 8's platform-python)
         daemon_threads = True
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+MAX_BODY = 4 * 1024 * 1024  # a prompt with its context; a larger body is refused (413)
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8")}
 
 
 class Daemon:
     def __init__(self, client, policy, state_dir, socket_path=None, http_addr=None, model=None, questions="ask",
-                 tick_s=0.25, max_agents=None, max_prompts=None):
+                 tick_s=0.25, max_agents=None, max_prompts=None, allow_hosts=()):
         os.makedirs(state_dir, exist_ok=True)
         self.state_dir = state_dir
         self.socket_path = socket_path or os.path.join(state_dir, "herdr-py.sock")
         self.http_addr = http_addr
+        self.allow_hosts = tuple(allow_hosts)
         self.hub = Hub(client, policy, log_path=os.path.join(state_dir, "events.jsonl"),
                        state_path=os.path.join(state_dir, "state.json"), model=model, questions=questions,
                        max_agents=max_agents, max_prompts=max_prompts)
@@ -49,7 +50,7 @@ class Daemon:
         self.tick_s = tick_s
         self.stopping = threading.Event()
         self.token = self.load_token()
-        self.unix = self.web = None
+        self.unix = self.web = self.web_host = None
         self.started = time.time()
         self.unasked = None  # set by `serve`: the permission kinds OpenCode runs without asking (opencode.unasked)
 
@@ -120,12 +121,17 @@ class Daemon:
         class UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
             daemon_threads = True
 
-        self.unix = UnixServer(self.socket_path, UnixHandler)
+        mask = os.umask(0o177)  # the socket is born 0600: no moment in which another user could connect to it
+        try:
+            self.unix = UnixServer(self.socket_path, UnixHandler)
+        finally:
+            os.umask(mask)
         os.chmod(self.socket_path, 0o600)
         threading.Thread(target=self.unix.serve_forever, daemon=True, name="herdr-py-unix").start()
         if self.http_addr:
             host, _, port = self.http_addr.rpartition(":")
-            self.web = ThreadingHTTPServer((host or "127.0.0.1", int(port)), make_http_handler(self))
+            self.web_host = host or "127.0.0.1"
+            self.web = ThreadingHTTPServer((self.web_host, int(port)), make_http_handler(self))
             self.web.daemon_threads = True
             threading.Thread(target=self.web.serve_forever, daemon=True, name="herdr-py-http").start()
         return reattached
@@ -206,9 +212,11 @@ def make_http_handler(daemon):
             pass
 
         def authorized(self, query):
-            header = self.headers.get("Authorization", "")
-            given = header[7:] if header.startswith("Bearer ") else (query.get("token") or [""])[0]
-            return hmac.compare_digest(given.encode(), daemon.token.encode())
+            given = webguard.bearer(self.headers) or (query.get("token") or [""])[0]
+            return webguard.token_ok(given, daemon.token)
+
+        def refused(self):
+            return webguard.refused(self, daemon.web_host, daemon.allow_hosts)
 
         def reply(self, status, obj):
             body = json.dumps(obj, ensure_ascii=False).encode()
@@ -220,6 +228,8 @@ def make_http_handler(daemon):
             self.wfile.write(body)
 
         def do_GET(self):
+            if self.refused():
+                return
             url = urllib.parse.urlparse(self.path)
             query = urllib.parse.parse_qs(url.query)
             if url.path in STATIC:
@@ -252,10 +262,14 @@ def make_http_handler(daemon):
             return self.reply(404, {"error": "not found"})
 
         def do_POST(self):
+            if self.refused():
+                return
             url = urllib.parse.urlparse(self.path)
             if not self.authorized(urllib.parse.parse_qs(url.query)):
                 return self.reply(401, {"error": "missing or wrong token"})
-            length = int(self.headers.get("Content-Length") or 0)
+            length, problem = webguard.body_length(self.headers, MAX_BODY)
+            if problem:
+                return self.reply(problem[0], {"error": problem[1]})
             try:
                 body = json.loads(self.rfile.read(length) or b"{}") if length else {}
             except ValueError:

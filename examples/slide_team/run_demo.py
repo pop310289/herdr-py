@@ -14,8 +14,10 @@ import datetime
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -96,7 +98,8 @@ def main():
                     "-e", "OPENCODE_CONFIG_CONTENT=" + json.dumps(opencode_config()),
                     "herdr-py/slides:rhel8", "opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"],
                    check=True, stdout=subprocess.DEVNULL)
-    sock = "/tmp/hps-%s.sock" % os.path.basename(run)[-6:]
+    sock_dir = tempfile.mkdtemp(prefix="hps-", dir="/tmp")  # a 0700 folder of its own: no one else can put a socket there
+    sock = os.path.join(sock_dir, "d.sock")  # and the path stays short (AF_UNIX allows about 104 bytes)
     env = dict(os.environ, PYTHONPATH=REPO, PYTHONDONTWRITEBYTECODE="1")
     daemon = subprocess.Popen([PY, "-m", "herdr_py", "--socket", sock, "serve", "--opencode", "http://127.0.0.1:%d" % a.port,
                                "--password-file", pw_file, "--policy", os.path.join(HERE, "layout", "policy.json") if a.arch == "layout"
@@ -137,6 +140,7 @@ def main():
         subprocess.run([PY, "-m", "herdr_py", "--socket", sock, "stop"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         daemon.wait(timeout=30)
         subprocess.run(["docker", "stop", "-t", "5", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

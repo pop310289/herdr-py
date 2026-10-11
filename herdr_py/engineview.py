@@ -21,7 +21,7 @@ member turns, the time limit: engine.send_control). It prints a link with a toke
 token is refused. It listens on this machine only unless --host says otherwise. A page opened as a file has no
 buttons: it cannot reach the run.
 """
-import hmac
+import collections
 import html
 import http.server
 import json
@@ -33,7 +33,8 @@ import sys
 import time
 import urllib.parse
 
-from .teamkb import TAG
+from . import webguard
+from .teamkb import TAG, artifact_path
 from .viewstyle import TOKENS
 
 
@@ -103,9 +104,10 @@ def load(out):
     for eid, p in entries.items():
         v = verdicts.get(eid) or {}
         kind, name = None, None
-        if p.get("artifact"):
+        path = artifact_path(os.path.join(out, "kb"), p["artifact"]) if p.get("artifact") else None
+        if path:
             try:
-                with open(os.path.join(out, "kb", p["artifact"]), encoding="utf-8", errors="replace") as handle:
+                with open(path, encoding="utf-8", errors="replace") as handle:
                     head = [handle.readline() for _ in range(30)]
                 m = TAG.match(head[0])
                 kind = m.group(2).lower() if m else None
@@ -649,7 +651,46 @@ def rel(t, t0):
     return f"+{t - t0:.1f} s" if isinstance(t, (int, float)) else "?"
 
 
-def todo_list(todos, t0):
+def told_line(rec):
+    """Which corrections from earlier work a turn or wake was told, and which of those mistakes it made again anyway."""
+    told, again = rec.get("lessons") or [], rec.get("lessons_repeated") or []
+    if not told:
+        return ""
+    return (f'<div class="muted">told corrections {esc(", ".join(told))}</div>'
+            + (f'<div class="said">made a corrected mistake again: {esc(", ".join(again))}</div>' if again else ""))
+
+
+def lessons_panel(out, wakes, turns):
+    """The corrections from earlier work this run was given (lessons.json, which the engine writes), with the turns
+    each was told in and the turns that made the mistake again anyway."""
+    try:
+        with open(os.path.join(out, "lessons.json"), encoding="utf-8") as handle:
+            given = json.load(handle)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(given, list) or not given:
+        return ""
+    told = collections.Counter(i for r in list(wakes) + list(turns) for i in r.get("lessons") or [])
+    again = collections.Counter(i for r in list(wakes) + list(turns) for i in r.get("lessons_repeated") or [])
+    rows = []
+    for l in given:
+        if not isinstance(l, dict) or "id" not in l:
+            continue
+        n, m = told[l["id"]], again[l["id"]]
+        how = (f'<span class="chip bad">the mistake came back in {m}</span>' if m else
+               '<span class="chip">not told: no task or todo matched</span>' if not n else
+               '<span class="chip">not measured: no detect</span>' if not l.get("detect") else
+               '<span class="chip good">the mistake did not come back</span>')
+        rows.append(f'<li><div><b>{esc(l["id"])}</b> ({esc(l.get("status"))}) · told in {times(n, "turn")} {how}</div>'
+                    f'<div class="said">wrong: {esc(l.get("wrong"))}</div><div>right: {esc(l.get("right"))}</div>'
+                    f'<div class="muted">told where /{esc(l.get("when"))}/ is found'
+                    + (f'; the mistake is recognized by /{esc(l["detect"])}/' if l.get("detect") else "") + "</div></li>")
+    return ('<section class="panel"><h2>Corrections from earlier work</h2><ul class="cards" id="lessons">' + "".join(rows)
+            + "</ul></section>")
+
+
+def todo_list(todos, t0, turns=()):
+    by_todo = {r["todo"]: r for r in turns if r.get("todo")}
     rows = []
     for t in sorted(todos, key=lambda t: t.get("added") or 0):
         state = t["state"]
@@ -665,7 +706,7 @@ def todo_list(todos, t0):
         builds = f'<div class="muted">builds on {esc(", ".join(t["parents"]))}</div>' if t.get("parents") else ""
         said = f'<div class="said">{esc(t["detail"])}</div>' if t.get("detail") and state == "failed" else ""
         rows.append(f'<li data-added="{t.get("added") or 0}"><div>{head}</div><div>{esc(t["text"])}</div>{builds}'
-                    f'<div class="muted">{" · ".join(when)}</div>{said}</li>')
+                    f'<div class="muted">{" · ".join(when)}</div>{said}{told_line(by_todo.get(t["id"], {}))}</li>')
     return f'<ul class="cards" id="todos">{"".join(rows) or "<li>no todos yet</li>"}</ul>'
 
 
@@ -696,7 +737,7 @@ def wake_list(wakes, t0):
             what.append("sent back: " + "; ".join(w["problems"]))
         rows.append(f'<li data-s="{w.get("start") or w.get("t") or 0}"><div>{head}</div><div class="muted">woken because: {esc(w.get("reason", ""))}</div>'
                     + (f'<div>{esc(" · ".join(what))}</div>' if what else "")
-                    + (f'<div class="said">{esc(w["why"])}</div>' if w.get("why") else "") + "</li>")
+                    + (f'<div class="said">{esc(w["why"])}</div>' if w.get("why") else "") + told_line(w) + "</li>")
     return f'<ul class="cards" id="wakes">{"".join(rows) or "<li>the planner has not been woken yet</li>"}</ul>'
 
 
@@ -831,6 +872,7 @@ h2 {{ font-size:.76rem; margin:0 0 10px; letter-spacing:.06em; text-transform:up
 <div class="legend"><span><i class="pass"></i>verified (member, score)</span><span><i class="fail"></i>did not pass</span>
 <span>a line runs from an entry to each one that built on it</span></div></section>
 {skills}
+{lessons}
 </div>
 </div>
 <div class="grid2">
@@ -923,16 +965,18 @@ def render(out, live=False):
                        timeline=timeline_svg(t0, t1, wakes, turns, members, stop.get("why") if stop else None, tools),
                        lineage=lineage_svg(made), skills=f'<section class="panel">{skills}</section>' if skills else "",
                        gather=gather_list(turns, tools, t0),
-                       best=best_svg(t0, t1, turns), todos=todo_list(todos, t0), wakes=wake_list(wakes, t0))
+                       best=best_svg(t0, t1, turns), todos=todo_list(todos, t0, turns), wakes=wake_list(wakes, t0),
+                       lessons=lessons_panel(out, wakes, turns))
 
 
 class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):  # ThreadingHTTPServer is Python 3.7+
     daemon_threads = True
 
 
-def serve(out, host="127.0.0.1", port=8780, token=None, ready=None):
+def serve(out, host="127.0.0.1", port=8780, token=None, ready=None, allow_hosts=()):
     """Serve the run's page (drawn again for every request) and take a person's commands for it (POST /control with
-    "Authorization: Bearer <token>"). ready(server, token) is called once it listens (tests stop it with shutdown())."""
+    "Authorization: Bearer <token>"). ready(server, token) is called once it listens (tests stop it with shutdown()).
+    On this machine only, it answers requests for localhost and the names in allow_hosts (webguard)."""
     from .engine import send_control  # engine imports this module; this one needs engine only here
     token = token or secrets.token_urlsafe(18)
 
@@ -950,18 +994,22 @@ def serve(out, host="127.0.0.1", port=8780, token=None, ready=None):
             self.wfile.write(data)
 
         def do_GET(self):
+            if webguard.refused(self, host, allow_hosts):
+                return
             if urllib.parse.urlparse(self.path).path not in ("/", "/index.html"):
                 return self.send(404, {"error": "not found"})
             return self.send(200, render(out, live=True).encode("utf-8"), "text/html; charset=utf-8")
 
         def do_POST(self):
+            if webguard.refused(self, host, allow_hosts):
+                return
             if urllib.parse.urlparse(self.path).path != "/control":
                 return self.send(404, {"error": "not found"})
-            if not hmac.compare_digest(self.headers.get("Authorization") or "", "Bearer " + token):
+            if not webguard.token_ok(webguard.bearer(self.headers), token):
                 return self.send(403, {"error": "this needs the token from the link the server printed"})
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > 4096:
-                return self.send(413, {"error": "too long"})
+            length, problem = webguard.body_length(self.headers, 4096)
+            if problem:
+                return self.send(problem[0], {"error": problem[1]})
             try:
                 body = json.loads(self.rfile.read(length) or b"{}")
                 rec = send_control(out, body.get("command"), body.get("value"), by="web")
@@ -996,13 +1044,15 @@ def main(argv=None):
     ap.add_argument("--serve", action="store_true", help="serve the page with a person's buttons instead of writing view.html")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8780)
+    ap.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                    help="also answer requests for this name (a proxy in front that passes on its public name)")
     a = ap.parse_args(argv)
     if not os.path.isfile(os.path.join(a.run, "engine.jsonl")):
         print(f"herdr-py engineview: {a.run} holds no run (engine.jsonl)", file=sys.stderr)
         return 2
     if a.serve:
         try:
-            serve(a.run, host=a.host, port=a.port)
+            serve(a.run, host=a.host, port=a.port, allow_hosts=a.allow_host)
         except KeyboardInterrupt:
             pass
         return 0

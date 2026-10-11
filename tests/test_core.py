@@ -7,7 +7,7 @@ import time
 import unittest
 
 from herdr_py.core import Hub, HubError
-from herdr_py.opencode import OpenCode, start_stream_thread
+from herdr_py.opencode import OpenCode, OpenCodeError, start_stream_thread
 from herdr_py.policy import Policy, PolicyError, describe, target_of
 
 from fake_opencode import FakeOpenCode
@@ -376,6 +376,15 @@ class HubTest(unittest.TestCase):
         started = time.time()
         self.hub.prompt("c", "again")
         self.assertLess(time.time() - started, 0.2)
+
+
+class ClientURLTest(unittest.TestCase):
+    def test_only_plain_http_urls(self):
+        for url in ("http://127.0.0.1:4096", "http://127.0.0.1:4096/", "http://oc.internal"):
+            self.assertTrue(OpenCode(url).host)
+        for url in ("file:///etc/passwd", "ftp://127.0.0.1/x", "https://127.0.0.1:4096", "127.0.0.1:4096", "http://", ""):
+            with self.assertRaises(OpenCodeError, msg=url):
+                OpenCode(url)
 
 
 class PolicyTest(unittest.TestCase):

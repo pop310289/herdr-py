@@ -12,15 +12,18 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 EXAMPLE = os.path.join(ROOT, "examples", "self_improve")
 sys.path.insert(0, ROOT)
 sys.path.insert(0, EXAMPLE)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import make_task  # noqa: E402
 import patch_judge  # noqa: E402
+from test_sandbox import DOCKER, IMAGE  # noqa: E402
 from herdr_py.coop import CoopRun, command_judge  # noqa: E402
 from herdr_py.members import Members, parse_member  # noqa: E402
 
@@ -127,9 +130,9 @@ class Base(unittest.TestCase):
             handle.write(CALC.replace("return x", "return x  # working tree only"))
         self.test_cmd = f"{sys.executable} -B -m unittest discover -s tests -q"
 
-    def args(self, *extra):
+    def args(self, *extra):  # these patches are the test's own: they may run here (--sandbox none)
         return ["--repo", self.repo, "--base", "HEAD", "--scenarios", os.path.join(self.repo, "scen"),
-                "--test", self.test_cmd, "--timeout", "60"] + list(extra)
+                "--test", self.test_cmd, "--timeout", "60", "--sandbox", "none"] + list(extra)
 
     def patch(self, text, name="answer.diff"):
         path = os.path.join(self.dir, name)
@@ -152,7 +155,7 @@ class JudgeTest(Base):
         self.assertEqual(self.judge(FIX_BOTH)[1]["score"], 2)
         v = self.judge(NOTHING)[1]
         self.assertEqual((v["status"], v["score"]), ("valid", 0))
-        self.assertRegex(v["detail"], r"^0 of 2 scenario\(s\) pass; still failing: "  # names differ across Pythons
+        self.assertRegex(v["detail"], r"^\[no sandbox\] 0 of 2 scenario\(s\) pass; still failing: "  # names differ across Pythons
                          r"high \(FAIL: test_high \(test_high\.High[.\w]*\) \| AssertionError: 50 != 10\); "
                          r"order \(FAIL: test_swapped_limits_are_refused \([.\w]+\) \| AssertionError: ValueError not raised\)$")
 
@@ -294,6 +297,72 @@ class TaskTest(Base):
             json.dump(data, handle)
         with self.assertRaisesRegex(ValueError, "missing.py is not in HEAD"):
             make_task.build(self.repo, "HEAD", os.path.join(self.repo, "scen"))
+
+
+def evil_patch(marker):
+    """A new test file (allowed) that leaves a file at `marker` when it is imported, wherever that happens."""
+    body = ["import unittest", "open(%r, 'w').close()" % marker, "", "", "class Evil(unittest.TestCase):",
+            "    def test_nothing(self):", "        pass"]
+    return ("diff --git a/tests/test_evil.py b/tests/test_evil.py\nnew file mode 100644\n--- /dev/null\n"
+            "+++ b/tests/test_evil.py\n@@ -0,0 +1,%d @@\n" % len(body) + "".join("+" + line + "\n" for line in body))
+
+
+class SandboxTest(Base):
+    """A patch is code a member wrote: by default the judge runs it only in a container."""
+
+    def setUp(self):
+        super().setUp()
+        self.marker = os.path.join(self.dir, "ran-on-this-machine")
+
+    def sandboxed(self, text, sandbox=None):
+        args = ["--repo", self.repo, "--base", "HEAD", "--scenarios", os.path.join(self.repo, "scen"),
+                "--test", "python3 -B -m unittest discover -s tests -q", "--timeout", "300"]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = patch_judge.main(args + (["--sandbox", sandbox] if sandbox else []) + [self.patch(text)])
+        return code, (json.loads(out.getvalue()) if code == 0 else None), err.getvalue()
+
+    def test_by_default_without_docker_the_judge_refuses_and_runs_nothing(self):
+        tools = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tools, True)
+        for tool in ("git", "tar"):  # what exporting the base needs, and no docker
+            os.symlink(shutil.which(tool), os.path.join(tools, tool))
+        with mock.patch.dict(os.environ, {"PATH": tools}):
+            code, v, err = self.sandboxed(evil_patch(self.marker))
+        self.assertEqual(code, 2, err)
+        self.assertIn("docker is not installed", err)
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_without_the_preflight_the_patched_copy_is_checked_too(self):
+        tools = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tools, True)
+        for tool in ("git", "tar"):
+            os.symlink(shutil.which(tool), os.path.join(tools, tool))
+        with mock.patch.dict(os.environ, {"PATH": tools}):
+            out, err_io = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err_io):
+                code = patch_judge.main(["--repo", self.repo, "--base", "HEAD", "--scenarios", os.path.join(self.repo, "scen"),
+                                         "--no-preflight", self.patch(evil_patch(self.marker))])
+        self.assertEqual(code, 2)
+        self.assertIn("docker is not installed", err_io.getvalue())
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_with_sandbox_none_the_patch_runs_here_and_the_verdict_says_so(self):
+        code, v, _ = self.judge(evil_patch(self.marker))
+        self.assertEqual((code, v["status"]), (0, "valid"))
+        self.assertTrue(v["detail"].startswith("[no sandbox] "), v["detail"])
+        self.assertTrue(os.path.exists(self.marker))
+
+    @unittest.skipUnless(DOCKER, "docker does not answer here")
+    def test_in_docker_a_patch_is_judged_inside_and_cannot_reach_this_machine(self):
+        code, v, err = self.sandboxed(FIX_HIGH, "docker:" + IMAGE)
+        self.assertEqual((code, v["status"], v["score"]), (0, "valid", 1), err)
+        self.assertIn("1 of 2 scenario(s) pass: high; still failing: order", v["detail"])
+        self.assertNotIn("[no sandbox]", v["detail"])
+        code, v, err = self.sandboxed(evil_patch(self.marker), "docker:" + IMAGE)
+        self.assertEqual((code, v["status"]), (0, "invalid"), err)  # its folder is not there inside: the import fails
+        self.assertIn("breaks the existing tests", v["detail"])
+        self.assertFalse(os.path.exists(self.marker))
 
 
 class LoopTest(Base):

@@ -257,7 +257,8 @@ python3 -m herdr_py.teamkb runs/c1/kb     # every entry: score, who built on who
 today and says what should happen; members hand in a unified diff; `patch_judge.py` applies it to a clean export of
 a commit, refuses patches that touch the scenarios, the judge or an existing test, runs the existing suites (one
 `--test` per platform) and scores the patch by how many scenarios pass. Before judging, it checks the base: its tests
-must pass and every scenario must fail, or the judge reports itself broken instead of blaming the patch.
+must pass and every scenario must fail, or the judge reports itself broken instead of blaming the patch. A patch is
+code a member wrote, so the tests and the scenarios run in a container (`--sandbox`, see [Security](#security)).
 `make_task.py` builds the task text with the scenarios and the source files they name, for members without tools.
 The scenarios in the folder are candidates (`pending-review`): a person reads and freezes a scenario before members
 are run on it, and a person reviews the best patch before it is merged.
@@ -356,7 +357,7 @@ work at once, to let a todo come after the one finding out what it needs, and no
 findings into a research todo. Members can also make tools for each other: a verified answer whose first line is
 `ARTIFACT: mcp` is a one-file MCP server, and with `--mcp-sandbox COMMAND` the engine starts it once in that sandbox
 (`{file}` the tool's code, `{kb}` the knowledge base, `{board}` the board folder; for example a `docker run` with no
-network and a read-only file system), asks server/discover and tools/list (revision 2026-07-28), and offers the tools
+network, a read-only file system, no capabilities and not as root, as in [Security](#security)), asks server/discover and tools/list (revision 2026-07-28), and offers the tools
 that answered to the Claude members' later turns (the newest of a line of tools; their prompt lists them). Such a turn
 runs with `--restricted --strict-mcp-config` instead of `--safe-mode`, which keeps every MCP server out: checked with
 Claude Code 2.1.295, the context is the same size and holds no CLAUDE.md or skills, and the member called the tool.
@@ -480,6 +481,36 @@ open /tmp/notebook-demo/site/index.html
 `notebook.json` in the folder sets the title and the language of the pages (`en` or `zh-TW`). Commands are for one
 person on one machine; a decision written later than it happened (`--at`) is marked as recorded later.
 
+### Corrections the next run is told (lessons)
+
+When a team goes down a wrong path, a person (or the agent that supervises the team) writes the correction down once.
+Later runs are told before they act, and their records show whether that helped.
+
+```
+a correction ─> lessons.jsonl ─> before an action, does `when` match? ─> yes: told in that prompt
+(notebook correct)  (hypothesis)    (a member: the task + its todo;              │
+                                     the planner: the task)                      v
+        review <─ the mistake made again? (`detect` on what was handed in) <─ the turn
+  retired (back in 2 turns, for good) │ confirmed (told in 3, never back) │ otherwise as it was
+```
+
+```sh
+python3 -m herdr_py.notebook NOTEBOOK correct PAGE --run 2 --step t3 \
+    --wrong "took the screenshot with headless Chrome --window-size" \
+    --right "use phone-check: it emulates a 390 px phone" --when "screenshot" --detect "window-size"
+python3 -m herdr_py.lessons NOTEBOOK/lessons.jsonl review RUN_FOLDER...  # told, made again, and the mistake's rate before
+```
+
+- `when` is matched just before the action, against the action itself (the task and the todo), not against what a
+  person typed in a chat.
+- A lesson is a hypothesis until the records decide: the mistake back in 2 turns that were told it retires it, for good
+  (to try again, write it anew); with `detect`, told in 3 turns and never back confirms it. A review of fewer runs never
+  moves a lesson back. Without `detect` a lesson cannot be measured and stays a hypothesis.
+- It only tells: answers are judged as before. The replay page lists the lessons a run was given, and every todo and
+  planner wake shows which it was told and which mistake it made again; `rundiag` reports such turns.
+- Runs started from a notebook get its `lessons.jsonl` (`--lessons FILE` for the engine). Every run now keeps its task
+  as `task.md`, so a lesson can be measured on the runs from before it existed.
+
 ## DAG dispatch: steps that wait for each other
 
 `python3 -m herdr_py.dag` runs a **plan**: steps, each done by one member in **its own git clone** and passed or
@@ -494,13 +525,16 @@ div ───────────────┴─> docs
 ```
 
 ```sh
-python3 examples/dag/make_demo.py /tmp/dag-demo          # a small repository and a plan for it (program members, no model)
-python3 -m herdr_py.dag /tmp/dag-demo/plan.json --check  # the steps, level by level
-python3 -m herdr_py.dag /tmp/dag-demo/plan.json --out /tmp/dag-demo/run1 --parallel 3
-open /tmp/dag-demo/run1/view.html                         # the plan drawn as a graph, and every attempt
-python3 -m herdr_py.dag --recheck /tmp/dag-demo/run1      # judge every passed step again in a fresh clone
+python3 examples/dag/make_demo.py ~/dag-demo          # a small repository and a plan for it (program members, no model)
+python3 -m herdr_py.dag ~/dag-demo/plan.json --check  # the steps, level by level
+python3 -m herdr_py.dag ~/dag-demo/plan.json --out ~/dag-demo/run1 --parallel 3
+open ~/dag-demo/run1/view.html                         # the plan drawn as a graph, and every attempt
+python3 -m herdr_py.dag --recheck ~/dag-demo/run1      # judge every passed step again in a fresh clone
 ```
 
+- **The judge runs each step's tests in a container** (`examples/dag/judge.py`; `HERDR_JUDGE_SANDBOX`, default
+  `docker:python:3-slim`; `none` runs them here): a step's tests are code a member wrote. With colima, keep the demo
+  under your home folder, as above: only that is shared with the container.
 - **Isolation is the program's job**: every attempt gets its own `git clone --shared`, with no remote; a step's clone
   gets the output commit of each step it needs (`refs/dag/<id>`) and nothing from any other step, and its prompt shows
   only those steps' summaries and diffs. Codex members work there in the `workspace-write` sandbox; Claude members get
@@ -672,6 +706,42 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 kinds refused for that agent before the policy is asked (`["edit", "bash"]` for an agent that only reads).
 `folder.list` returns what OpenCode lists in a folder, an error when it cannot see it.
 
+## Security
+
+Checked on 2026-10-11 with three scanners in a throwaway container (bandit 1.9.4; semgrep 1.180.0 with the rule sets
+p/python, p/security-audit, p/secrets and p/github-actions; zizmor 1.30.1 for the CI workflow) and with attacks on the
+running servers and on the judges (`tests/test_webguard.py`, `tests/test_sandbox.py`, `tests/test_display.py`).
+
+- **Code an agent wrote never runs on this machine as it is.** Claude members get permission modes and file tools
+  only; Codex members work in Codex's read-only or workspace-write sandbox; OpenCode members go through the daemon's
+  policy. A team tool (`ARTIFACT: mcp`) runs only through the `--mcp-sandbox` command you give, for example:
+
+  ```sh
+  docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 \
+    --tmpfs /tmp:rw,size=16m --memory 256m --cpus 1 --pids-limit 64 -v {file}:/srv/tool.py:ro -v {kb}:/kb:ro IMAGE python3 /srv/tool.py
+  ```
+- **A judge that runs a member's code runs it in a container.** `herdr_py/sandbox.py` starts one per command: no
+  network, a read-only root, no capabilities, no way to gain privileges, your user id, memory, CPU and process limits,
+  and only the work copy mounted; a command that runs too long is stopped with its container.
+  `examples/self_improve/patch_judge.py` (`--sandbox docker:IMAGE`, default `docker:python:3-slim`, or `podman:IMAGE`)
+  and `examples/dag/judge.py` (`HERDR_JUDGE_SANDBOX`) use it. Before anything runs, they check that the container sees
+  the copy (colima shares only folders under your home with its VM). Without docker they stop with a judge error.
+  `none` runs the code here: only when you ask for it, and the verdict then starts with `[no sandbox]`. A judge of your
+  own that runs members' code should do the same.
+- **The web servers** (`engineview --serve`, `serve --http`, the dashboard, `notebook serve`) listen on 127.0.0.1
+  unless you say otherwise. There they answer only requests addressed to this machine (localhost, 127.0.0.1, ::1): a
+  web page elsewhere that points its own domain at 127.0.0.1 (DNS rebinding) gets 403, so it cannot read a run or the
+  notebook. Behind a proxy that passes on its public name, add `--allow-host NAME`. Commands need the token printed
+  after `#` in the link; a token is compared in constant time, request bodies have a size limit, and a
+  `Content-Length` that is not a whole number is refused.
+- **The terminal** never gets control characters or bidirectional overrides from what agents, judges or web pages
+  wrote; they are shown as `�` (U+FFFD). Escape sequences that would set the clipboard or the window title, clear the
+  screen or reorder text are not passed on.
+- **The knowledge base reads only the files it wrote** (`artifacts/<sha256>`): a log edited to name a file elsewhere
+  is not read, carried or judged.
+- **The CI workflow** reads the repository only, pins third-party actions to commit SHAs and keeps no credentials; its
+  privacy check refuses personal data in pushed commits.
+
 ## RHEL 8 notes
 
 - `python3` on RHEL 8 is 3.6 (`/usr/libexec/platform-python` is always there): fine for herdr-py; use JSON config files.
@@ -696,7 +766,8 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 542 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 594 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # the sandbox in real containers when docker answers
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 
@@ -1013,440 +1084,534 @@ raTlgZrlt6XlhbfvvJrnrKzkuIDooYzmmK8gYEFSVElGQUNUOiBtY3BgIOeahOmAmumBjuetlOah
 iOaYr+S4gOWAi+WWruaqlCBNQ1Ag5Ly65pyN5Zmo77yM57Wm5LqGIGAtLW1jcC1zYW5kYm94IOaM
 h+S7pGAg5pmC77yM5byV5pOO5YWI5Zyo6YKj5YCL5rKZ55uS6KOh5ZWf5YuV5a6D5LiA5qyh77yI
 YHtmaWxlfWAg5bel5YW355qE56iL5byP44CBYHtrYn1gIOefpeitmOW6q+OAgWB7Ym9hcmR9YCDn
-nIvmnb/os4fmlpnlpL7vvJvkvovlpoLkuI3pgKPntrLjgIHmqpTmoYjllK/oroDnmoQgYGRvY2tl
-ciBydW5g77yJ77yM5ZWPIHNlcnZlci9kaXNjb3ZlciDoiIcgdG9vbHMvbGlzdO+8iDIwMjYtMDct
-Mjgg54mI77yJ77yM5pyJ5Zue5oeJ55qE5bel5YW35bCx5o+Q5L6b57WmIENsYXVkZSDmiJDlk6Hk
-uYvlvoznmoTlm57lkIjvvIjlkIzkuIDns7vliJflj6rmj5DkvpvmnIDmlrDniYjvvJvmj5DnpLro
-o6HmnIPliJflh7rvvInjgILpgJnnqK7lm57lkIjnlKggYC0tcmVzdHJpY3RlZCAtLXN0cmljdC1t
-Y3AtY29uZmlnYCDlj5bku6PmnIPmiormiYDmnIkgTUNQIOS8uuacjeWZqOaTi+aOieeahCBgLS1z
-YWZlLW1vZGVg77ya55SoIENsYXVkZSBDb2RlIDIuMS4yOTUg5a+m5ris77yM5LiK5LiL5paH5aSn
-5bCP5LiA5qij44CB5rKS5pyJIENMQVVERS5tZCDoiIcgc2tpbGzvvIzmiJDlk6HkuZ/nnJ/nmoTl
-kbzlj6vliLDlt6XlhbfjgILmspLntabmspnnm5LmjIfku6TvvIzmiJDlk6Hlr6vnmoTlt6Xlhbfk
-uIDlvovkuI3ln7fooYzjgIJgcHl0aG9uMyAtbSBoZXJkcl9weS5ydW5kaWFnIFJVTl9ESVJgIOiu
-gOS4gOasoeWft+ihjOeahOe0gOmMhO+8jOiqquWHuua1quiyu+iIh+WHuumMr+eahOWcsOaWue+8
-muWQjOS4gOWAi+WOn+WboOiiq+WIpOS4jemAmumBjueahOetlOahiOOAgeaykui0j+mBjuacgOmr
-mOWIhuS5n+aykuS6uuaOpeiRl+WBmueahOaIkOaenO+8iOWQjOS4gOS7veW3peS9nOWBmuS6huWF
-qeasoe+8ieOAgeaykuS6uueUqOWIsOeahCBza2lsbOOAgeiiq+S4jeWPquS4gOWAi+aIkOWToeaJ
-k+mWi+eahOe2sumggeOAgeacgOmrmOWIhuWHuuePvuW+jOeahOWbnuWQiOOAgXBsYW5uZXIg5Zaa
-6YaS55So5a6M5pmC5Ymp5LiL55qE5Zue5ZCI44CB6ZaS6JGX562J5bel5L2c55qE5oiQ5ZOh44CB
-6KKr6YCA5Zue55qEIHBsYW5uZXIg5Zue6KaG44CB5Zue5ZCI5YWn5L+u5q2j44CB5LuA6bq86YO9
-5rKS55WZ5LiL55qE5Zue5ZCI77yI6LaF5pmC77yb6KKr5by35Yi257WQ5p2f55qE5Zue5ZCI77yM
-dG9rZW4g5pW45piv5LiL6ZmQ77yJ6IiH6YGU5qiZ5pmC6KKr5Y+W5raI55qE5Zue5ZCI44CB5byV
-55So5ZCM5qij5Y+l5a2Q55qEIHNraWxsIOe1hOWQiO+8iOWQjOS4gOWll+imj+WJh+Wvq+S6huWF
-qeasoe+8m+WQjOWQjeeahOaUueeJiOS4jeeul++8ie+8jOS7peWPiuW+nuWFtuS7liB0YXNrIOW4
-tuS+hueahOaqlOahiOacieaykuacieS6uuaJk+mWi+OAgmBzdW1tYXJ5Lmpzb25gIOacg+eul++8
-muiiq+mgmOWFqeasoeeahOW+hei+puaVuO+8iOW/hemgiOaYryAw77yJ44CB5bCN5b6X5Yiw5b6F
-6L6m44CB55yL5p2/54mI5pys6IiH5oyH5LukIGhhc2gg55qE5Zue5ZCI5q+U5L6L77yI5b+F6aCI
-5YWo6YOo77yJ44CB5q+P5YCL5oiQ5ZOh44CM5pyJ56m65Y275rKS5pyJ5b6F6L6m5Y+v6aCY44CN
-55qE5pmC6ZaT44CBcGxhbm5lciDljaDlhajpg6ggdG9rZW4g55qE5q+U5L6L77yM5Lul5Y+K5oiQ
-5ZOh6K6A55yL5p2/55qE5qyh5pW477yI5b6eIENvZGV444CBQ2xhdWRl44CBT3BlbkNvZGUg55qE
-57SA6YyE566X77yb56iL5byP5oiQ5ZOh5rKS5pyJ57SA6YyE77yJ44CC5q+P5YCL5bey6amX6K2J
-55qE57WQ5p6c5Lmf5pyD6K6K5oiQ55yL5p2/6LOH5paZ5aS+6KOh55qE5qqU5qGI77yIYGFydGlm
-YWN0cy88aWQ+LnR4dGDvvInvvIzlpKrplbfmlL7kuI3pgLLmjIfku6TnmoTmiJDmnpzvvIzpmorl
-j4vkuZ/og73miZPplovkvobnnIvjgIJgLS1tZW1iZXItYWNjZXNzIHJlc2VhcmNoYCDorpMgQ2xh
-dWRlIOaIkOWToeS5n+iDveS4iue2suafpeizh+aWme+8iFdlYlNlYXJjaOOAgVdlYkZldGNo77yM
-55SoIHNldHRpbmdzIOimj+WJh+WPquWFgeiosemAmeWFqeWAi++8m+ecn+eahCBDTEkg5a+m5ris
-77ya5rKS5pyJ6KaP5YmH5pmC5LiN6Kmi5ZWP5qih5byP5pyD5ouS57WVIFdlYlNlYXJjaO+8jOac
-ieimj+WJh+aZguiugOizh+aWmeWkvuWklueahOaqlOahiOS7jeeEtuiiq+aTi++8ieOAgkNvZGV4
-IOaIkOWToee2reaMgeWUr+iugOOAggoKIyMg562G6KiY5pys77ya5q+P5aSp5Lqk5Ye65Y6755qE
-5bel5L2c77yM5LiA5Lu25LiA6aCBCgpgcHl0aG9uMyAtbSBoZXJkcl9weS5ub3RlYm9va2Ag5oqK
-5Lqk57Wm5ZyY6ZqK55qE5bel5L2c6KiY5oiQ5LiA5pys562G6KiY5pys77yI5LiA5YCL6LOH5paZ
-5aS+77yJ6KOh55qE6aCB44CC5LiA6aCB5piv5LiA5Lu25bel5L2c77ya5a6D55qE5a6a576p77yI
-YHBhZ2UuanNvbmDvvJoK55uu5qiZ44CB5Lu75YuZ5qqU44CB6KmV5YiG56iL5byP44CB5ZyY6ZqK
-44CB5q+P5qyh5Z+36KGM55qE6aCQ566X44CB5ZOq5Lqb56iu6aGe5bu257qM5Yiw5LiL5LiA5qyh
-44CB5ZOq5Lqb56iu6aGe5piv5oiQ5p6c77yJ44CB5q+P5LiA5qyh5Z+36KGM77yM5Lul5Y+K5Lq6
-55qE5rG65a6a77yI6ZmE5Yqg5Zyo6YCZ6aCB55qECmBoaXN0b3J5Lmpzb25sYO+8jOiomOS4i+iq
-sOOAgeS7gOm6vOaZguWAme+8ieOAguiNieeov+S4jeacg+Wft+ihjO+8muWumue+qeaIluS7u+WL
-meWcqOS4iuasoeaguOWHhuW+jOaUuemBju+8jGBydW5gIOWwseaLkue1leOAguavj+asoeWft+ih
-jOW+numAmemggeacgOi/keS4gOasoeW7tue6jArvvIjmiJYgYC0tZnJvbSBOYOOAgWAtLWZyZXNo
-YO+8ie+8muW8leaTjuW+numCo+asoemAmumBjueahOaineebruijoeOAgemAmemggeimgeW4tuea
-hOeorumhnui1t+atpe+8jOS4jeW4tuS6uuaOkumZpOeahOaineebru+8iGBlbmdpbmUgLS1zZWVk
-LWZyb21g77yJ77yMCumChOaykuiiq+eUqOmBjueahOaJueiou+WKoOmAsumAmeasoeeahOS7u+WL
-meOAguavj+eoruaIkOaenOeahOavj+S4gOeJiOmDveeVmeiRl++8jOeUseS6uumBuOWumuePvuih
-jOeJiO+8m+S4i+S4gOasoeWft+ihjOW+nuePvuihjOeJiOaOpeiRl+aUue+8iOmBuOWumueahOeJ
-iOacrOS4jeirlueorumhnumDveW4tuWFpe+8jOS7u+WLmeijoeWvq+aYjuW+nuWug+aUuei1t++8
-ieOAguS4gOmggeS5n+WPr+S7peW+ngrlhbbku5bpoIHluLblj4PogIPos4fmlpnvvJpgImZyb20i
-OiBbeyJwYWdlIjogIm11c2V1bS1yZXBvcnQiLCAia2luZHMiOiBbInNraWxsIl0sICJjdXJyZW50
-IjogdHJ1ZX1dYCDmnIPlnKjmr4/mrKHln7fooYzliY3vvIzmiorpgqPkuIDpoIHmnIDov5HkuIDm
-rKEK77yI5oiWIGAicnVuIjogTmDvvInpgJrpgY7oqZXliIbnmoTmjIflrprmop3nm67opIfoo73l
-iLDmiJDlk6Hos4fmlpnlpL7vvIhgcmVmZXJlbmNlLzzpoIE+Lzzmop3nm64+LnR4dGDvvIzmuIXl
-lq7lnKggYHJlZmVyZW5jZS9JTkRFWC5tZGDvvInvvIzkuKblr6vpgLLku7vli5nvvIhgImtpbmRz
-IjogWyIqIl1gIOW4tuWFqOmDqOmAmumBjueahOaineebru+8ie+8m+W4tueahOaYryBza2lsbCDm
-mYLvvIzku7vli5nkuZ/mnIPlr6vmmI7vvJrlt6XkvZzlvp7lroPlgJHplovlp4vvvIzlj6rph43m
-n6XlroPlgJHmspLlr6vliLDmiJblr6vpjK/nmoTpg6jliIbvvIzopoHmlLnpgLLlsLHmlLnmiJDm
-lrDniYjvvIzkuI3opoHlj6blr6vlkIzkuLvpoYznmoQgc2tpbGzjgIIK5Zyo44CM77yL44CN6ZaL
-5pawIHRhc2sg5pmC5Yu+55qEIHNraWxs44CB55+l6K2Y44CB54++6KGM54mI77yM6LW36I2J5pmC
-5pyD6K6K5oiQ5paw6aCB55qEIGAiZnJvbSJg44CCCmAibG9vcCI6IHsicmVwYWlycyI6IDIsICJy
-ZXBhaXJfYmVsb3ciOiAxMDAsICJ0YXJnZXQiOiAxMDAsICJ3cmFwX3VwIjogMn1gIOacg+aKiumA
-meS6m+W8leaTjumBuOmghe+8iOWbnuWQiOWFp+S/ruato+OAgeebruaomeWIhuaVuOOAgemBlOao
-meW+jOeahOaUtuWwvu+8ieW4tumAsuavj+asoeWft+ihjO+8m+OAjOmZpOmMr+OAjeWIhumggeav
-j+asoeWft+ihjOeahOWNoeeJh+acgOWJjemdouaYr+WbnuaUvuiouuaWt++8iGBoZXJkcl9weS5y
-dW5kaWFnYO+8ieOAggrlroPlgJHkuI3nrpfmlrDpoIHlt7LpqZforYnnmoTmiJDmnpzvvIzkuZ/k
-uI3msr/nlKjoiIrliIbmlbjvvJrpgqPkuIDpoIHnmoToqZXliIbmqJnmupbkuI3lkIzjgILnpLrm
-hI/nrYboqJjmnKzoo6HvvIzluLblhaXljZrnianppKjloLHooaggc2tpbGwg55qE5ZyW5pu46aSo
-5aCx6KGo55SoIDQg5YCL5oiQ5ZOh5Zue5ZCICuWBmuWHuua7v+WIhue2sumgge+8jOW+numbtumW
-i+Wni+eahOWQjOS4gOS7veWgseihqOeUqOS6hiA1IOWAi+OAguetieS6uuiZleeQhueahOS6i+eU
-see0gOmMhOeul+WHuu+8jOS4jeWPpuWkluWtmO+8muimgeaguOWHhueahOiNieeov+OAgQrntZDm
-nZ/lvozpgoTmspLkurrnnIvpgY7nmoTln7fooYzvvIjmibnoqLvjgIHpgbjniYjjgIHmjpLpmaTj
-gIHpqZfmlLbjgIHmk7Hnva7miJblrozmiJDpg73nrpfnnIvpgY7vvInjgIHmspLmnInntZDmnZ/n
-tIDpjITogIzkuJQgMTUg5YiG6ZCY5rKS5a+r5p2x6KW/55qE5Z+36KGM44CCCgpgYGAKIOS9oO+8
-muS4gOWPpeebruaomSAtLT4g6LW36I2JIHBhZ2UuanNvbiAtLT4g5L2g5qC45YeGIC0tPiDlnJjp
-morln7fooYzvvIjnrKwgbiDmrKHvvIznhafpoJDnrpfvvIkKICAgICAgICAgICAgICAgICAgICAg
-ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICB8CiAgIOesrCBuKzEg5qyh5bi25YWl6YCa
-6YGO55qE5qKd55uu44CBc2tpbGwg6IiH5L2g55qE5om56Ki7IDwtLSDkvaDpqZfmlLbvvJrpgbjn
-j77ooYzniYjjgIHmibnoqLvjgIHmjpLpmaTjgIHpqZfmlLYKYGBgCgpgYGBzaApweXRob24zIC1t
-IGhlcmRyX3B5Lm5vdGVib29rIH4vbm90ZWJvb2sgZHJhZnQgY2lyY2xlcy5qc29uICAgICAgICAj
-IOmAmemggeeahOiNieeov++8iHBhZ2UuanNvbu+8jOashOS9jeimi+iLseaWh+iqquaYju+8iQpw
-eXRob24zIC1tIGhlcmRyX3B5Lm5vdGVib29rIH4vbm90ZWJvb2sgcnVuIGNpcmNsZXMgLS1kcnkt
-cnVuICAgICAgIyDliJflh7rnorrliIfnmoTlvJXmk47mjIfku6ToiIfku7vli5kKcHl0aG9uMyAt
-bSBoZXJkcl9weS5ub3RlYm9vayB+L25vdGVib29rIGFwcHJvdmUgY2lyY2xlcwpweXRob24zIC1t
-IGhlcmRyX3B5Lm5vdGVib29rIH4vbm90ZWJvb2sgcnVuIGNpcmNsZXMgICAgICAgICAgICAgICAg
-IyDnrKwgMSDmrKHvvJvnrKwgMiDmrKHlvp7lroPlu7bnuowKcHl0aG9uMyAtbSBoZXJkcl9weS5u
-b3RlYm9vayB+L25vdGVib29rIG5vdGUgY2lyY2xlcyAi5b6e5YWt6KeS5b2i5o6S5rOV6ZaL5aeL
-6KmmIgpweXRob24zIC1tIGhlcmRyX3B5Lm5vdGVib29rIH4vbm90ZWJvb2sgcGljayBjaXJjbGVz
-IGswMTIzNDU2Nzg5YWIgIyDpgJnlgIvnqK7poZ7nmoTnj77ooYzniYgKcHl0aG9uMyAtbSBoZXJk
-cl9weS5ub3RlYm9vayB+L25vdGVib29rIGF0dGFjaCBjaXJjbGVzIHJ1bnMvZTEgICAgICMg5Zyo
-562G6KiY5pys5aSW6LeR55qE5Z+36KGMCnB5dGhvbjMgLW0gaGVyZHJfcHkubm90ZWJvb2sgfi9u
-b3RlYm9vayBzdGF0dXMKcHl0aG9uMyAtbSBoZXJkcl9weS5ub3RlYm9vayB+L25vdGVib29rIHZp
-ZXcgLS1vdXQgc2l0ZS8gLS1ydW5zIHJ1bnMvICAgIyAtLXJ1bnPvvJrliJflh7rkuI3lsazmlrzk
-u7vkvZXkuIDpoIHnmoTln7fooYwKYGBgCgpgdmlld2Ag5oqK562G6KiY5pys5a+r5oiQ57Wm6Zu7
-6IWm6J6i5bmV55yL55qEIGFwcO+8jOS4jemcgOimgSBKYXZhU2NyaXB0IOS5n+WujOaVtO+8muW3
-pumCiuS4gOaOkuaYr+aJgOaciSB0YXNr77yI5qiZ6aGM56ys5LiA5YCL5a2X5oiWIHBhZ2UuanNv
-biDnmoQgYGljb25g77yMCuWKoOS4iueLgOaFi+m7nu+8ie+8jOacgOS4i+mdoueahOOAjO+8i+OA
-jemWi+aWsCB0YXNr44CC6aaW6aCB5LiA6ZaL5aeL5piv44CM5YWo6YOoIHRhc2vjgI3vvJrlhYjl
-iJflkITni4DmhYvnmoTmlbjph4/vvIzlho3mr4/lgIsgdGFzayDkuIDliJfvvIjpnIDopoHkurro
-mZXnkIbnmoTmjpLliY3pnaLvvInvvIwK5a+r6JGX54uA5oWL6IiH6KaB5L2g5YGa55qE5LqL44CB
-5pyA6L+R5LiA5qyh5Z+36KGM77yI5L2V5pmC57WQ5p2f44CB5pyA5aW955qE5oiQ5p6c44CB6Iqx
-6LK777yJ44CB5q+P56iu5oiQ5p6c55qE54++6KGM54mI77yb5LiL6Z2i5omN5piv6ZmE5oyJ6YiV
-55qE44CM5b6F5L2g6JmV55CG44CN44CC6bue6ZaL55qEIHRhc2sK5L2U5ru/5Y+z6YKK77yM5YiG
-5oiQ5bm+5YCL5YiG6aCB44CC57i96Ka977ya55Sx57SA6YyE566X5Ye655qE5pW45a2X77yI5Z+3
-6KGM5qyh5pW444CB5oiQ5ZOh5Zue5ZCI44CB6YCa6YGO55qE5qKd55uu44CBCuW+heS9oOiZleeQ
-hu+8ie+8jOavj+WAiyBBZ2VudCDkuIDlvLXljaHniYfvvIzlr6vokZfntIDpjIToo6HnmoTni4Dm
-hYvvvIjmnIDlvozkuIDlgIvlm57lkIjmgI7purzntZDmnZ/vvIzln7fooYzkuK3liYfmmK/lnKjl
-gZrmiJblnKjnrYnvvInlkozlroPnmoTlvoXovqbvvJvpu57ljaHniYflvp7lj7PlgbTmiZPplovl
-roPnmoQK6Z2i5p2/77ya6KeS6Imy44CB5b6F6L6m44CB5a+r5LqG5ZKM55So5LqG5ZOq5LqbIHNr
-aWxs44CB55Si5Ye644CB5q+P5YCL5Zue5ZCI44CC5p625qeL77ya5ZyY6ZqK5qi554uA5ZyW77yI
-cGxhbm5lciDliIbmtL7lvoXovqbjgIHmiJDlk6Hlm57nrZTjgIHoqZXliIbmsbrlrprku4Dpurzp
-gJrpgY7vvJvlnJboo6Hmr4/lgIsKQWdlbnQg6YO96IO96bue6ZaL6Z2i5p2/77yJ44CC5Zue5pS+
-77ya5q+P5qyh5Z+36KGM55qE5Zue5pS+77yIZW5naW5ldmlldyDnmoTpoIHpnaLvvIznm7TmjqXl
-nKjliIbpoIHoo6HvvInjgILpmaTpjK/vvJrmr4/mrKHln7fooYzlh7rkuobku4DpurzpjK/vvIjo
-oqvpgIDlm57nmoQgcGxhbm5lciDlm57opoblkoznkIbnlLHjgIEK5rKS5Lqk562U5qGI55qE5Zue
-5ZCI44CB5rKS6YGO55qE562U5qGI5ZKM6KmV5YiG55qE55CG55Sx44CB5oiQ5ZOh5Zue5aCx5YGa
-5LiN5Yiw77yJ77yM5pyA5b6M5piv5Z+36KGM6Kit5a6a6IiH5Y6f5aeL5oyH5Luk44CCc2tpbGzv
-vJroqrDlr6vnmoTjgIHoqrDnlKjpgY7jgIHluLbpgLLnrKzlub7mrKHjgILnn6XorZjluqvvvJrm
-iYDmnIkK6YCa6YGO55qE5qKd55uu77yM5Y+v5pCc5bCL44CB5L6d56iu6aGe56+p6YG477yM5Lul
-5Y+K55+l6K2Y5ZyW77yI5q+P5YCL56iu6aGe5LiA5YiX44CB5q+P5qKd5LiA5YCL5ZyT44CB5b6e
-5q+P5qKd6YCj5Yiw5byV55So5a6D55qE5qKd55uu77yb6bue5LiA5YCL5ZyT77yM5a6D5byV55So
-55qE5ZKM5byV55So5a6D55qE5pyD5Lqu6LW35L6G77yJ44CCCuaOpeiRl+aYr+avj+eoruaIkOae
-nOeahOavj+S4gOeJiOS4puaomeWHuuePvuihjOeJiO+8jOS7peWPiuaJueiou+iIh+att+WPsuOA
-guiiq+S6uuaOkumZpOeahOeJiOacrOacg+aomeWHuuOAjOW3suaOkumZpOOAjeiIh+WOn+WboO+8
-jOS4jeacg+iiq+aPkOS+m+aIkOePvuihjOeJiO+8iOWPlua2iOaOkumZpOS5i+WJjSBgcGlja2Ag
-5Lmf5pyD5ouS57WV77yJ44CC5paH5a2X5qqU5omT6ZaL55qE5piv5LiA6aCB5a6j5ZGKIFVURi04
-IOeahOmWseiugOmgge+8iOmggeS4iumAo+WIsOWOn+Wni+aqlO+8ie+8mgpgcHl0aG9uIC1tIGh0
-dHAuc2VydmVyYCDpgJnpoZ7pnZzmhYvkvLrmnI3lmajpgIEgYC50eHRgIOaZguS4jeWvq+e3qOei
-vO+8jOioreaIkOe5gemrlOS4reaWh+eahOaJi+apn+Wwseacg+aKiiBza2lsbCDnlbYgQmlnNSDo
-roDmiJDkuoLnorzjgILntIDpjIToo6HmspLmnInnmoTmnbHopb/kuI3poa/npLrvvIjkuI3njJzp
-gLLluqbjgIHkuI3njJzlrozmiJDmmYLplpPvvInjgIJgbm90ZWJvb2suanNvbmAg5Y+v5Lul5oyH
-5a6aCuethuiomOacrOiHquW3seeahOaoo+W8j+ihqO+8iGAic3R5bGUiYO+8jOebuOWwjeaWvOet
-huiomOacrOizh+aWmeWkvueahCBDU1Mg5qqU77yJ77yM5o6l5Zyo5YWn5bu65qij5byP5b6M6Z2i
-5aWX5Yiw5q+P5LiA6aCB77yM5L6L5aaC5omL5qmf54mI54mI6Z2i77ybYCJ0cmVlImAg5rG65a6a
-5ZyY6ZqK5ZyWCuapq+iRl+eVq++8iGB3aWRlYO+8jOmgkOiore+8ieOAgeebtOiRl+eVq++8iGB0
-YWxsYO+8ie+8jOaIluWFqeeorumDveeVq++8iGBib3RoYO+8muebtOW8j+WFiOiXj+iRl++8jOeU
-semAmemhnuaoo+W8j+ihqOaxuuWumuS9leaZgumhr+ekuu+8ieOAgmBzZXJ2ZWAg5Zyo6YCZ5Y+w
-5qmf5Zmo5LiKCuWNs+aZguaPkOS+m+WQjOaoo+eahOmggemdou+8iOmgkOiorSAxMjcuMC4wLjHv
-vInvvIzkuKbliqDkuIrmjInpiJXvvJrvvIsg6KiY5LiL5LiA5YCL5pawIHRhc2sg55qE6KuL5rGC
-77ybdGFzayDoo6HnmoTmjInpiJXlj6/ku6Xpgbjnj77ooYzniYjjgIHlr6vmibnoqLvjgIHpqZfm
-lLbjgIHmk7Hnva7jgIEK6YeN5paw5omT6ZaL44CB5qC45YeG77yI5Y+q5qC45YeG6aCB6Z2i5LiK
-6aGv56S655qE6YKj5LiA54mI77yJ44CB5o6S6Zmk5qKd55uu44CC5oyJ6YiV5bi26JGX6YCj57WQ
-IGAjYCDlvozpnaLnmoQgdG9rZW4g6YCB5Ye677yM5rKS5pyJIHRva2VuIOWwseaLkue1le+8m+Wc
-mOmaiuWBmueahOaqlOahiOWcqOaymeebkuijoQrmj5DkvpvvvIhgQ29udGVudC1TZWN1cml0eS1Q
-b2xpY3k6IHNhbmRib3ggYWxsb3ctc2NyaXB0c2DvvInvvIzoo6HpnaLnmoTnqIvlvI/norDkuI3l
-iLAgdG9rZW7jgILnlKggYHZpZXdgIOWvq+aIkOaqlOahiOaZgu+8jOaMiemIleaUueaIkOikh+ij
-veimgei3nyBDbGF1ZGUg6Kqq55qE6Kmx44CCCgpgYGBzaApweXRob24zIC1tIGhlcmRyX3B5Lm5v
-dGVib29rIH4vbm90ZWJvb2sgcmVxdWVzdCAi5LiL6Zuo6YCx5pyr55qE5pu45ZauIiAtLXRpdGxl
-ICLmm7jllq4iCnB5dGhvbjMgLW0gaGVyZHJfcHkubm90ZWJvb2sgfi9ub3RlYm9vayBkcmFmdCBy
-ZWFkaW5nLmpzb24gLS1yZXF1ZXN0IHIxICAgIyBDbGF1ZGUg6LW36I2J55qE6aCB5Zue5oeJ6YCZ
-5YCL6KuL5rGCCnB5dGhvbjMgLW0gaGVyZHJfcHkubm90ZWJvb2sgfi9ub3RlYm9vayBzZXJ2ZSAt
-LXJ1bnMgcnVucy8gICAgICAgICAgICAgICAgIyDmnIPljbDlh7ogIG9wZW46IGh0dHA6Ly8xMjcu
-MC4wLjE6ODc5MC8jdG9rZW49Li4uCgojIOiZm+ani+eahOekuuaEjyB0YXNr77yM5oiQ5ZOh6YO9
-5piv56iL5byP77yI5bm+56eS6ZCY77yJ77ya56ys5LqM5qyh5Z+36KGM55So56ys5LiA5qyh55WZ
-5LiL55qE6LOH5paZ6IiHIHNraWxsIOWBmuWHuue2sumggeeahOWgseihqOOAgei3keWFqeasoeea
-hOWck+W9ouaOkuWIl+OAgQojIOacieS4gOatpeWkseaVl+eahCBEQUfjgIHkuIDku73ojYnnqL/o
-iIfkuIDlgIvoq4vmsYLvvJvmjqXokZfmiZPplovkvobnnIsKcHl0aG9uMyBleGFtcGxlcy9ub3Rl
-Ym9vay9tYWtlX2RlbW8ucHkgL3RtcC9ub3RlYm9vay1kZW1vCnB5dGhvbjMgLW0gaGVyZHJfcHku
-bm90ZWJvb2sgL3RtcC9ub3RlYm9vay1kZW1vL25vdGVib29rIHZpZXcgLS1vdXQgL3RtcC9ub3Rl
-Ym9vay1kZW1vL3NpdGUgLS1ydW5zIC90bXAvbm90ZWJvb2stZGVtby9ydW5zCm9wZW4gL3RtcC9u
-b3RlYm9vay1kZW1vL3NpdGUvaW5kZXguaHRtbApgYGAKCuizh+aWmeWkvuijoeeahCBgbm90ZWJv
-b2suanNvbmAg6Kit5a6a5qiZ6aGM6IiH6aCB6Z2i6Kqe6KiA77yIYGVuYCDmiJYgYHpoLVRXYO+8
-ieOAguaMh+S7pOaYr+e1puS4gOWPsOapn+WZqOS4iueahOS4gOWAi+S6uueUqOeahO+8m+S6i+W+
-jOijnOiomOeahOaxuuWumu+8iGAtLWF0YO+8ieacg+aomeaIkOijnOiomOOAggoKIyMgREFHIOWI
-hua0vu+8muacg+S6kuebuOetieW+heeahOatpempnwoKYHB5dGhvbjMgLW0gaGVyZHJfcHkuZGFn
-YCDln7fooYzkuIDku70qKuioiOeVqyoq77ya5q+P5YCL5q2l6amf55Sx5LiA5YCL5oiQ5ZOh5Zyo
-Kiroh6rlt7HnmoQgZ2l0IGNsb25lKiog6KOh5YGa77yM55SxKiroqZXliIbnqIvlvI8qKuWIpOWu
-mumBjuS4jemBjuOAguS4gOWAi+atpempn+imgeetieWug+mcgOimgeeahOatpempn+WFqOmDqOmA
-mumBjuaJjemWi+Wni++8jOiAjOS4lOWPqueci+W+l+WIsOmCo+S6m+atpempn+eahOaIkOaenOOA
-guioiOeVq+aYr+S4gOWAiyBKU09OIOaqlO+8jOaJgOS7peWcmOmaiuaAjum6vOe1hOe5lO+8iOiq
-sOWBmuS7gOm6vOOAgeiqsOetieiqsOOAgeiqsOeci+W+l+WIsOiqsOeahOaIkOaenO+8ieaYr+WP
-r+S7peS/ruaUueOAgeWPr+S7peaLv+S+huavlOi8g+eahOizh+aWmeOAggoKYGBgCm11bCDilIDi
-lJAgICAgICAgICAgICAgICAgICAgICDmr4/lgIvmlrnloYrmmK/kuIDlgIvmraXpqZ/vvIznlLHk
-uIDlgIvmiJDlk6HlnKjoh6rlt7HnmoQgY2xvbmUg6KOh5YGa77ybCnN1YiDilIDilLTilIA+IHRv
-Z2V0aGVyIOKUgOKUkCAgICAgICDnrq3poK3vvJrpgqPlgIvmraXpqZ/pgJrpgY7kuYvlvozmiY3p
-lovlp4vvvIzkuKbmi7/liLDlroPnmoQgY29tbWl0CmRpdiDilIDilIDilIDilIDilIDilIDilIDi
-lIDilIDilIDilIDilIDilIDilIDilIDilLTilIA+IGRvY3MKYGBgCgpgYGBzaApweXRob24zIGV4
-YW1wbGVzL2RhZy9tYWtlX2RlbW8ucHkgL3RtcC9kYWctZGVtbyAgICAgICAgICAjIOS4gOWAi+Ww
-jyByZXBvIOWSjOWug+eahOioiOeVq++8iOeoi+W8j+aIkOWToe+8jOS4jemcgOimgeaooeWei++8
-iQpweXRob24zIC1tIGhlcmRyX3B5LmRhZyAvdG1wL2RhZy1kZW1vL3BsYW4uanNvbiAtLWNoZWNr
-ICAjIOS4gOWxpOS4gOWxpOWIl+WHuuatpempnwpweXRob24zIC1tIGhlcmRyX3B5LmRhZyAvdG1w
-L2RhZy1kZW1vL3BsYW4uanNvbiAtLW91dCAvdG1wL2RhZy1kZW1vL3J1bjEgLS1wYXJhbGxlbCAz
-Cm9wZW4gL3RtcC9kYWctZGVtby9ydW4xL3ZpZXcuaHRtbCAgICAgICAgICAgICAgICAgICAgICAg
-ICAjIOioiOeVq+eVq+aIkOWclu+8jOWKoOS4iuavj+S4gOasoeWYl+ippgpweXRob24zIC1tIGhl
-cmRyX3B5LmRhZyAtLXJlY2hlY2sgL3RtcC9kYWctZGVtby9ydW4xICAgICAgIyDlnKjlhajmlrDn
-moQgY2xvbmUg5oqK5q+P5YCL6YCa6YGO55qE5q2l6amf6YeN5paw6KmV5YiGCmBgYAoKLSAqKuma
-lOmboueUseeoi+W8j+iyoOiyrCoq77ya5q+P5qyh5ZiX6Kmm6YO95pyJ6Ieq5bex55qEIGBnaXQg
-Y2xvbmUgLS1zaGFyZWRg77yM5LiN55WZ6YGg56uv77yb5q2l6amf55qEIGNsb25lIOWPquacg+aL
-v+WIsOWug+mcgOimgeeahOatpempn+eahOi8uOWHuiBjb21taXTvvIhgcmVmcy9kYWcvPGlkPmDv
-vInvvIzmspLmnInku7vkvZXlhbbku5bmraXpqZ/nmoTmnbHopb/vvIzmjIfku6Too6HkuZ/lj6rm
-nInpgqPkupvmraXpqZ/nmoTmkZjopoHoiIcgZGlmZuOAgkNvZGV4IOaIkOWToeWcqCBgd29ya3Nw
-YWNlLXdyaXRlYCDmspnnm5Loo6Hlt6XkvZzvvJtDbGF1ZGUg5oiQ5ZOh55SoIGAtLXBlcm1pc3Np
-b24tbW9kZSBhY2NlcHRFZGl0c2Ag5Yqg5LiK5qqU5qGI5bel5YW377yI5ZSv6K6A5q2l6amf55So
-IGBkb250QXNrYCDliqDoroDmqpTlt6XlhbfvvInjgILnlKjnnJ/nmoQgQ2xhdWRlIENvZGUg5a+m
-5ris6YGO77ya5ZyoIGNsb25lIOS5i+WkluWvq+OAgeiugOOAgUdsb2LjgIFHcmVwIOmDveacg+ii
-q+aTi++8m+S4jeiDveeUqCBgLS1hbGxvd2VkVG9vbHNg77yM5a6D5pyD6K6T5oiQ5ZOh6K6A5a+r
-5pW05Y+w5qmf5Zmo44CCT3BlbkNvZGUg5oiQ5ZOh77yI6YCP6YGOIGRhZW1vbu+8jGAtLXNvY2tl
-dGDvvInmr4/kuIDmraXplovkuIDlgIvlnKggY2xvbmUg6KOh5bel5L2c55qE5pawIHNlc3Npb27v
-vIhPcGVuQ29kZSDnmoQgYD9kaXJlY3Rvcnk9YO+8ie+8m2RhZW1vbiDmnIPlnKjllY/mrIrpmZDn
-rZbnlaXkuYvliY3vvIzlhYjmk4vmjonlroPlnKggY2xvbmUg5LmL5aSW55qE5YuV5L2c77yM5ZSv
-6K6A5q2l6amf6YCj57eo6Lyv5ZKM5oyH5Luk6YO95pOL44CC6YCZ5Y+q5ZyoIE9wZW5Db2RlIOac
-g+WFiOipouWVj+mAmeS6m+WLleS9nOaZguaJjeaIkOeri++8iOimi+asiumZkOetlueVpe+8ie+8
-jOaJgOS7peavj+S4gOatpemWi+W3peWJjeWFiOeiuuiqjSBkYWVtb24g6KqqIE9wZW5Db2RlIOac
-g+ipouWVj++8jOiAjOS4lCBPcGVuQ29kZSDliJflh7rnmoQgY2xvbmUg5YWn5a655ZKM6YCZ5Y+w
-5qmf5Zmo55yL5Yiw55qE5LiA5qij77yIT3BlbkNvZGUg5Zyo5a655Zmo6KOh55qE6Kmx77yM5Z+3
-6KGM6LOH5paZ5aS+6KaB5o6b6LyJ5Zyo5ZCM5LiA5YCL6Lev5b6R77yJ77yb5LiN5oiQ56uL5bCx
-5YGc5LiL5Lim6Kqq5piO5Y6f5Zug44CCT3BlbkNvZGUgMS4xOC4zMiDlr6bmuKzvvJrllK/oroDm
-raXpqZ/nmoTnt6jovK/jgIHoroAgY2xvbmUg5LmL5aSW55qE5qqU5qGI6YO96KKr5pOL5LiL77yI
-5qqU5qGI5rKS6K6K77yb6K6A5aSW6Z2i55qE5qqU5qGI5pmCIE9wZW5Db2RlIOmAgeS+hueahOaY
-ryBleHRlcm5hbF9kaXJlY3Rvcnkg6KuL5rGC77yJ44CCQ29kZXgg55qE5rKZ55uS5LiN6ZmQ5Yi2
-6K6A5Y+W77yM5omA5Lul5q+P5qyh5Z+36KGM6YO95pyD5pW45oiQ5ZOh55qE5bel5YW357SA6YyE
-77yIQ29kZXjjgIFDbGF1ZGXjgIFPcGVuQ29kZe+8ieijoe+8jOaMh+WQkeWIpeeahOatpempnyBj
-bG9uZSDnmoTmrKHmlbjvvIhgc3VtbWFyeS5qc29uYCDnmoQgYG91dF9vZl9ib3VuZHNg77yJ44CC
-Ci0gKirmraXpqZ/nmoTmqpTmoYjlvp7lk6roo6Hplovlp4sqKu+8muS4jemcgOimgeWIpeeahOat
-pempnyDihpIg5Z+65rqWIGNvbW1pdO+8m+mcgOimgeS4gOWAiyDihpIg5o6l6JGX6YKj5YCL5q2l
-6amf55qE6Ly45Ye677yb6ZyA6KaB5aW95bm+5YCLIOKGkiDln7rmupbvvIjlhannqK7lgZrms5Xp
-gJrluLjmlLnlkIzkuIDmibnmqpTvvIznlLHmiJDlk6Hmr5TovIPjgIHmlbTlkIjvvInvvIzmiJbm
-jIflrpogYCJzdGFydCI6ICJtZXJnZSJg77yI55Sx56iL5byP5YWI5ZCI5L2177yM6KGd56qB5pmC
-6YCZ5LiA5q2l5aSx5pWX5Lim5YiX5Ye65qqU5qGI77yJ44CB5oiW5oyH5a6a5YW25Lit5LiA5YCL
-44CC6YeN6Kmm5pyD5o6l6JGX5LiK5LiA5qyh55qEIGNvbW1pdO+8jOaMh+S7pOijoemZhOS4iuip
-leWIhueoi+W8j+eahOiqquaYjuOAggotICoq6Ly45Ye65piv56iL5byP5YGa55qEIGNvbW1pdCoq
-77yM5LiN5piv5oiQ5ZOh5YGa55qE77ya5Zue5ZCI57WQ5p2f5pmC5oqKIGNsb25lIOijoeeahOiu
-iuabtOWFqOmDqCBjb21taXTvvIzoqZXliIbnqIvlvI/mqqLmn6XpgJnlgIsgY29tbWl077yI5ZKM
-IGBjb29wYCDlkIzkuIDlpZfntITlrprvvJrlm57opobmqpTmmK/mnIDlvozkuIDlgIvlj4Pmlbjv
-vJvljbAgSlNPTiDliKTlrprvvIzmiJbnlKggYCJqdWRnZV9tb2RlIjogImV4aXQiYCDnnIvntZDm
-nZ/norzvvInjgILoqZXliIbnqIvlvI/nmoTmqpTmoYjku6XoqIjnlavmqpTmiYDlnKjnmoTos4fm
-lpnlpL7ngrrmupbjgIHlnKjmiYDmnIkgY2xvbmUg5LmL5aSW77yM6ZaL5aeL5pmC6KiY5LiLIGhh
-c2jvvJrln7fooYzkuK3ooqvmlLnlsLHmmK/oqZXliIbpjK/oqqTjgIIKLSAqKuWkseaVlyoq77ya
-5LiA5YCL5q2l6amf5aSx5pWX77yM6ZyA6KaB5a6D55qE5q2l6amf6YO95pyD6KKr5pOL5LiL77yM
-5LiN55u45bmy55qE5q2l6amf54Wn5bi46YCy6KGM44CC5oiQ5ZOh55qE5b6M56uv5aOe5o6J44CB
-6KmV5YiG56iL5byP5aOe5o6J5oiWIGNsb25lIOW7uuS4jei1t+S+hu+8jOWwseS4jeWGjemWi+Wn
-i+aWsOatpempn++8iOe1kOadn+eivCAz77ybYC0ta2VlcC1nb2luZ2Ag5Y+q6K6T6YKj5LiA5q2l
-5aSx5pWX77yJ77yb6YC+5pmC5oiW562U5qGI5LiN5ZCI5qC85piv5oiQ5ZOh6Ieq5bex55qE5aSx
-5pWX44CC5q2l6amf55qE5pmC6ZmQ5Y+q566X5oiQ5ZOh6Ieq5bex55qE5pmC6ZaT77yaT3BlbkNv
-ZGUg5oiQ5ZOh6YGH5Yiw5qih5Z6L5L6b5oeJ5ZWG5aSx5pWX44CBT3BlbkNvZGUg5Zue5aCx6YeN
-6Kmm5pmC77yM5Zue5aCx5LmL5YmN55qE56m655m95ZKM6YeN6Kmm5pys6Lqr566X5L6b5oeJ5ZWG
-55qE77yM5pyD5Yqg5Zue5pmC6ZmQ77yM5pyA5aSa5YaN5Yqg5LiA5YCL5pmC6ZmQ77yb5L6b5oeJ
-5ZWG5L2U5o6J5pu05LmF77yM6YCZ5LiA5Zue5ZCI5bCx5LulIGBwcm92aWRlcl9zdGFsbGAg57WQ
-5p2f77yM566X55Kw5aKD5aOe5o6J77yI57WQ5p2f56K8IDPvvInvvIzkuI3nrpfmiJDlk6HlpLHm
-lZfjgILmqKHlnovlj6rmmK/lm57lvpfmhaLvvIzku43nrpfmiJDlk6HnmoTmmYLplpPjgIJPcGVu
-Q29kZSAxLjE4LjMyIOWKoOWFjeiyu+aooeWei+Wvpua4rO+8muS4gOasoeS+m+aHieWVhumAvuaZ
-guiuk+S4gOWAi+atpempn+eahCA5MDAg56eS5bCR5LqGIDMwMCDnp5LjgIIKLSAqKuaUtuaTmuiI
-h+aOpee6jCoq77ya5q+P5qyh5rS+5bel44CB5Lqk5Zue44CBY29tbWl044CB5Yik5a6a6YO95YWI
-5a+r6YCyIGBldmVudHMuanNvbmxgIOaJjeW+gOS4i+i1sO+8m2AtLXJlc3VtZWAg5b6e5a6D6YeN
-5bu654uA5oWL77yM5bey6YCa6YGO55qE5q2l6amf57WV5LiN6YeN6LeR77yM5Zug55Kw5aKD5aOe
-5o6J6ICM5aSx5pWX55qE5q2l6amf5pyD6YeN6LeR77yM6KiI55Wr44CB6aGM55uu5oiW6KmV5YiG
-56iL5byP6K6K5LqG5bCx5ouS57WV5o6l57qM44CCYHN1bW1hcnkuanNvbmAg5Y+q5b6e5LqL5Lu2
-566X5Ye644CM5LiK5ri46YKE5rKS6YCa6YGO5bCx6ZaL5aeL55qE5qyh5pW444CN5ZKM44CM6YCa
-6YGO5b6M5Y+I6KKr5rS+5bel55qE5qyh5pW444CN77yI5YWp6ICF6YO95b+F6aCI5pivIDDvvInv
-vIzku6Xlj4rlubPooYzluqbjgIIKLSDkuI3mnIPlkIjkvbXpgLLkvaDnmoQgcmVwb++8jOS5n+S4
-jeacg+aOqOmAge+8mui8uOWHuuaYr+Wft+ihjOizh+aWmeWkvuijoeeahCBjb21taXTvvIzopoHk
-uI3opoHlkIjkvbXnlLHkvaDmsbrlrprjgIIKCiMjIOevhOS+i++8muaKleW9seeJh+WcmOmaigoK
-W2BleGFtcGxlcy9zbGlkZV90ZWFtYF0oZXhhbXBsZXMvc2xpZGVfdGVhbSkg6K6T5ZyY6ZqK6YeN
-55Wr5LiA5by16LOH6KiK5ZyW77yaVGhlQWlFZGdlLmlvIOeahOOAjExMTSBTZXJ2aW5nOiBXaGVu
-IHRvIFNwbGl0IFByZWZpbGwgYW5kIERlY29kZeOAje+8iOWOn+Wcluiri+iHquWCme+8jHJlcG8g
-6KOh5rKS5pyJ77yJ44CC5YWp5L2N55Wr5ZyW6ICF6Lyq5rWB55Wr77yM576O6KGT5q+U5bCN5oiR
-5YCR55qE5ZyW5ZKM5Y6f5ZyW77yM5pyA5b6M55Sx55uj5bel56iL5byP5rG65a6a5L+d55WZ5ZOq
-5LiA54mI44CC6Kmm6YGO5YWp56iu5p625qeL77yaCgotICoq5a+r56iL5byPKirvvIhgc2xpZGVf
-dGVhbS5weWDvvInvvJrnlavlnJbogIXlr6vkuIDmlK/nlavmipXlvbHniYfnmoQgUHl0aG9uIOeo
-i+W8j+OAgnF3ZW4zIDhCIOeVq+WcluiAheW+nuS+huaykueVq+WHuuWPr+eUqOeahOaKleW9seeJ
-h++8muiqnuazlemMr+iqpOOAgeeUqOmMr+i8lOWKqeWHveW8j+OAgeaKiuWBmuWlveeahOmDqOWI
-huS4n+aOie+8jOiAjOS4lOeFp+aoo+WbnuWgseWujOaIkOOAggotICoq5YWD5Lu25riF5ZauKirv
-vIhgbGF5b3V0X3RlYW0ucHlg77yJ77ya55Wr5ZyW6ICF5Y+q5oqK6YCQ6aCF5riF5Zau77yIW2Bs
-YXlvdXQvU1BFQ19wb3J0cmFpdC5tZGBdKGV4YW1wbGVzL3NsaWRlX3RlYW0vbGF5b3V0L1NQRUNf
-cG9ydHJhaXQubWQp77yJ6L2J5oiQIEpTT04g5YWD5Lu25riF5Zau44CCYGNvbXBvbmVudHMucHlg
-IOaqouafpea4heWWru+8iOmMr+iqpOioiuaBr+ebtOaOpeiqquaAjum6vOaUue+8ieS4pueVq+aI
-kCBTVkfvvJtgaW1nY21wLnB5YCDmiornlavlh7rkvobnmoTlnJblkozljp/lnJbpgJDmoLzmr5Tl
-sI3vvIjnlKjmqJnmupblh73lvI/luqvoroAgUE5H77yM5Y+m5aSW5Lmf566XIFBTTlLvvInvvJvk
-v67mlLnlvozliIbmlbjororlpb3miY3kv53nlZnjgILnqIvlvI/mipPliLDnmoTmr4/lgIvpjK/o
-qqTpg73lr6vpgLLmlZnoqJPmuIXllq7vvIzmlL7lnKjkuYvlvozmr4/kuIDmrKHmjIfku6TnmoTm
-nIDliY3pnaLjgIJgLS1iYWNrZW5kIGNvZGV4YCDmlLnnlKggQ29kZXggQ0xJIOeVtuaIkOWToe+8
-m2AtLXNlc3Npb25zIGZyZXNoYO+8iOmgkOiore+8ieavj+i8qumDvemWi+aWsCBzZXNzaW9u44CC
-Cgrmr4/lgIvlnJjpmorlkITot5HkuIDmrKHnmoTntZDmnpzvvIjliIbmlbjmmK/lkozljp/lnJbp
-oY/oibLnm7jnrKbnmoTmoLzlrZDmr5TkvovvvIwxIOS7o+ihqOWujOWFqOebuOWQjO+8ie+8mgoK
-fCDlnJjpmoogfCDmlbTlvLUgfCDlkITmjpLvvJrliJ3nqL8g4oaSIOS/neeVmSB8CnwtLS18LS0t
-fC0tLXwKfCDnlavlnJYgcXdlbjMgOELjgIHnvo7ooZMgUXdlbjMtVkwgOELvvIhPcGVuQ29kZe+8
-iSB8IDAuNjY3IHwgMC43NjMg4oaSIDAuNzYz44CBMC43Mjgg4oaSIDAuNzI444CBMC41MTMg4oaS
-IDAuNTEzIHwKfCDnlavlnJboiIfnvo7ooZPpg73mmK8gQ29kZXggfCAwLjc4MSB8IDAuNzc1IOKG
-kiAwLjg2NOOAgTAuODM0IOKGkiAwLjg1M+OAgTAuNTYyIOKGkiAwLjYzNCB8Cnwg5ZCM5LiA5qyh
-IENvZGV477yM5Y+q55So5Yid56i/IHwgMC43MjAgfCB8Cnwg54Wn5riF5Zau5omL5a+r55qE54mI
-6Z2iIHwgMC43MjAgfCB8CgrnnIvliLDnmoTkuovvvJrorpPntZDmnpzlvp7jgIzmspLmnInmipXl
-vbHniYfjgI3orormiJDjgIzlj6/nlKjjgI3nmoTvvIzmmK/ooajnpLrmlrnlvI/vvIhKU09OIOWF
-g+S7tuS6pOe1pua4rOmBjueahOeoi+W8j+S+hueVq++8ieOAguWPquS/neeVmei8g+WlveeahOeJ
-iOacrO+8jOaTi+S4i+S6huavj+S4gOasoeiuk+WcluiuiuW3rueahOS/ruaUue+8iHF3ZW4g55qE
-IDQg5qyh5pyJ5pWI5L+u5pS55YWo6YOo44CBQ29kZXggNiDmrKHkuK3nmoQgMyDmrKHvvInjgILk
-v67mlLnopoHmnInluavliqnvvIzliY3mj5DmmK/nvo7ooZPnmoTmhI/opovlhbfpq5Tlj4jmraPn
-orrvvJvmnKzmqZ/oppboprrmqKHlnovlpKflpJrntabkuI3lh7rmhI/opovvvIg0MDk2IOWAi+i8
-uOWHuiB0b2tlbiDpg73nlKjlnKjmgJ3ogIPvvInjgILmr4/lgIvlnJjpmorlj6rot5HkuIDmrKHv
-vIzpgoTkuI3og73nlbbmiJDmma7pgY3ntZDoq5bvvJvliIbmlbjkuZ/mnInnm7Lpu57vvJrntLDm
-oYbnt5rpoY/oibLpjK/kuobvvIzliIbmlbjku43lj6/og73kuIrljYfjgIIKCuWft+ihjO+8mmBw
-eXRob24zIGV4YW1wbGVzL3NsaWRlX3RlYW0vcnVuX2RlbW8ucHkgLS1yZWZlcmVuY2Ug5Y6f5ZyW
-LnBuZyAtLW9wZW4tc2xpZGUgb3Blbi1zbGlkZS1weSDnmoTot6/lvpFg77yI5YqgIGAtLWJhY2tl
-bmQgY29kZXhgIOaUueeUqCBDb2RleO+8ieOAgua4suafk+eUqOeEoemgrSBDaHJvbWXvvJtPcGVu
-Q29kZSDlnJjpmorpnIDopoEgYGV4YW1wbGVzL3NsaWRlX3RlYW0vRG9ja2VyZmlsZWAg5bu655qE
-5pig5YOP77yM5Lul5Y+KIGBydW5fZGVtby5weWAg6KOh5a+r55qE5YWp5YCLIE9sbGFtYSDmqKHl
-novjgIIKCuWIhuaVuOePvuWcqOS5n+eci+W+l+WIsOahhue3muWSjOWtl+eahOmhj+iJsuOAgmBs
-YXlvdXRfdGVhbS5weSAtLXNjb3JlIHN0cmljdGDvvIjpoJDoqK3vvInlj6rlnKggYHNjb3Jpbmcu
-cHlgIOeahCBzdHJpY3QgPSAoZmlsbCArIHN0cm9rZSArIHRleHQpIC8gMyDkuIrljYfmmYLkv53n
-lZnkv67mlLnvvJpmaWxsIOaYr+S4iumdoueahOmAkOagvOavlOWwje+8jHN0cm9rZSDlkowgdGV4
-dCDlj6rnnIvpgornt6Plg4/ntKDjgILlnKggQ29kZXgg6YKj5qyh55qE56ysIDMg5o6S77yM5Yid
-56i/55qEIHN0cmljdCDmmK8gMC44NDPvvIzmioogUHJlZmlsbCDmoYbnmoTmoYbnt5rlkozmqJnp
-oYzmlLnmiJDol43oibLnmoTpgqPmrKHkv67mlLnmmK8gMC43NzfvvIhtYXRjaCDljbvmmK8gMC41
-NjIg4oaSIDAuNjM077yJ77yM5omA5LulIHN0cmljdCDmnIPnlZnkuIvliJ3nqL/vvJvlj6rmiorp
-gqPlgIvmoYbnt5rlkozmqJnpoYzmlLnlm57mqZjoibLvvIxtYXRjaCDlj6rlvp4gMC42MzQ1IOiu
-iiAwLjYzNjjvvIxzdHJpY3Qg5b6eIDAuNzc3IOWNh+WIsCAwLjg2MeOAgmAtLXNjb3JlIG1hdGNo
-YCDmmK/ljp/mnKznmoTopo/liYfjgILkv67mlLnogIXmi7/liLDnmoTku43mmK/pgJDmoLzmr5Tl
-sI3nmoTlm57ppYvvvIhgLS1ub3RlcyBtYXRjaGDvvIzpoJDoqK3vvInvvJrmj5vmiJAgc3RyaWN0
-IOeahOaUuemhj+iJsuWbnumli+aZgu+8jENvZGV4IOeahCAxMiDmrKHkv67mlLkgc3RyaWN0IOW5
-s+Wdh+S4i+mZjSAwLjA3MuOAgeaykuacieS4gOasoeiuiuWlve+8m+eUqOmAkOagvOWbnumli+aZ
-giA2IOasoeaciSA0IOasoeiuiuWlve+8iOWQjOS4gOaZmu+8jOWWruWwviBGaXNoZXIgcCA9IDAu
-MDA177yb5ZCM5LiA5qyh5Z+36KGM55qE5L+u5pS55LiN5a6M5YWo542o56uL77yM55W25oiQ5by3
-54OI55qE6Leh6LGh77yJ44CCCueVq+WcluiAheS5n+WPr+S7peioreWumuahhue3mueyl+e0sOOA
-geaomemhjOmhj+iJsuOAgeiZm+e3muahhuOAgeepuuW/g+aWueWhiuOAgei8g+mrmOeahOagvOWt
-kOOAgeWck+inkueuremgreOAgeaWnOmrlOWtl++8jOmChOWPr+S7peeUqCBgc3ZnYCDlhYPku7bv
-vJrnlavkuYvliY3mnIPlhYjmqqLmn6XlhaflrrnvvIjlj6rmlLYgU1ZHIOe5quWcluWFg+e0oO+8
-jOS4jeaUtueoi+W8j+OAgeS6i+S7tuWSjOWLleeVq++8jOmAo+e1kOWPquiDveaMh+WQkSBgI2lk
-YCDmiJblhafltYznmoQgcG5nL2pwZWcvZ2lm77yJ77yM5YaN5b6e6Kej5p6Q5b6M55qE57WQ5qeL
-6YeN5paw5a+r5Ye644CCCgropoHmr5TovIPkuI3lkIzlnJjpmorvvIzlsLHmiorkuIDmrKHln7fo
-oYzlr6vmiJDoqK3lrprmqpTlho3ph43opIfot5HvvJpgcHl0aG9uMyBleGFtcGxlcy9zbGlkZV90
-ZWFtL3RlYW1ydW4ucHkgc3BlYy5qc29uIC0tcmVwZWF0IDVg44CC6Kit5a6a5qqU5a+r5Y6f5ZyW
-44CB5oiQ5ZOh77yI55Wr5omL5ZKM5LiA5L2N576O6KGT77yM5ZCE6Ieq5oyH5a6a5b6M56uvIGBv
-cGVuY29kZWDjgIFgY29kZXhg44CBYGNsYXVkZWAg5oiWIGBmYWtlYOOAgeaooeWei++8jOS7peWP
-iuavj+WbnuWQiOaWsOmWi+aIluayv+eUqOWwjeipse+8ieOAgeWbnuWQiOaVuOOAgU9wZW5Db2Rl
-IOS8uuacjeWZqO+8iHRlYW1ydW4g5q+P5qyh5Z+36KGM6YO96Ieq5bex5ZWf5YuV5LiA5YCLIGhl
-cmRyLXB5IOW4uOmnkOeoi+W8j++8jOS9huS4jeacg+WVn+WLlSBPcGVuQ29kZe+8ieOAgeS/neeV
-meS/ruaUueeUqOWTquWAi+WIhuaVuO+8iGByb3VuZHMuc2NvcmVg77yaYHN0cmljdGAg5oiWIGBt
-YXRjaGDvvInlkozovLjlh7ros4fmlpnlpL7vvJvmoLzlvI/lr6vlnKggW2B0ZWFtcnVuLnB5YF0o
-ZXhhbXBsZXMvc2xpZGVfdGVhbS90ZWFtcnVuLnB5KSDplovpoK3jgILmr4/mrKHln7fooYznlKLn
-lJ8gYHJlcG9ydC5tZGDvvIjmr4/liJfojYnnqL8gLT4g5L+d55WZ55qE5YiG5pW444CB6KKr5o6l
-5Y+X6IiH6KKr5pOL5LiL55qE5L+u5pS544CB5L+u5q2j5qyh5pW444CB5pWZ6KiT44CB5pW05by1
-5ZyW55qE5ZC75ZCI5bqm6IiHIFBTTlLjgIHmr4/kvY3miJDlk6HnmoQgdG9rZW4g5ZKM5pmC6ZaT
-77yJ77yM6YeN6KSH5Z+36KGM5Y+m5aSW55Si55SfIGBhZ2dyZWdhdGUubWRg77yI5bmz5Z2H44CB
-5pyA5bCP44CB5pyA5aSn77yJ77ybYHRlYW1ydW4ucHkgLS1jb21wYXJlIOeUsiDkuZlgIOaKiuWF
-qee1hOe1kOaenOS4puaOkuWNsOWHuuOAguaVuOWtl+mDveeUseeoi+W8j+W+nuavj+asoeWft+ih
-jOeahOaqlOahiOeul+WHuu+8iGBydW5yZXBvcnQucHlg77yJ77yM5LiN5omL5a+r44CCQ2xhdWRl
-IENvZGUg5oiQ5ZOh77yIW2BjbGF1ZGVfYWdlbnRzLnB5YF0oZXhhbXBsZXMvc2xpZGVfdGVhbS9j
-bGF1ZGVfYWdlbnRzLnB5Ke+8ieavj+WbnuWQiOi3keS4gOasoSBgY2xhdWRlIC1wYO+8jOS4jei8
-ieWFpemAmeWPsOapn+WZqOeahCBDTEFVREUubWTjgIFob29rIOWSjCBNQ1Ag5Ly65pyN5Zmo77yI
-YC0tc2FmZS1tb2RlYO+8ie+8jOS5n+S4jee1puW3peWFt++8jOWPquaciee+juihk+eci+WcluaZ
-guWPr+S7peeUqCBSZWFk77ybYGZha2VgIOaIkOWToeeFp+iFs+acrOWbnuetlO+8jOeUqOS+huip
-pui3keiAjOS4jeWRvOWPq+S7u+S9leaooeWei+OAggoKIyMg6Zmk6Yyv77ya5oiQ5ZOh5ZOq6KOh
-5Ye65LqG5ZWP6aGM44CB6Kmy5oCO6bq86L6mCgpgcHl0aG9uMyAtbSBoZXJkcl9weS5kaWFnbm9z
-ZSDln7fooYzos4fmlpnlpL5gIOiugOS4gOasoeWft+ihjOeVmeS4i+eahOe0gOmMhO+8iOW4uOmn
-kOeoi+W8j+eahCBgc3RhdGUvZXZlbnRzLmpzb25sYOOAgUNvZGV4IOaIkOWToeeahCBgd29yay9j
-b2RleC9ldmVudHMuanNvbmxg44CB5ZyY6ZqK55qEIGB3b3JrL2NoYXQuanNvbmxg77yJ77yM5YiX
-5Ye65q+P5L2N5oiQ5ZOh55qE6Lyq5pW444CBdG9rZW7jgIHmnInmlYjovLjlh7roiIfooqvmjqHn
-lKjnmoTkv67mlLnvvIzku6Xlj4rmib7liLDnmoTllY/poYzvvJvmr4/lgIvllY/poYzpg73pmYTk
-uIrorYnmmI7lroPnmoTntIDpjITooYzomZ/lkozkuIDlgIvlu7rorbDjgILopo/liYfkvoboh6rn
-nJ/lr6bln7fooYzvvJrovLjlh7rlgZzlnKggdG9rZW4g5LiK6ZmQ6ICM5rKS5pyJ5paH5a2X44CB
-5pW06Lyq5Y+q5pyJ5oCd6ICD77yI5rKS5pyJ5paH5a2X5Lmf5rKS5pyJ5bel5YW35ZG85Y+r77yJ
-44CB5bCN6Kmx5Lit6YCU6KKr5aOT57iu6ICM5Zue6KaG6K6K5oiQ5pGY6KaB44CB5Zue6KaG5LiN
-5piv6KaB5rGC55qE5qC85byP44CB6LaF6YGO5q+P6Lyq5pmC6ZaT5LiK6ZmQ44CB5pW06Lyq5Zug
-6Yyv6Kqk5aSx5pWX44CB5ZCM5LiA5YCL5bel5YW36Yyv6Kqk5oiW5qyK6ZmQ5ouS57WV5LiA5YaN
-55m855Sf44CB5ZCM5LiA6Lyq55qE56iL5byP5qqi5p+l5rKS6YGO5Y275a6j56ix5a6M5oiQ44CB
-5L+u5pS55LiA5YaN6KKr6YCA5Zue44CB5LuA6bq86YO95rKS5pS55bCx5YGc5LiL44CC5q+P5LiA
-6Lyq5pyA5aSa5Y+q5q245LiA5YCL57WQ5p6c77yM5pyA5YW36auU55qE5Y6f5Zug5YSq5YWI44CC
-YC0tbWVtYmVyIGRyYXdBIC0tdHVybiA0YCDljbDlh7rpgqPkuIDovKrnmoTlrozmlbTntIDpjITv
-vIjmjIfku6TplovpoK3jgIHlm57opobjgIHmgJ3ogIPplbfluqbjgIHlt6Xlhbflkbzlj6vjgIF0
-b2tlbuOAgee1kOadn+WOn+WboOOAgeWjk+e4ruOAgemMr+iqpOOAgeS5i+W+jOeahOaqouafpe+8
-ie+8m2AtLWpzb25gIOe1pueoi+W8j+iugO+8m2BoZXJkcl9weS5kaWFnbm9zZS5maW5kaW5ncyhy
-dW5fZGlyKWAg5Zue5YKzIGRpY3Qg5riF5Zau44CCCgojIyDlnJjpmorljbPmmYLpnaLmnb8KCuS4
-gOmggeWUr+iugOeahCBIVE1MIOe2sumgge+8jOWNs+aZgueci+S4gOasoeWcmOmaiuWft+ihjO+8
-muaIkOWToeWNoe+8iOeLgOaFi+OAgXRva2Vu44CB6Lyq5pW444CB55So6YGO5bm+5YCLIHNlc3Np
-b27jgIHmnIDlvozoqqrnmoToqbHvvInjgIHlj6/kvp3miJDlk6HoiIfnqK7poZ7nr6npgbjnmoTl
-sI3oqbHmmYLplpPou7jjgIHmr4/kuIDmjpLnmoTliIbmlbjlnJbvvIjliJ3nqL/oiIfmr4/mrKHk
-v67mlLnjgIHmjqXlj5fmiJbpgIDlm57jgIHkv53nlZnnmoTniYjmnKzvvInjgIHmiJHlgJHnmoTl
-nJboiIfljp/lnJbkuKbmjpLvvIjmu5Hmob/liIfmj5vmr4/lgIvkv53nlZnnmoTniYjmnKzvvInj
-gIHmlZnoqJPmuIXllq7oiIfmnIDlvoznmoTmlbjlrZfjgILororljJbnlKggU2VydmVyLVNlbnQg
-RXZlbnRzIOaOqOmAgeOAggoKYGBgYmFzaApweXRob24zIC1tIGhlcmRyX3B5LmRhc2hib2FyZCB+
-Ly5jYWNoZS9oZXJkci1zbGlkZXMvPOafkOasoeWft+ihjD4gWy0tcG9ydCA4NzcwXSBbLS1zb2Nr
-ZXQgPOW4uOmnkOeoi+W8j+eahCBzb2NrZXQ+XQojIOacg+WNsOWHuiAgb3BlbjogaHR0cDovLzEy
-Ny4wLjAuMTo4NzcwLyN0b2tlbj0uLi4KcHl0aG9uMyAtbSBoZXJkcl9weS5kYXNoYm9hcmQgfi8u
-Y2FjaGUvaGVyZHItc2xpZGVzLzzmn5DmrKHln7fooYw+IC0taHRtbCBydW4uaHRtbAojIOWQjOS4
-gOmggeWtmOaIkOS4gOWAi+aqlOahiO+8iOWft+ihjOeVtuS4i+eahOaoo+WtkO+8ie+8mueUqOS7
-u+S9leeAj+imveWZqOaJk+mWi++8jOS4jemcgOimgeS8uuacjeWZqOaIliB0b2tlbu+8jOS4jeac
-g+abtOaWsApgYGAKCuWvrOieouW5leS4iu+8jOWwjeipseOAgeWIhuaVuOWcluWSjOWclueJh+S4
-ieashOS4puaOkuOAguWtmOS4i+S+hueahOmggemdouaKiuWclueJh+aUvuWcqOaqlOahiOijoe+8
-iOi3keWujOOAgeacieWFreW8teWclueahOWft+ihjOe0hCAyIE1C77yJ77yM5Y+q5pS+5ZyW54mH
-77yM5LiN5pyD5bi25YiwIGBzdGF0ZS90b2tlbmDjgIIKClJVTl9ESVIg5pivIGBydW5fZGVtby5w
-eWAg55Si55Sf55qE5Z+36KGM6LOH5paZ5aS+77yI5oiWIGBsYXlvdXRfdGVhbS5weSAtLXdvcmtk
-aXJg77yJ44CC5oiQ5ZOh54uA5oWL5L6G6IeqIGB3b3JrL2NvZGV4L2FnZW50cy5qc29uYO+8iENv
-ZGV4IOaIkOWToe+8ie+8jOWKoCBgLS1zb2NrZXRgIOWJh+S+huiHqiBoZXJkci1weSDluLjpp5Dn
-qIvlvI/jgIJgc3VtbWFyeS5qc29uYCDopoHliLDntZDmnZ/miY3lr6vvvIzlnKjpgqPkuYvliY3l
-iIbmlbjlvp7lsI3oqbHoroDlh7rvvIzmiYDku6XlnJbmnIPpmqjln7fooYzmm7TmlrDjgILlkozl
-uLjpp5DnqIvlvI/nmoTntrLpoIHkuIDmqKPlj6rogb0gMTI3LjAuMC4x77yM6ICM5LiU6KaB55So
-5Y2w5Ye655qE6YCj57WQ6KOh55qEIHRva2Vu77yb5Y+q5o+Q5L6bIFJVTl9ESVIg6KOh55qE5ZyW
-54mH5qqU44CB5LiN6Lef6Zqo5Lu75L2V56ym6Jmf6YCj57WQ77yI5Z+36KGM6LOH5paZ5aS+6KOh
-5Lmf5pyJ5bi46aeQ56iL5byP55qEIGBzdGF0ZS90b2tlbmDvvInvvIzmspLmnInku7vkvZXlr6vl
-haXnmoTnq6/pu57jgIIKCiMjIOmDqOe9suWIsCBSSEVMIDgKCi0gUkhFTCA4IOeahCBgcHl0aG9u
-M2Ag5pivIDMuNu+8iGAvdXNyL2xpYmV4ZWMvcGxhdGZvcm0tcHl0aG9uYCDkuIDlrprlnKjvvInv
-vJpoZXJkci1weSDlj6/ku6XnlKjvvIzoqK3lrprmqpToq4vnlKggSlNPTuOAggotIHNvY2tldCDo
-poHmlL7lnKjmnKzmqZ/mqpTmoYjns7vntbHvvIjpoJDoqK3nmoQgYH4vLmxvY2FsL3N0YXRlYCDl
-jbPlj6/vvInjgILmnInkupvntrLot6/miJbomZvmk6zmqZ/lhbHkuqvnmoTmqpTmoYjns7vntbHk
-uI3og73mlL4gVW5peCBzb2NrZXTjgIIKLSBPcGVuQ29kZSDnmoQgZ2xpYmMg54mI5Y+v5Lul5Zyo
-IFJIRUwgOCDkuIrot5HvvIjlr6bmuKwgMS4xOC4zMu+8jHg4Nl82NCDoiIcgYWFyY2g2NO+8jOWu
-jOaIkOecn+WvpuWwjeipse+8ie+8m211c2wg54mI5LiN6KGM44CCCi0gc3lzdGVtZCDkvb/nlKjo
-gIXmnI3li5nnr4TkvovvvJpbYGV4YW1wbGVzL2hlcmRyLXB5LnNlcnZpY2VgXShleGFtcGxlcy9o
-ZXJkci1weS5zZXJ2aWNlKeOAgue2sumggeS7i+mdoumgkOioreWPquiBvSAxMjcuMC4wLjHvvIzo
-poHpgaDnq6/nnIvoq4vnlKggU1NIIOmAmumBk++8jOS4jeimgemWi+aUvumAo+aOpeWfoOOAggot
-IGBMQU5HPUNgIOS5i+S4iyBQeXRob24gMy42IOi8uOWHuuS4reaWh+acg+WHuumMr++8mmhlcmRy
-LXB5IOacg+iHquWLleaUueeUqCBVVEYtOCDovLjlh7rvvIjlt7LlnKggUkhFTCA4IOeahCBDIOiq
-nuezu+S4i+a4rOippu+8ieOAggoKIyMg5ou/55yf55qEIE9wZW5Db2RlIOS8uuacjeWZqOmpl+it
-iQoK5ris6Kmm55So55qE5piv5YGH55qEIE9wZW5Db2Rl44CCYHNjcmlwdHMvY2hlY2tfb3BlbmNv
-ZGUucHlgIOmAj+mBjuWft+ihjOS4reeahCBkYWVtb27vvIzlsI3nnJ/nmoTkvLrmnI3lmajot5Eg
-OCDlgIvmg4XlooPvvIjpgKPnt5rjgIHot5HlrozjgIHnuozllY/jgIHnrZbnlaXlhYHoqLHjgIHn
-rZbnlaXmi5LntZXjgIHopoHkurrmoLjlh4bjgIHkuK3mraLjgIHplovmlrAgc2Vzc2lvbu+8ie+8
-jOiAjOS4lOaKiiBoZXJkci1weSDnmoTliKTlrprlkozmqKHlnovmnInmspLmnInnhaflgZrliIbp
-lovoqJjvvIjmqKHlnovkuI3nhafmjIfnpLrlgZrvvIzkuI3nrpcgaGVyZHItcHkg55qE6Yyv77yJ
-44CCT3BlbkNvZGUgMS4xOC4zMiDliqDlhY3osrvmqKHlnosgb3BlbmNvZGUvYmlnLXBpY2tsZe+8
-mjgg6aCF5YWo6YGO77yIMjAyNi0xMC0wOe+8ieOAggoKYGBgc2gKcHl0aG9uMyBzY3JpcHRzL2No
-ZWNrX29wZW5jb2RlLnB5IC0tc29ja2V0IFNPQ0sgLS1vcGVuY29kZSBodHRwOi8vMTI3LjAuMC4x
-OjQwOTYgLS1wYXNzd29yZC1maWxlIFBBU1NGSUxFIFwKICAgIC0td29ya2RpciBPUEVOQ09ERV/n
-moTlt6XkvZzos4fmlpnlpL4gLS1tb2RlbCBvcGVuY29kZS9iaWctcGlja2xlICAgICAgIyBkYWVt
-b24g55qE562W55Wl55SoIHNjcmlwdHMvY2hlY2tfb3BlbmNvZGVfcG9saWN5Lmpzb24KYGBgCgoj
-IyDmuKzoqaYKCmBgYGJhc2gKcHl0aG9uMyAtbSB1bml0dGVzdCBkaXNjb3ZlciAtcyB0ZXN0cyAg
-ICAgICAgIyA1NDIg6aCF77yM55So5YGH55qEIE9wZW5Db2RlIOS8uuacjeWZqOWSjOWBh+eahCBD
-b2RleOOAgUNsYXVkZSBDb2RlIENMSe+8jOS4jemcgOimgeaooeWeiwpweXRob24zIGJlbmNoL3Ay
-My92YWxpZGF0ZS5weSAgICAgICAgICAgICAgICAjIOWcqCBSSEVMIDgg5pig5YOP6KOh6amX6K2J
-5a+m6amX6KmV5YiG56iL5byP77yI6ZyA6KaBIERvY2tlcu+8iQpgYGAKCkdpdEh1YiBBY3Rpb25z
-77yIYC5naXRodWIvd29ya2Zsb3dzL3Rlc3RzLnltbGDvvInmnIPlnKggUkhFTCA4IOiHquW3seea
-hCBQeXRob24gMy4277yIVUJJIDgg5a655Zmo77yJ5ZKM5pyA5paw54mIIFB5dGhvbiDkuIrot5Hm
-uKzoqabvvIhyZXBvIOijoeavj+WAiyBQeXRob24g5qqU77yM5YyF5ous56+E5L6L5ZKM5a+m6amX
-77yM6YO96KaB6IO95Zyo6YCZ5YWp54mI57eo6K2v44CB6ICM5LiU5LiN6IO95pyJ6K2m5ZGK77yJ
-77ybYHNjcmlwdHMvY2lfcHJpdmFjeS5weWAg5pyD5pOL5LiL5bi2IENsYXVkZSDnvbLlkI3jgIHl
-rrbnm67pjITot6/lvpHmiJYgR2l0SHViIG5vcmVwbHkg5Lul5aSW5L+h566x55qE5o+Q5Lqk44CC
-CgojIyDpmZDliLYKCuW4uOmnkOeoi+W8j+WPquaUr+aPtCBPcGVuQ29kZe+8iOaKleW9seeJh+Wc
-mOmaiuevhOS+i+WPr+S7peiHquW3sempheWLlSBDb2RleCBDTEkg5ZKMIENsYXVkZSBDb2RlIOaI
-kOWToe+8ieOAgmFnZW50IOaPkOWHuueahOWVj+mhjOWPquiDvemngeWbnuOAgeS4jeiDveWbnuet
-lOOAguS7i+mdouWPqumhr+ekuuacgOi/keeahOa0u+WLle+8jOWujOaVtOWwjeipseeUqCBgaGVy
-ZHItcHkgcmVhZGDjgILlnJjpmormqKHlvI/pgoTlnKjlr6bpqZfpmo7mrrXvvIzoq4vlhYjnnIvl
-r6bpqZfntZDmnpzlho3kvp3os7TlroPjgIIKCk1JVCDmjojmrIrjgIIK
+nIvmnb/os4fmlpnlpL7vvJvkvovlpoLkuI3pgKPntrLjgIHmqpTmoYjllK/oroDjgIHmspLmnIkg
+Y2FwYWJpbGl0aWVz44CB5LiN55SoIHJvb3Qg55qEIGBkb2NrZXIgcnVuYO+8jOimi+OAiOWuieWF
+qOOAie+8ie+8jOWVjyBzZXJ2ZXIvZGlzY292ZXIg6IiHIHRvb2xzL2xpc3TvvIgyMDI2LTA3LTI4
+IOeJiO+8ie+8jOacieWbnuaHieeahOW3peWFt+WwseaPkOS+m+e1piBDbGF1ZGUg5oiQ5ZOh5LmL
+5b6M55qE5Zue5ZCI77yI5ZCM5LiA57O75YiX5Y+q5o+Q5L6b5pyA5paw54mI77yb5o+Q56S66KOh
+5pyD5YiX5Ye677yJ44CC6YCZ56iu5Zue5ZCI55SoIGAtLXJlc3RyaWN0ZWQgLS1zdHJpY3QtbWNw
+LWNvbmZpZ2Ag5Y+W5Luj5pyD5oqK5omA5pyJIE1DUCDkvLrmnI3lmajmk4vmjonnmoQgYC0tc2Fm
+ZS1tb2RlYO+8mueUqCBDbGF1ZGUgQ29kZSAyLjEuMjk1IOWvpua4rO+8jOS4iuS4i+aWh+Wkp+Ww
+j+S4gOaoo+OAgeaykuaciSBDTEFVREUubWQg6IiHIHNraWxs77yM5oiQ5ZOh5Lmf55yf55qE5ZG8
+5Y+r5Yiw5bel5YW344CC5rKS57Wm5rKZ55uS5oyH5Luk77yM5oiQ5ZOh5a+r55qE5bel5YW35LiA
+5b6L5LiN5Z+36KGM44CCYHB5dGhvbjMgLW0gaGVyZHJfcHkucnVuZGlhZyBSVU5fRElSYCDoroDk
+uIDmrKHln7fooYznmoTntIDpjITvvIzoqqrlh7rmtarosrvoiIflh7rpjK/nmoTlnLDmlrnvvJrl
+kIzkuIDlgIvljp/lm6DooqvliKTkuI3pgJrpgY7nmoTnrZTmoYjjgIHmspLotI/pgY7mnIDpq5jl
+iIbkuZ/mspLkurrmjqXokZflgZrnmoTmiJDmnpzvvIjlkIzkuIDku73lt6XkvZzlgZrkuoblhanm
+rKHvvInjgIHmspLkurrnlKjliLDnmoQgc2tpbGzjgIHooqvkuI3lj6rkuIDlgIvmiJDlk6HmiZPp
+lovnmoTntrLpoIHjgIHmnIDpq5jliIblh7rnj77lvoznmoTlm57lkIjjgIFwbGFubmVyIOWWmumG
+kueUqOWujOaZguWJqeS4i+eahOWbnuWQiOOAgemWkuiRl+etieW3peS9nOeahOaIkOWToeOAgeii
+q+mAgOWbnueahCBwbGFubmVyIOWbnuimhuOAgeWbnuWQiOWFp+S/ruato+OAgeS7gOm6vOmDveay
+kueVmeS4i+eahOWbnuWQiO+8iOi2heaZgu+8m+iiq+W8t+WItue1kOadn+eahOWbnuWQiO+8jHRv
+a2VuIOaVuOaYr+S4i+mZkO+8ieiIh+mBlOaomeaZguiiq+WPlua2iOeahOWbnuWQiOOAgeW8leeU
+qOWQjOaoo+WPpeWtkOeahCBza2lsbCDntYTlkIjvvIjlkIzkuIDlpZfopo/liYflr6vkuoblhanm
+rKHvvJvlkIzlkI3nmoTmlLnniYjkuI3nrpfvvInvvIzku6Xlj4rlvp7lhbbku5YgdGFzayDluLbk
+vobnmoTmqpTmoYjmnInmspLmnInkurrmiZPplovjgIJgc3VtbWFyeS5qc29uYCDmnIPnrpfvvJro
+oqvpoJjlhanmrKHnmoTlvoXovqbmlbjvvIjlv4XpoIjmmK8gMO+8ieOAgeWwjeW+l+WIsOW+hei+
+puOAgeeci+adv+eJiOacrOiIh+aMh+S7pCBoYXNoIOeahOWbnuWQiOavlOS+i++8iOW/hemgiOWF
+qOmDqO+8ieOAgeavj+WAi+aIkOWToeOAjOacieepuuWNu+aykuacieW+hei+puWPr+mgmOOAjeea
+hOaZgumWk+OAgXBsYW5uZXIg5Y2g5YWo6YOoIHRva2VuIOeahOavlOS+i++8jOS7peWPiuaIkOWT
+oeiugOeci+adv+eahOasoeaVuO+8iOW+niBDb2RleOOAgUNsYXVkZeOAgU9wZW5Db2RlIOeahOe0
+gOmMhOeul++8m+eoi+W8j+aIkOWToeaykuaciee0gOmMhO+8ieOAguavj+WAi+W3sumpl+itieea
+hOe1kOaenOS5n+acg+iuiuaIkOeci+adv+izh+aWmeWkvuijoeeahOaqlOahiO+8iGBhcnRpZmFj
+dHMvPGlkPi50eHRg77yJ77yM5aSq6ZW35pS+5LiN6YCy5oyH5Luk55qE5oiQ5p6c77yM6ZqK5Y+L
+5Lmf6IO95omT6ZaL5L6G55yL44CCYC0tbWVtYmVyLWFjY2VzcyByZXNlYXJjaGAg6K6TIENsYXVk
+ZSDmiJDlk6HkuZ/og73kuIrntrLmn6Xos4fmlpnvvIhXZWJTZWFyY2jjgIFXZWJGZXRjaO+8jOeU
+qCBzZXR0aW5ncyDopo/liYflj6rlhYHoqLHpgJnlhanlgIvvvJvnnJ/nmoQgQ0xJIOWvpua4rO+8
+muaykuacieimj+WJh+aZguS4jeipouWVj+aooeW8j+acg+aLkue1lSBXZWJTZWFyY2jvvIzmnIno
+po/liYfmmYLoroDos4fmlpnlpL7lpJbnmoTmqpTmoYjku43nhLbooqvmk4vvvInjgIJDb2RleCDm
+iJDlk6Hntq3mjIHllK/oroDjgIIKCiMjIOethuiomOacrO+8muavj+WkqeS6pOWHuuWOu+eahOW3
+peS9nO+8jOS4gOS7tuS4gOmggQoKYHB5dGhvbjMgLW0gaGVyZHJfcHkubm90ZWJvb2tgIOaKiuS6
+pOe1puWcmOmaiueahOW3peS9nOiomOaIkOS4gOacrOethuiomOacrO+8iOS4gOWAi+izh+aWmeWk
+vu+8ieijoeeahOmggeOAguS4gOmggeaYr+S4gOS7tuW3peS9nO+8muWug+eahOWumue+qe+8iGBw
+YWdlLmpzb25g77yaCuebruaomeOAgeS7u+WLmeaqlOOAgeipleWIhueoi+W8j+OAgeWcmOmaiuOA
+geavj+asoeWft+ihjOeahOmgkOeul+OAgeWTquS6m+eorumhnuW7tue6jOWIsOS4i+S4gOasoeOA
+geWTquS6m+eorumhnuaYr+aIkOaenO+8ieOAgeavj+S4gOasoeWft+ihjO+8jOS7peWPiuS6uuea
+hOaxuuWumu+8iOmZhOWKoOWcqOmAmemggeeahApgaGlzdG9yeS5qc29ubGDvvIzoqJjkuIvoqrDj
+gIHku4DpurzmmYLlgJnvvInjgILojYnnqL/kuI3mnIPln7fooYzvvJrlrprnvqnmiJbku7vli5nl
+nKjkuIrmrKHmoLjlh4blvozmlLnpgY7vvIxgcnVuYCDlsLHmi5LntZXjgILmr4/mrKHln7fooYzl
+vp7pgJnpoIHmnIDov5HkuIDmrKHlu7bnuowK77yI5oiWIGAtLWZyb20gTmDjgIFgLS1mcmVzaGDv
+vInvvJrlvJXmk47lvp7pgqPmrKHpgJrpgY7nmoTmop3nm67oo6HjgIHpgJnpoIHopoHluLbnmoTn
+qK7poZ7otbfmraXvvIzkuI3luLbkurrmjpLpmaTnmoTmop3nm67vvIhgZW5naW5lIC0tc2VlZC1m
+cm9tYO+8ie+8jArpgoTmspLooqvnlKjpgY7nmoTmibnoqLvliqDpgLLpgJnmrKHnmoTku7vli5nj
+gILmr4/nqK7miJDmnpznmoTmr4/kuIDniYjpg73nlZnokZfvvIznlLHkurrpgbjlrprnj77ooYzn
+iYjvvJvkuIvkuIDmrKHln7fooYzlvp7nj77ooYzniYjmjqXokZfmlLnvvIjpgbjlrprnmoTniYjm
+nKzkuI3oq5bnqK7poZ7pg73luLblhaXvvIzku7vli5noo6Hlr6vmmI7lvp7lroPmlLnotbfvvInj
+gILkuIDpoIHkuZ/lj6/ku6Xlvp4K5YW25LuW6aCB5bi25Y+D6ICD6LOH5paZ77yaYCJmcm9tIjog
+W3sicGFnZSI6ICJtdXNldW0tcmVwb3J0IiwgImtpbmRzIjogWyJza2lsbCJdLCAiY3VycmVudCI6
+IHRydWV9XWAg5pyD5Zyo5q+P5qyh5Z+36KGM5YmN77yM5oqK6YKj5LiA6aCB5pyA6L+R5LiA5qyh
+Cu+8iOaIliBgInJ1biI6IE5g77yJ6YCa6YGO6KmV5YiG55qE5oyH5a6a5qKd55uu6KSH6KO95Yiw
+5oiQ5ZOh6LOH5paZ5aS+77yIYHJlZmVyZW5jZS886aCBPi885qKd55uuPi50eHRg77yM5riF5Zau
+5ZyoIGByZWZlcmVuY2UvSU5ERVgubWRg77yJ77yM5Lim5a+r6YCy5Lu75YuZ77yIYCJraW5kcyI6
+IFsiKiJdYCDluLblhajpg6jpgJrpgY7nmoTmop3nm67vvInvvJvluLbnmoTmmK8gc2tpbGwg5pmC
+77yM5Lu75YuZ5Lmf5pyD5a+r5piO77ya5bel5L2c5b6e5a6D5YCR6ZaL5aeL77yM5Y+q6YeN5p+l
+5a6D5YCR5rKS5a+r5Yiw5oiW5a+r6Yyv55qE6YOo5YiG77yM6KaB5pS56YCy5bCx5pS55oiQ5paw
+54mI77yM5LiN6KaB5Y+m5a+r5ZCM5Li76aGM55qEIHNraWxs44CCCuWcqOOAjO+8i+OAjemWi+aW
+sCB0YXNrIOaZguWLvueahCBza2lsbOOAgeefpeitmOOAgeePvuihjOeJiO+8jOi1t+iNieaZguac
+g+iuiuaIkOaWsOmggeeahCBgImZyb20iYOOAggpgImxvb3AiOiB7InJlcGFpcnMiOiAyLCAicmVw
+YWlyX2JlbG93IjogMTAwLCAidGFyZ2V0IjogMTAwLCAid3JhcF91cCI6IDJ9YCDmnIPmiorpgJnk
+upvlvJXmk47pgbjpoIXvvIjlm57lkIjlhafkv67mraPjgIHnm67mqJnliIbmlbjjgIHpgZTmqJnl
+voznmoTmlLblsL7vvInluLbpgLLmr4/mrKHln7fooYzvvJvjgIzpmaTpjK/jgI3liIbpoIHmr4/m
+rKHln7fooYznmoTljaHniYfmnIDliY3pnaLmmK/lm57mlL7oqLrmlrfvvIhgaGVyZHJfcHkucnVu
+ZGlhZ2DvvInjgIIK5a6D5YCR5LiN566X5paw6aCB5bey6amX6K2J55qE5oiQ5p6c77yM5Lmf5LiN
+5rK/55So6IiK5YiG5pW477ya6YKj5LiA6aCB55qE6KmV5YiG5qiZ5rqW5LiN5ZCM44CC56S65oSP
+562G6KiY5pys6KOh77yM5bi25YWl5Y2a54mp6aSo5aCx6KGoIHNraWxsIOeahOWcluabuOmkqOWg
+seihqOeUqCA0IOWAi+aIkOWToeWbnuWQiArlgZrlh7rmu7/liIbntrLpoIHvvIzlvp7pm7bplovl
+p4vnmoTlkIzkuIDku73loLHooajnlKjkuoYgNSDlgIvjgILnrYnkurromZXnkIbnmoTkuovnlLHn
+tIDpjITnrpflh7rvvIzkuI3lj6blpJblrZjvvJropoHmoLjlh4bnmoTojYnnqL/jgIEK57WQ5p2f
+5b6M6YKE5rKS5Lq655yL6YGO55qE5Z+36KGM77yI5om56Ki744CB6YG454mI44CB5o6S6Zmk44CB
+6amX5pS244CB5pOx572u5oiW5a6M5oiQ6YO9566X55yL6YGO77yJ44CB5rKS5pyJ57WQ5p2f57SA
+6YyE6ICM5LiUIDE1IOWIhumQmOaykuWvq+adseilv+eahOWft+ihjOOAggoKYGBgCiDkvaDvvJrk
+uIDlj6Xnm67mqJkgLS0+IOi1t+iNiSBwYWdlLmpzb24gLS0+IOS9oOaguOWHhiAtLT4g5ZyY6ZqK
+5Z+36KGM77yI56ysIG4g5qyh77yM54Wn6aCQ566X77yJCiAgICAgICAgICAgICAgICAgICAgICAg
+ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgfAogICDnrKwgbisxIOasoeW4tuWFpemAmumB
+jueahOaineebruOAgXNraWxsIOiIh+S9oOeahOaJueiouyA8LS0g5L2g6amX5pS277ya6YG454++
+6KGM54mI44CB5om56Ki744CB5o6S6Zmk44CB6amX5pS2CmBgYAoKYGBgc2gKcHl0aG9uMyAtbSBo
+ZXJkcl9weS5ub3RlYm9vayB+L25vdGVib29rIGRyYWZ0IGNpcmNsZXMuanNvbiAgICAgICAgIyDp
+gJnpoIHnmoTojYnnqL/vvIhwYWdlLmpzb27vvIzmrITkvY3opovoi7HmlofoqqrmmI7vvIkKcHl0
+aG9uMyAtbSBoZXJkcl9weS5ub3RlYm9vayB+L25vdGVib29rIHJ1biBjaXJjbGVzIC0tZHJ5LXJ1
+biAgICAgICMg5YiX5Ye656K65YiH55qE5byV5pOO5oyH5Luk6IiH5Lu75YuZCnB5dGhvbjMgLW0g
+aGVyZHJfcHkubm90ZWJvb2sgfi9ub3RlYm9vayBhcHByb3ZlIGNpcmNsZXMKcHl0aG9uMyAtbSBo
+ZXJkcl9weS5ub3RlYm9vayB+L25vdGVib29rIHJ1biBjaXJjbGVzICAgICAgICAgICAgICAgICMg
+56ysIDEg5qyh77yb56ysIDIg5qyh5b6e5a6D5bu257qMCnB5dGhvbjMgLW0gaGVyZHJfcHkubm90
+ZWJvb2sgfi9ub3RlYm9vayBub3RlIGNpcmNsZXMgIuW+nuWFreinkuW9ouaOkuazlemWi+Wni+ip
+piIKcHl0aG9uMyAtbSBoZXJkcl9weS5ub3RlYm9vayB+L25vdGVib29rIHBpY2sgY2lyY2xlcyBr
+MDEyMzQ1Njc4OWFiICMg6YCZ5YCL56iu6aGe55qE54++6KGM54mICnB5dGhvbjMgLW0gaGVyZHJf
+cHkubm90ZWJvb2sgfi9ub3RlYm9vayBhdHRhY2ggY2lyY2xlcyBydW5zL2UxICAgICAjIOWcqOet
+huiomOacrOWklui3keeahOWft+ihjApweXRob24zIC1tIGhlcmRyX3B5Lm5vdGVib29rIH4vbm90
+ZWJvb2sgc3RhdHVzCnB5dGhvbjMgLW0gaGVyZHJfcHkubm90ZWJvb2sgfi9ub3RlYm9vayB2aWV3
+IC0tb3V0IHNpdGUvIC0tcnVucyBydW5zLyAgICMgLS1ydW5z77ya5YiX5Ye65LiN5bGs5pa85Lu7
+5L2V5LiA6aCB55qE5Z+36KGMCmBgYAoKYHZpZXdgIOaKiuethuiomOacrOWvq+aIkOe1pumbu+iF
+puieouW5leeci+eahCBhcHDvvIzkuI3pnIDopoEgSmF2YVNjcmlwdCDkuZ/lrozmlbTvvJrlt6bp
+gorkuIDmjpLmmK/miYDmnIkgdGFza++8iOaomemhjOesrOS4gOWAi+Wtl+aIliBwYWdlLmpzb24g
+55qEIGBpY29uYO+8jArliqDkuIrni4DmhYvpu57vvInvvIzmnIDkuIvpnaLnmoTjgIzvvIvjgI3p
+lovmlrAgdGFza+OAgummlumggeS4gOmWi+Wni+aYr+OAjOWFqOmDqCB0YXNr44CN77ya5YWI5YiX
+5ZCE54uA5oWL55qE5pW46YeP77yM5YaN5q+P5YCLIHRhc2sg5LiA5YiX77yI6ZyA6KaB5Lq66JmV
+55CG55qE5o6S5YmN6Z2i77yJ77yMCuWvq+iRl+eLgOaFi+iIh+imgeS9oOWBmueahOS6i+OAgeac
+gOi/keS4gOasoeWft+ihjO+8iOS9leaZgue1kOadn+OAgeacgOWlveeahOaIkOaenOOAgeiKseiy
+u++8ieOAgeavj+eoruaIkOaenOeahOePvuihjOeJiO+8m+S4i+mdouaJjeaYr+mZhOaMiemIleea
+hOOAjOW+heS9oOiZleeQhuOAjeOAgum7numWi+eahCB0YXNrCuS9lOa7v+WPs+mCiu+8jOWIhuaI
+kOW5vuWAi+WIhumggeOAgue4veimve+8mueUsee0gOmMhOeul+WHuueahOaVuOWtl++8iOWft+ih
+jOasoeaVuOOAgeaIkOWToeWbnuWQiOOAgemAmumBjueahOaineebruOAgQrlvoXkvaDomZXnkIbv
+vInvvIzmr4/lgIsgQWdlbnQg5LiA5by15Y2h54mH77yM5a+r6JGX57SA6YyE6KOh55qE54uA5oWL
+77yI5pyA5b6M5LiA5YCL5Zue5ZCI5oCO6bq857WQ5p2f77yM5Z+36KGM5Lit5YmH5piv5Zyo5YGa
+5oiW5Zyo562J77yJ5ZKM5a6D55qE5b6F6L6m77yb6bue5Y2h54mH5b6e5Y+z5YG05omT6ZaL5a6D
+55qECumdouadv++8muinkuiJsuOAgeW+hei+puOAgeWvq+S6huWSjOeUqOS6huWTquS6myBza2ls
+bOOAgeeUouWHuuOAgeavj+WAi+WbnuWQiOOAguaetuani++8muWcmOmaiuaoueeLgOWclu+8iHBs
+YW5uZXIg5YiG5rS+5b6F6L6m44CB5oiQ5ZOh5Zue562U44CB6KmV5YiG5rG65a6a5LuA6bq86YCa
+6YGO77yb5ZyW6KOh5q+P5YCLCkFnZW50IOmDveiDvem7numWi+mdouadv++8ieOAguWbnuaUvu+8
+muavj+asoeWft+ihjOeahOWbnuaUvu+8iGVuZ2luZXZpZXcg55qE6aCB6Z2i77yM55u05o6l5Zyo
+5YiG6aCB6KOh77yJ44CC6Zmk6Yyv77ya5q+P5qyh5Z+36KGM5Ye65LqG5LuA6bq86Yyv77yI6KKr
+6YCA5Zue55qEIHBsYW5uZXIg5Zue6KaG5ZKM55CG55Sx44CBCuaykuS6pOetlOahiOeahOWbnuWQ
+iOOAgeaykumBjueahOetlOahiOWSjOipleWIhueahOeQhueUseOAgeaIkOWToeWbnuWgseWBmuS4
+jeWIsO+8ie+8jOacgOW+jOaYr+Wft+ihjOioreWumuiIh+WOn+Wni+aMh+S7pOOAgnNraWxs77ya
+6Kqw5a+r55qE44CB6Kqw55So6YGO44CB5bi26YCy56ys5bm+5qyh44CC55+l6K2Y5bqr77ya5omA
+5pyJCumAmumBjueahOaineebru+8jOWPr+aQnOWwi+OAgeS+neeorumhnuevqemBuO+8jOS7peWP
+iuefpeitmOWclu+8iOavj+WAi+eorumhnuS4gOWIl+OAgeavj+aineS4gOWAi+Wck+OAgeW+nuav
+j+ainemAo+WIsOW8leeUqOWug+eahOaineebru+8m+m7nuS4gOWAi+Wck++8jOWug+W8leeUqOea
+hOWSjOW8leeUqOWug+eahOacg+S6rui1t+S+hu+8ieOAggrmjqXokZfmmK/mr4/nqK7miJDmnpzn
+moTmr4/kuIDniYjkuKbmqJnlh7rnj77ooYzniYjvvIzku6Xlj4rmibnoqLvoiIfmrbflj7LjgILo
+oqvkurrmjpLpmaTnmoTniYjmnKzmnIPmqJnlh7rjgIzlt7LmjpLpmaTjgI3oiIfljp/lm6DvvIzk
+uI3mnIPooqvmj5DkvpvmiJDnj77ooYzniYjvvIjlj5bmtojmjpLpmaTkuYvliY0gYHBpY2tgIOS5
+n+acg+aLkue1le+8ieOAguaWh+Wtl+aqlOaJk+mWi+eahOaYr+S4gOmggeWuo+WRiiBVVEYtOCDn
+moTplrHoroDpoIHvvIjpoIHkuIrpgKPliLDljp/lp4vmqpTvvInvvJoKYHB5dGhvbiAtbSBodHRw
+LnNlcnZlcmAg6YCZ6aGe6Z2c5oWL5Ly65pyN5Zmo6YCBIGAudHh0YCDmmYLkuI3lr6vnt6jnorzv
+vIzoqK3miJDnuYHpq5TkuK3mlofnmoTmiYvmqZ/lsLHmnIPmioogc2tpbGwg55W2IEJpZzUg6K6A
+5oiQ5LqC56K844CC57SA6YyE6KOh5rKS5pyJ55qE5p2x6KW/5LiN6aGv56S677yI5LiN54yc6YCy
+5bqm44CB5LiN54yc5a6M5oiQ5pmC6ZaT77yJ44CCYG5vdGVib29rLmpzb25gIOWPr+S7peaMh+Wu
+mgrnrYboqJjmnKzoh6rlt7HnmoTmqKPlvI/ooajvvIhgInN0eWxlImDvvIznm7jlsI3mlrznrYbo
+qJjmnKzos4fmlpnlpL7nmoQgQ1NTIOaqlO+8ie+8jOaOpeWcqOWFp+W7uuaoo+W8j+W+jOmdouWl
+l+WIsOavj+S4gOmgge+8jOS+i+WmguaJi+apn+eJiOeJiOmdou+8m2AidHJlZSJgIOaxuuWumuWc
+mOmaiuWclgrmqavokZfnlavvvIhgd2lkZWDvvIzpoJDoqK3vvInjgIHnm7TokZfnlavvvIhgdGFs
+bGDvvInvvIzmiJblhannqK7pg73nlavvvIhgYm90aGDvvJrnm7TlvI/lhYjol4/okZfvvIznlLHp
+gJnpoZ7mqKPlvI/ooajmsbrlrprkvZXmmYLpoa/npLrvvInjgIJgc2VydmVgIOWcqOmAmeWPsOap
+n+WZqOS4igrljbPmmYLmj5DkvpvlkIzmqKPnmoTpoIHpnaLvvIjpoJDoqK0gMTI3LjAuMC4x77yJ
+77yM5Lim5Yqg5LiK5oyJ6YiV77ya77yLIOiomOS4i+S4gOWAi+aWsCB0YXNrIOeahOiri+axgu+8
+m3Rhc2sg6KOh55qE5oyJ6YiV5Y+v5Lul6YG454++6KGM54mI44CB5a+r5om56Ki744CB6amX5pS2
+44CB5pOx572u44CBCumHjeaWsOaJk+mWi+OAgeaguOWHhu+8iOWPquaguOWHhumggemdouS4iumh
+r+ekuueahOmCo+S4gOeJiO+8ieOAgeaOkumZpOaineebruOAguaMiemIleW4tuiRl+mAo+e1kCBg
+I2Ag5b6M6Z2i55qEIHRva2VuIOmAgeWHuu+8jOaykuaciSB0b2tlbiDlsLHmi5LntZXvvJvlnJjp
+morlgZrnmoTmqpTmoYjlnKjmspnnm5Loo6EK5o+Q5L6b77yIYENvbnRlbnQtU2VjdXJpdHktUG9s
+aWN5OiBzYW5kYm94IGFsbG93LXNjcmlwdHNg77yJ77yM6KOh6Z2i55qE56iL5byP56Kw5LiN5Yiw
+IHRva2Vu44CC55SoIGB2aWV3YCDlr6vmiJDmqpTmoYjmmYLvvIzmjInpiJXmlLnmiJDopIfoo73o
+poHot58gQ2xhdWRlIOiqqueahOipseOAggoKYGBgc2gKcHl0aG9uMyAtbSBoZXJkcl9weS5ub3Rl
+Ym9vayB+L25vdGVib29rIHJlcXVlc3QgIuS4i+mbqOmAseacq+eahOabuOWWriIgLS10aXRsZSAi
+5pu45ZauIgpweXRob24zIC1tIGhlcmRyX3B5Lm5vdGVib29rIH4vbm90ZWJvb2sgZHJhZnQgcmVh
+ZGluZy5qc29uIC0tcmVxdWVzdCByMSAgICMgQ2xhdWRlIOi1t+iNieeahOmggeWbnuaHiemAmeWA
+i+iri+axggpweXRob24zIC1tIGhlcmRyX3B5Lm5vdGVib29rIH4vbm90ZWJvb2sgc2VydmUgLS1y
+dW5zIHJ1bnMvICAgICAgICAgICAgICAgICMg5pyD5Y2w5Ye6ICBvcGVuOiBodHRwOi8vMTI3LjAu
+MC4xOjg3OTAvI3Rva2VuPS4uLgoKIyDomZvmp4vnmoTnpLrmhI8gdGFza++8jOaIkOWToemDveaY
+r+eoi+W8j++8iOW5vuenkumQmO+8ie+8muesrOS6jOasoeWft+ihjOeUqOesrOS4gOasoeeVmeS4
+i+eahOizh+aWmeiIhyBza2lsbCDlgZrlh7rntrLpoIHnmoTloLHooajjgIHot5HlhanmrKHnmoTl
+nJPlvaLmjpLliJfjgIEKIyDmnInkuIDmraXlpLHmlZfnmoQgREFH44CB5LiA5Lu96I2J56i/6IiH
+5LiA5YCL6KuL5rGC77yb5o6l6JGX5omT6ZaL5L6G55yLCnB5dGhvbjMgZXhhbXBsZXMvbm90ZWJv
+b2svbWFrZV9kZW1vLnB5IC90bXAvbm90ZWJvb2stZGVtbwpweXRob24zIC1tIGhlcmRyX3B5Lm5v
+dGVib29rIC90bXAvbm90ZWJvb2stZGVtby9ub3RlYm9vayB2aWV3IC0tb3V0IC90bXAvbm90ZWJv
+b2stZGVtby9zaXRlIC0tcnVucyAvdG1wL25vdGVib29rLWRlbW8vcnVucwpvcGVuIC90bXAvbm90
+ZWJvb2stZGVtby9zaXRlL2luZGV4Lmh0bWwKYGBgCgros4fmlpnlpL7oo6HnmoQgYG5vdGVib29r
+Lmpzb25gIOioreWumuaomemhjOiIh+mggemdouiqnuiogO+8iGBlbmAg5oiWIGB6aC1UV2DvvInj
+gILmjIfku6TmmK/ntabkuIDlj7DmqZ/lmajkuIrnmoTkuIDlgIvkurrnlKjnmoTvvJvkuovlvozo
+o5zoqJjnmoTmsbrlrprvvIhgLS1hdGDvvInmnIPmqJnmiJDoo5zoqJjjgIIKCiMjIyDkuIvkuIDm
+rKHln7fooYzmnIPooqvmj5DphpLnmoTns77mraPvvIjmlZnoqJPvvIkKCuWcmOmaiui1sOmMr+i3
+r+aZgu+8jOS6uu+8iOaIluebo+edo+WcmOmaiueahCBhZ2VudO+8ieaKiuezvuato+Wvq+S4i+S+
+huS4gOasoeOAguS5i+W+jOeahOWft+ihjOWcqOWLleaJi+WJjeWwseacg+iiq+aPkOmGku+8jOe0
+gOmMhOS5n+acg+mhr+ekuuaPkOmGkuacieaykuacieeUqOOAggoKYGBgCuS4gOWJh+ezvuatoyDi
+lIA+IGxlc3NvbnMuanNvbmwg4pSAPiDli5XkvZzliY3mr5TlsI0gYHdoZW5gIOKUgD4g5q+U5Lit
+77ya5a+r6YCy6YKj5LiA5Zue5ZCI55qE5o+Q56S6Cihub3RlYm9vayBjb3JyZWN0KSAgKOWBh+io
+rSkgICAgICjmiJDlk6HvvJrku7vli5nvvIvlroPpoJjnmoTlvoXovqbvvJsgICAgICAgICDilIIK
+ICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIHBsYW5uZXLvvJrku7vli5kpICAgICAgICAg
+ICAgICAgICAgICB2CiAgICAgICDlr6nmn6UgPOKUgCDlj4jniq/kuobll47vvJ/vvIjnlKggYGRl
+dGVjdGAg5q+U5bCN5Lqk5Ye655qE5p2x6KW/77yJPOKUgCDpgJnkuIDlm57lkIgKICDmt5jmsbDv
+vIjlho3niq8gMiDlgIvlm57lkIjvvIzmsLjkuYXvvInilIIg6K2J5a+m77yI5o+Q6YaSIDMg5YCL
+5Zue5ZCI6YO95rKS5YaN54qv77yJ4pSCIOWFtuS7lue2reaMgeWOn+eLgApgYGAKCmBgYHNoCnB5
+dGhvbjMgLW0gaGVyZHJfcHkubm90ZWJvb2sg562G6KiY5pysIGNvcnJlY3Qg6aCBIC0tcnVuIDIg
+LS1zdGVwIHQzIFwKICAgIC0td3JvbmcgIueUqCBoZWFkbGVzcyBDaHJvbWUg55qEIC0td2luZG93
+LXNpemUg5oiq5ZyWIiBcCiAgICAtLXJpZ2h0ICLnlKggcGhvbmUtY2hlY2vvvJrlroPmqKHmk6wg
+MzkwIHB4IOeahOaJi+apnyIgLS13aGVuICLmiKrlnJZ8c2NyZWVuc2hvdCIgLS1kZXRlY3QgIndp
+bmRvdy1zaXplIgpweXRob24zIC1tIGhlcmRyX3B5Lmxlc3NvbnMg562G6KiY5pysL2xlc3NvbnMu
+anNvbmwgcmV2aWV3IOWft+ihjOizh+aWmeWkvi4uLiAgIyDmj5DphpLlub7mrKHjgIHlho3niq/l
+ub7mrKHjgIHmlZnoqJPlh7rnj77liY3nmoTniq/pjK/njocKYGBgCgotIGB3aGVuYCDlnKjli5Xk
+vZzliY3kuIDliLvmr5TlsI3vvIzmr5TnmoTmmK/li5XkvZzmnKzouqvvvIjku7vli5noiIflvoXo
+vqbvvInvvIzkuI3mmK/kurrlnKjlsI3oqbHoo6HmiZPnmoTlrZfjgIIKLSDmlZnoqJPkuIDplovl
+p4vmmK/lgYfoqK3vvIznlLHntIDpjITmsbrlrprvvJrooqvmj5DphpLlvozku43lho3niq8gMiDl
+gIvlm57lkIjlsLHmt5jmsbDvvIzogIzkuJTkuI3mnIPmgaLlvqnvvIjopoHph43oqablsLHmj5vl
+gIvlr6vms5Xlj6bnq4vkuIDliYfvvInvvJvmnIkgYGRldGVjdGDjgIHmj5DphpIgMyDlgIvlm57l
+kIjpg73mspLlho3niq/lsLHorYnlr6bjgILlr6nmn6XmmYLntabnmoTln7fooYzmr5TovIPlsJHv
+vIzkuZ/kuI3mnIPorpPni4DmhYvlgJLpgIDjgILmspLmnIkgYGRldGVjdGAg55qE5pWZ6KiT6YeP
+5LiN5Yiw77yM5rC46YGg5piv5YGH6Kit44CCCi0g5Y+q5o+Q6YaS44CB5LiN5pOL5LiL77ya562U
+5qGI54Wn5bi46KmV5YiG44CC5Zue5pS+6aCB5YiX5Ye66YCZ5qyh5Z+36KGM5ou/5Yiw55qE5pWZ
+6KiT77yM5q+P5YCL5b6F6L6m6IiHIHBsYW5uZXIg5Zaa6YaS6YO95qiZ5Ye66KKr5o+Q6YaS5LqG
+5ZOq5bm+5YmH44CB5Y+I54qv5LqG5ZOq5bm+5YmH77ybYHJ1bmRpYWdgIOS5n+acg+WgseWRiumA
+meeoruWbnuWQiOOAggotIOW+nuethuiomOacrOmWi+Wni+eahOWft+ihjOacg+W4tuS4iuethuio
+mOacrOeahCBgbGVzc29ucy5qc29ubGDvvIjlvJXmk47nmoQgYC0tbGVzc29ucyDmqpTmoYhg77yJ
+44CC54++5Zyo5q+P5qyh5Z+36KGM6YO95pyD5oqK5Lu75YuZ5a2Y5oiQIGB0YXNrLm1kYO+8jOaJ
+gOS7peaVmeiok+S5n+iDveaLv+Wug+WHuuePvuS5i+WJjeeahOWft+ihjOS+humHj+OAggoKIyMg
+REFHIOWIhua0vu+8muacg+S6kuebuOetieW+heeahOatpempnwoKYHB5dGhvbjMgLW0gaGVyZHJf
+cHkuZGFnYCDln7fooYzkuIDku70qKuioiOeVqyoq77ya5q+P5YCL5q2l6amf55Sx5LiA5YCL5oiQ
+5ZOh5ZyoKiroh6rlt7HnmoQgZ2l0IGNsb25lKiog6KOh5YGa77yM55SxKiroqZXliIbnqIvlvI8q
+KuWIpOWumumBjuS4jemBjuOAguS4gOWAi+atpempn+imgeetieWug+mcgOimgeeahOatpempn+WF
+qOmDqOmAmumBjuaJjemWi+Wni++8jOiAjOS4lOWPqueci+W+l+WIsOmCo+S6m+atpempn+eahOaI
+kOaenOOAguioiOeVq+aYr+S4gOWAiyBKU09OIOaqlO+8jOaJgOS7peWcmOmaiuaAjum6vOe1hOe5
+lO+8iOiqsOWBmuS7gOm6vOOAgeiqsOetieiqsOOAgeiqsOeci+W+l+WIsOiqsOeahOaIkOaenO+8
+ieaYr+WPr+S7peS/ruaUueOAgeWPr+S7peaLv+S+huavlOi8g+eahOizh+aWmeOAggoKYGBgCm11
+bCDilIDilJAgICAgICAgICAgICAgICAgICAgICDmr4/lgIvmlrnloYrmmK/kuIDlgIvmraXpqZ/v
+vIznlLHkuIDlgIvmiJDlk6HlnKjoh6rlt7HnmoQgY2xvbmUg6KOh5YGa77ybCnN1YiDilIDilLTi
+lIA+IHRvZ2V0aGVyIOKUgOKUkCAgICAgICDnrq3poK3vvJrpgqPlgIvmraXpqZ/pgJrpgY7kuYvl
+vozmiY3plovlp4vvvIzkuKbmi7/liLDlroPnmoQgY29tbWl0CmRpdiDilIDilIDilIDilIDilIDi
+lIDilIDilIDilIDilIDilIDilIDilIDilIDilIDilLTilIA+IGRvY3MKYGBgCgpgYGBzaApweXRo
+b24zIGV4YW1wbGVzL2RhZy9tYWtlX2RlbW8ucHkgfi9kYWctZGVtbyAgICAgICAgICAjIOS4gOWA
+i+WwjyByZXBvIOWSjOWug+eahOioiOeVq++8iOeoi+W8j+aIkOWToe+8jOS4jemcgOimgeaooeWe
+i++8iQpweXRob24zIC1tIGhlcmRyX3B5LmRhZyB+L2RhZy1kZW1vL3BsYW4uanNvbiAtLWNoZWNr
+ICAjIOS4gOWxpOS4gOWxpOWIl+WHuuatpempnwpweXRob24zIC1tIGhlcmRyX3B5LmRhZyB+L2Rh
+Zy1kZW1vL3BsYW4uanNvbiAtLW91dCB+L2RhZy1kZW1vL3J1bjEgLS1wYXJhbGxlbCAzCm9wZW4g
+fi9kYWctZGVtby9ydW4xL3ZpZXcuaHRtbCAgICAgICAgICAgICAgICAgICAgICAgICAjIOioiOeV
+q+eVq+aIkOWclu+8jOWKoOS4iuavj+S4gOasoeWYl+ippgpweXRob24zIC1tIGhlcmRyX3B5LmRh
+ZyAtLXJlY2hlY2sgfi9kYWctZGVtby9ydW4xICAgICAgIyDlnKjlhajmlrDnmoQgY2xvbmUg5oqK
+5q+P5YCL6YCa6YGO55qE5q2l6amf6YeN5paw6KmV5YiGCmBgYAoKLSAqKuipleWIhueoi+W8j+Wc
+qOWuueWZqOijoei3keavj+WAi+atpempn+eahOa4rOippioq77yIYGV4YW1wbGVzL2RhZy9qdWRn
+ZS5weWDvvJtgSEVSRFJfSlVER0VfU0FOREJPWGDvvIzpoJDoqK0gYGRvY2tlcjpweXRob246My1z
+bGltYO+8m2Bub25lYCDmmK/lnKjpgJnlj7DmqZ/lmajkuIrot5HvvInvvJrmraXpqZ/nmoTmuKzo
+qabmmK/miJDlk6Hlr6vnmoTnqIvlvI/jgILnlKggY29saW1hIOaZgu+8jOekuuevhOimgeWDj+S4
+iumdouS4gOaoo+aUvuWcqOWutuebrumMhOW6leS4i++8jOWPquaciemCo+ijoeacg+WIhuS6q+e1
+puWuueWZqOOAggotICoq6ZqU6Zui55Sx56iL5byP6LKg6LKsKirvvJrmr4/mrKHlmJfoqabpg73m
+nInoh6rlt7HnmoQgYGdpdCBjbG9uZSAtLXNoYXJlZGDvvIzkuI3nlZnpgaDnq6/vvJvmraXpqZ/n
+moQgY2xvbmUg5Y+q5pyD5ou/5Yiw5a6D6ZyA6KaB55qE5q2l6amf55qE6Ly45Ye6IGNvbW1pdO+8
+iGByZWZzL2RhZy88aWQ+YO+8ie+8jOaykuacieS7u+S9leWFtuS7luatpempn+eahOadseilv++8
+jOaMh+S7pOijoeS5n+WPquaciemCo+S6m+atpempn+eahOaRmOimgeiIhyBkaWZm44CCQ29kZXgg
+5oiQ5ZOh5ZyoIGB3b3Jrc3BhY2Utd3JpdGVgIOaymeebkuijoeW3peS9nO+8m0NsYXVkZSDmiJDl
+k6HnlKggYC0tcGVybWlzc2lvbi1tb2RlIGFjY2VwdEVkaXRzYCDliqDkuIrmqpTmoYjlt6Xlhbfv
+vIjllK/oroDmraXpqZ/nlKggYGRvbnRBc2tgIOWKoOiugOaqlOW3peWFt++8ieOAgueUqOecn+ea
+hCBDbGF1ZGUgQ29kZSDlr6bmuKzpgY7vvJrlnKggY2xvbmUg5LmL5aSW5a+r44CB6K6A44CBR2xv
+YuOAgUdyZXAg6YO95pyD6KKr5pOL77yb5LiN6IO955SoIGAtLWFsbG93ZWRUb29sc2DvvIzlroPm
+nIPorpPmiJDlk6HoroDlr6vmlbTlj7DmqZ/lmajjgIJPcGVuQ29kZSDmiJDlk6HvvIjpgI/pgY4g
+ZGFlbW9u77yMYC0tc29ja2V0YO+8ieavj+S4gOatpemWi+S4gOWAi+WcqCBjbG9uZSDoo6Hlt6Xk
+vZznmoTmlrAgc2Vzc2lvbu+8iE9wZW5Db2RlIOeahCBgP2RpcmVjdG9yeT1g77yJ77ybZGFlbW9u
+IOacg+WcqOWVj+asiumZkOetlueVpeS5i+WJje+8jOWFiOaTi+aOieWug+WcqCBjbG9uZSDkuYvl
+pJbnmoTli5XkvZzvvIzllK/oroDmraXpqZ/pgKPnt6jovK/lkozmjIfku6Tpg73mk4vjgILpgJnl
+j6rlnKggT3BlbkNvZGUg5pyD5YWI6Kmi5ZWP6YCZ5Lqb5YuV5L2c5pmC5omN5oiQ56uL77yI6KaL
+5qyK6ZmQ562W55Wl77yJ77yM5omA5Lul5q+P5LiA5q2l6ZaL5bel5YmN5YWI56K66KqNIGRhZW1v
+biDoqqogT3BlbkNvZGUg5pyD6Kmi5ZWP77yM6ICM5LiUIE9wZW5Db2RlIOWIl+WHuueahCBjbG9u
+ZSDlhaflrrnlkozpgJnlj7DmqZ/lmajnnIvliLDnmoTkuIDmqKPvvIhPcGVuQ29kZSDlnKjlrrnl
+majoo6HnmoToqbHvvIzln7fooYzos4fmlpnlpL7opoHmjpvovInlnKjlkIzkuIDlgIvot6/lvpHv
+vInvvJvkuI3miJDnq4vlsLHlgZzkuIvkuKboqqrmmI7ljp/lm6DjgIJPcGVuQ29kZSAxLjE4LjMy
+IOWvpua4rO+8muWUr+iugOatpempn+eahOe3qOi8r+OAgeiugCBjbG9uZSDkuYvlpJbnmoTmqpTm
+oYjpg73ooqvmk4vkuIvvvIjmqpTmoYjmspLororvvJvoroDlpJbpnaLnmoTmqpTmoYjmmYIgT3Bl
+bkNvZGUg6YCB5L6G55qE5pivIGV4dGVybmFsX2RpcmVjdG9yeSDoq4vmsYLvvInjgIJDb2RleCDn
+moTmspnnm5LkuI3pmZDliLboroDlj5bvvIzmiYDku6Xmr4/mrKHln7fooYzpg73mnIPmlbjmiJDl
+k6HnmoTlt6XlhbfntIDpjITvvIhDb2RleOOAgUNsYXVkZeOAgU9wZW5Db2Rl77yJ6KOh77yM5oyH
+5ZCR5Yil55qE5q2l6amfIGNsb25lIOeahOasoeaVuO+8iGBzdW1tYXJ5Lmpzb25gIOeahCBgb3V0
+X29mX2JvdW5kc2DvvInjgIIKLSAqKuatpempn+eahOaqlOahiOW+nuWTquijoemWi+Wniyoq77ya
+5LiN6ZyA6KaB5Yil55qE5q2l6amfIOKGkiDln7rmupYgY29tbWl077yb6ZyA6KaB5LiA5YCLIOKG
+kiDmjqXokZfpgqPlgIvmraXpqZ/nmoTovLjlh7rvvJvpnIDopoHlpb3lub7lgIsg4oaSIOWfuua6
+lu+8iOWFqeeoruWBmuazlemAmuW4uOaUueWQjOS4gOaJueaqlO+8jOeUseaIkOWToeavlOi8g+OA
+geaVtOWQiO+8ie+8jOaIluaMh+WumiBgInN0YXJ0IjogIm1lcmdlImDvvIjnlLHnqIvlvI/lhYjl
+kIjkvbXvvIzooZ3nqoHmmYLpgJnkuIDmraXlpLHmlZfkuKbliJflh7rmqpTmoYjvvInjgIHmiJbm
+jIflrprlhbbkuK3kuIDlgIvjgILph43oqabmnIPmjqXokZfkuIrkuIDmrKHnmoQgY29tbWl077yM
+5oyH5Luk6KOh6ZmE5LiK6KmV5YiG56iL5byP55qE6Kqq5piO44CCCi0gKirovLjlh7rmmK/nqIvl
+vI/lgZrnmoQgY29tbWl0KirvvIzkuI3mmK/miJDlk6HlgZrnmoTvvJrlm57lkIjntZDmnZ/mmYLm
+ioogY2xvbmUg6KOh55qE6K6K5pu05YWo6YOoIGNvbW1pdO+8jOipleWIhueoi+W8j+aqouafpemA
+meWAiyBjb21taXTvvIjlkowgYGNvb3BgIOWQjOS4gOWll+e0hOWumu+8muWbnuimhuaqlOaYr+ac
+gOW+jOS4gOWAi+WPg+aVuO+8m+WNsCBKU09OIOWIpOWumu+8jOaIlueUqCBgImp1ZGdlX21vZGUi
+OiAiZXhpdCJgIOeci+e1kOadn+eivO+8ieOAguipleWIhueoi+W8j+eahOaqlOahiOS7peioiOeV
+q+aqlOaJgOWcqOeahOizh+aWmeWkvueCuua6luOAgeWcqOaJgOaciSBjbG9uZSDkuYvlpJbvvIzp
+lovlp4vmmYLoqJjkuIsgaGFzaO+8muWft+ihjOS4reiiq+aUueWwseaYr+ipleWIhumMr+iqpOOA
+ggotICoq5aSx5pWXKirvvJrkuIDlgIvmraXpqZ/lpLHmlZfvvIzpnIDopoHlroPnmoTmraXpqZ/p
+g73mnIPooqvmk4vkuIvvvIzkuI3nm7jlubLnmoTmraXpqZ/nhafluLjpgLLooYzjgILmiJDlk6Hn
+moTlvoznq6/lo57mjonjgIHoqZXliIbnqIvlvI/lo57mjonmiJYgY2xvbmUg5bu65LiN6LW35L6G
+77yM5bCx5LiN5YaN6ZaL5aeL5paw5q2l6amf77yI57WQ5p2f56K8IDPvvJtgLS1rZWVwLWdvaW5n
+YCDlj6rorpPpgqPkuIDmraXlpLHmlZfvvInvvJvpgL7mmYLmiJbnrZTmoYjkuI3lkIjmoLzmmK/m
+iJDlk6Hoh6rlt7HnmoTlpLHmlZfjgILmraXpqZ/nmoTmmYLpmZDlj6rnrpfmiJDlk6Hoh6rlt7Hn
+moTmmYLplpPvvJpPcGVuQ29kZSDmiJDlk6HpgYfliLDmqKHlnovkvpvmh4nllYblpLHmlZfjgIFP
+cGVuQ29kZSDlm57loLHph43oqabmmYLvvIzlm57loLHkuYvliY3nmoTnqbrnmb3lkozph43oqabm
+nKzouqvnrpfkvpvmh4nllYbnmoTvvIzmnIPliqDlm57mmYLpmZDvvIzmnIDlpJrlho3liqDkuIDl
+gIvmmYLpmZDvvJvkvpvmh4nllYbkvZTmjonmm7TkuYXvvIzpgJnkuIDlm57lkIjlsLHku6UgYHBy
+b3ZpZGVyX3N0YWxsYCDntZDmnZ/vvIznrpfnkrDlooPlo57mjonvvIjntZDmnZ/norwgM++8ie+8
+jOS4jeeul+aIkOWToeWkseaVl+OAguaooeWei+WPquaYr+WbnuW+l+aFou+8jOS7jeeul+aIkOWT
+oeeahOaZgumWk+OAgk9wZW5Db2RlIDEuMTguMzIg5Yqg5YWN6LK75qih5Z6L5a+m5ris77ya5LiA
+5qyh5L6b5oeJ5ZWG6YC+5pmC6K6T5LiA5YCL5q2l6amf55qEIDkwMCDnp5LlsJHkuoYgMzAwIOen
+kuOAggotICoq5pS25pOa6IiH5o6l57qMKirvvJrmr4/mrKHmtL7lt6XjgIHkuqTlm57jgIFjb21t
+aXTjgIHliKTlrprpg73lhYjlr6vpgLIgYGV2ZW50cy5qc29ubGAg5omN5b6A5LiL6LWw77ybYC0t
+cmVzdW1lYCDlvp7lroPph43lu7rni4DmhYvvvIzlt7LpgJrpgY7nmoTmraXpqZ/ntZXkuI3ph43o
+t5HvvIzlm6DnkrDlooPlo57mjonogIzlpLHmlZfnmoTmraXpqZ/mnIPph43ot5HvvIzoqIjnlavj
+gIHpoYznm67miJboqZXliIbnqIvlvI/ororkuoblsLHmi5LntZXmjqXnuozjgIJgc3VtbWFyeS5q
+c29uYCDlj6rlvp7kuovku7bnrpflh7rjgIzkuIrmuLjpgoTmspLpgJrpgY7lsLHplovlp4vnmoTm
+rKHmlbjjgI3lkozjgIzpgJrpgY7lvozlj4jooqvmtL7lt6XnmoTmrKHmlbjjgI3vvIjlhanogIXp
+g73lv4XpoIjmmK8gMO+8ie+8jOS7peWPiuW5s+ihjOW6puOAggotIOS4jeacg+WQiOS9temAsuS9
+oOeahCByZXBv77yM5Lmf5LiN5pyD5o6o6YCB77ya6Ly45Ye65piv5Z+36KGM6LOH5paZ5aS+6KOh
+55qEIGNvbW1pdO+8jOimgeS4jeimgeWQiOS9teeUseS9oOaxuuWumuOAggoKIyMg56+E5L6L77ya
+5oqV5b2x54mH5ZyY6ZqKCgpbYGV4YW1wbGVzL3NsaWRlX3RlYW1gXShleGFtcGxlcy9zbGlkZV90
+ZWFtKSDorpPlnJjpmorph43nlavkuIDlvLXos4foqIrlnJbvvJpUaGVBaUVkZ2UuaW8g55qE44CM
+TExNIFNlcnZpbmc6IFdoZW4gdG8gU3BsaXQgUHJlZmlsbCBhbmQgRGVjb2Rl44CN77yI5Y6f5ZyW
+6KuL6Ieq5YKZ77yMcmVwbyDoo6HmspLmnInvvInjgILlhankvY3nlavlnJbogIXovKrmtYHnlavv
+vIznvo7ooZPmr5TlsI3miJHlgJHnmoTlnJblkozljp/lnJbvvIzmnIDlvoznlLHnm6Plt6XnqIvl
+vI/msbrlrprkv53nlZnlk6rkuIDniYjjgILoqabpgY7lhannqK7mnrbmp4vvvJoKCi0gKirlr6vn
+qIvlvI8qKu+8iGBzbGlkZV90ZWFtLnB5YO+8ie+8mueVq+WcluiAheWvq+S4gOaUr+eVq+aKleW9
+seeJh+eahCBQeXRob24g56iL5byP44CCcXdlbjMgOEIg55Wr5ZyW6ICF5b6e5L6G5rKS55Wr5Ye6
+5Y+v55So55qE5oqV5b2x54mH77ya6Kqe5rOV6Yyv6Kqk44CB55So6Yyv6LyU5Yqp5Ye95byP44CB
+5oqK5YGa5aW955qE6YOo5YiG5Lif5o6J77yM6ICM5LiU54Wn5qij5Zue5aCx5a6M5oiQ44CCCi0g
+KirlhYPku7bmuIXllq4qKu+8iGBsYXlvdXRfdGVhbS5weWDvvInvvJrnlavlnJbogIXlj6rmiorp
+gJDpoIXmuIXllq7vvIhbYGxheW91dC9TUEVDX3BvcnRyYWl0Lm1kYF0oZXhhbXBsZXMvc2xpZGVf
+dGVhbS9sYXlvdXQvU1BFQ19wb3J0cmFpdC5tZCnvvInovYnmiJAgSlNPTiDlhYPku7bmuIXllq7j
+gIJgY29tcG9uZW50cy5weWAg5qqi5p+l5riF5Zau77yI6Yyv6Kqk6KiK5oGv55u05o6l6Kqq5oCO
+6bq85pS577yJ5Lim55Wr5oiQIFNWR++8m2BpbWdjbXAucHlgIOaKiueVq+WHuuS+hueahOWcluWS
+jOWOn+WclumAkOagvOavlOWwje+8iOeUqOaomea6luWHveW8j+W6q+iugCBQTkfvvIzlj6blpJbk
+uZ/nrpcgUFNOUu+8ie+8m+S/ruaUueW+jOWIhuaVuOiuiuWlveaJjeS/neeVmeOAgueoi+W8j+aK
+k+WIsOeahOavj+WAi+mMr+iqpOmDveWvq+mAsuaVmeiok+a4heWWru+8jOaUvuWcqOS5i+W+jOav
+j+S4gOasoeaMh+S7pOeahOacgOWJjemdouOAgmAtLWJhY2tlbmQgY29kZXhgIOaUueeUqCBDb2Rl
+eCBDTEkg55W25oiQ5ZOh77ybYC0tc2Vzc2lvbnMgZnJlc2hg77yI6aCQ6Kit77yJ5q+P6Lyq6YO9
+6ZaL5pawIHNlc3Npb27jgIIKCuavj+WAi+WcmOmaiuWQhOi3keS4gOasoeeahOe1kOaenO+8iOWI
+huaVuOaYr+WSjOWOn+Wclumhj+iJsuebuOespueahOagvOWtkOavlOS+i++8jDEg5Luj6KGo5a6M
+5YWo55u45ZCM77yJ77yaCgp8IOWcmOmaiiB8IOaVtOW8tSB8IOWQhOaOku+8muWIneeovyDihpIg
+5L+d55WZIHwKfC0tLXwtLS18LS0tfAp8IOeVq+WcliBxd2VuMyA4QuOAgee+juihkyBRd2VuMy1W
+TCA4Qu+8iE9wZW5Db2Rl77yJIHwgMC42NjcgfCAwLjc2MyDihpIgMC43NjPjgIEwLjcyOCDihpIg
+MC43MjjjgIEwLjUxMyDihpIgMC41MTMgfAp8IOeVq+WcluiIh+e+juihk+mDveaYryBDb2RleCB8
+IDAuNzgxIHwgMC43NzUg4oaSIDAuODY044CBMC44MzQg4oaSIDAuODUz44CBMC41NjIg4oaSIDAu
+NjM0IHwKfCDlkIzkuIDmrKEgQ29kZXjvvIzlj6rnlKjliJ3nqL8gfCAwLjcyMCB8IHwKfCDnhafm
+uIXllq7miYvlr6vnmoTniYjpnaIgfCAwLjcyMCB8IHwKCueci+WIsOeahOS6i++8muiuk+e1kOae
+nOW+nuOAjOaykuacieaKleW9seeJh+OAjeiuiuaIkOOAjOWPr+eUqOOAjeeahO+8jOaYr+ihqOek
+uuaWueW8j++8iEpTT04g5YWD5Lu25Lqk57Wm5ris6YGO55qE56iL5byP5L6G55Wr77yJ44CC5Y+q
+5L+d55WZ6LyD5aW955qE54mI5pys77yM5pOL5LiL5LqG5q+P5LiA5qyh6K6T5ZyW6K6K5beu55qE
+5L+u5pS577yIcXdlbiDnmoQgNCDmrKHmnInmlYjkv67mlLnlhajpg6jjgIFDb2RleCA2IOasoeS4
+reeahCAzIOasoe+8ieOAguS/ruaUueimgeacieW5q+WKqe+8jOWJjeaPkOaYr+e+juihk+eahOaE
+j+imi+WFt+mrlOWPiOato+eiuu+8m+acrOapn+imluimuuaooeWei+Wkp+Wkmue1puS4jeWHuuaE
+j+imi++8iDQwOTYg5YCL6Ly45Ye6IHRva2VuIOmDveeUqOWcqOaAneiAg++8ieOAguavj+WAi+Wc
+mOmaiuWPqui3keS4gOasoe+8jOmChOS4jeiDveeVtuaIkOaZrumBjee1kOirlu+8m+WIhuaVuOS5
+n+acieebsum7nu+8mue0sOahhue3mumhj+iJsumMr+S6hu+8jOWIhuaVuOS7jeWPr+iDveS4iuWN
+h+OAggoK5Z+36KGM77yaYHB5dGhvbjMgZXhhbXBsZXMvc2xpZGVfdGVhbS9ydW5fZGVtby5weSAt
+LXJlZmVyZW5jZSDljp/lnJYucG5nIC0tb3Blbi1zbGlkZSBvcGVuLXNsaWRlLXB5IOeahOi3r+W+
+kWDvvIjliqAgYC0tYmFja2VuZCBjb2RleGAg5pS555SoIENvZGV477yJ44CC5riy5p+T55So54Sh
+6aCtIENocm9tZe+8m09wZW5Db2RlIOWcmOmaiumcgOimgSBgZXhhbXBsZXMvc2xpZGVfdGVhbS9E
+b2NrZXJmaWxlYCDlu7rnmoTmmKDlg4/vvIzku6Xlj4ogYHJ1bl9kZW1vLnB5YCDoo6Hlr6vnmoTl
+hanlgIsgT2xsYW1hIOaooeWei+OAggoK5YiG5pW454++5Zyo5Lmf55yL5b6X5Yiw5qGG57ea5ZKM
+5a2X55qE6aGP6Imy44CCYGxheW91dF90ZWFtLnB5IC0tc2NvcmUgc3RyaWN0YO+8iOmgkOiore+8
+ieWPquWcqCBgc2NvcmluZy5weWAg55qEIHN0cmljdCA9IChmaWxsICsgc3Ryb2tlICsgdGV4dCkg
+LyAzIOS4iuWNh+aZguS/neeVmeS/ruaUue+8mmZpbGwg5piv5LiK6Z2i55qE6YCQ5qC85q+U5bCN
+77yMc3Ryb2tlIOWSjCB0ZXh0IOWPqueci+mCiue3o+WDj+e0oOOAguWcqCBDb2RleCDpgqPmrKHn
+moTnrKwgMyDmjpLvvIzliJ3nqL/nmoQgc3RyaWN0IOaYryAwLjg0M++8jOaKiiBQcmVmaWxsIOah
+hueahOahhue3muWSjOaomemhjOaUueaIkOiXjeiJsueahOmCo+asoeS/ruaUueaYryAwLjc3N++8
+iG1hdGNoIOWNu+aYryAwLjU2MiDihpIgMC42MzTvvInvvIzmiYDku6Ugc3RyaWN0IOacg+eVmeS4
+i+WIneeov++8m+WPquaKiumCo+WAi+ahhue3muWSjOaomemhjOaUueWbnuapmOiJsu+8jG1hdGNo
+IOWPquW+niAwLjYzNDUg6K6KIDAuNjM2OO+8jHN0cmljdCDlvp4gMC43Nzcg5Y2H5YiwIDAuODYx
+44CCYC0tc2NvcmUgbWF0Y2hgIOaYr+WOn+acrOeahOimj+WJh+OAguS/ruaUueiAheaLv+WIsOea
+hOS7jeaYr+mAkOagvOavlOWwjeeahOWbnumli++8iGAtLW5vdGVzIG1hdGNoYO+8jOmgkOiore+8
+ie+8muaPm+aIkCBzdHJpY3Qg55qE5pS56aGP6Imy5Zue6aWL5pmC77yMQ29kZXgg55qEIDEyIOas
+oeS/ruaUuSBzdHJpY3Qg5bmz5Z2H5LiL6ZmNIDAuMDcy44CB5rKS5pyJ5LiA5qyh6K6K5aW977yb
+55So6YCQ5qC85Zue6aWL5pmCIDYg5qyh5pyJIDQg5qyh6K6K5aW977yI5ZCM5LiA5pma77yM5Zau
+5bC+IEZpc2hlciBwID0gMC4wMDXvvJvlkIzkuIDmrKHln7fooYznmoTkv67mlLnkuI3lrozlhajn
+jajnq4vvvIznlbbmiJDlvLfng4jnmoTot6HosaHvvInjgIIK55Wr5ZyW6ICF5Lmf5Y+v5Lul6Kit
+5a6a5qGG57ea57KX57Sw44CB5qiZ6aGM6aGP6Imy44CB6Jmb57ea5qGG44CB56m65b+D5pa55aGK
+44CB6LyD6auY55qE5qC85a2Q44CB5ZyT6KeS566t6aCt44CB5pac6auU5a2X77yM6YKE5Y+v5Lul
+55SoIGBzdmdgIOWFg+S7tu+8mueVq+S5i+WJjeacg+WFiOaqouafpeWFp+Wuue+8iOWPquaUtiBT
+Vkcg57mq5ZyW5YWD57Sg77yM5LiN5pS256iL5byP44CB5LqL5Lu25ZKM5YuV55Wr77yM6YCj57WQ
+5Y+q6IO95oyH5ZCRIGAjaWRgIOaIluWFp+W1jOeahCBwbmcvanBlZy9naWbvvInvvIzlho3lvp7o
+p6PmnpDlvoznmoTntZDmp4vph43mlrDlr6vlh7rjgIIKCuimgeavlOi8g+S4jeWQjOWcmOmaiu+8
+jOWwseaKiuS4gOasoeWft+ihjOWvq+aIkOioreWumuaqlOWGjemHjeikh+i3ke+8mmBweXRob24z
+IGV4YW1wbGVzL3NsaWRlX3RlYW0vdGVhbXJ1bi5weSBzcGVjLmpzb24gLS1yZXBlYXQgNWDjgILo
+qK3lrprmqpTlr6vljp/lnJbjgIHmiJDlk6HvvIjnlavmiYvlkozkuIDkvY3nvo7ooZPvvIzlkITo
+h6rmjIflrprlvoznq68gYG9wZW5jb2RlYOOAgWBjb2RleGDjgIFgY2xhdWRlYCDmiJYgYGZha2Vg
+44CB5qih5Z6L77yM5Lul5Y+K5q+P5Zue5ZCI5paw6ZaL5oiW5rK/55So5bCN6Kmx77yJ44CB5Zue
+5ZCI5pW444CBT3BlbkNvZGUg5Ly65pyN5Zmo77yIdGVhbXJ1biDmr4/mrKHln7fooYzpg73oh6rl
+t7HllZ/li5XkuIDlgIsgaGVyZHItcHkg5bi46aeQ56iL5byP77yM5L2G5LiN5pyD5ZWf5YuVIE9w
+ZW5Db2Rl77yJ44CB5L+d55WZ5L+u5pS555So5ZOq5YCL5YiG5pW477yIYHJvdW5kcy5zY29yZWDv
+vJpgc3RyaWN0YCDmiJYgYG1hdGNoYO+8ieWSjOi8uOWHuuizh+aWmeWkvu+8m+agvOW8j+Wvq+Wc
+qCBbYHRlYW1ydW4ucHlgXShleGFtcGxlcy9zbGlkZV90ZWFtL3RlYW1ydW4ucHkpIOmWi+mgreOA
+guavj+asoeWft+ihjOeUoueUnyBgcmVwb3J0Lm1kYO+8iOavj+WIl+iNieeovyAtPiDkv53nlZnn
+moTliIbmlbjjgIHooqvmjqXlj5foiIfooqvmk4vkuIvnmoTkv67mlLnjgIHkv67mraPmrKHmlbjj
+gIHmlZnoqJPjgIHmlbTlvLXlnJbnmoTlkLvlkIjluqboiIcgUFNOUuOAgeavj+S9jeaIkOWToeea
+hCB0b2tlbiDlkozmmYLplpPvvInvvIzph43opIfln7fooYzlj6blpJbnlKLnlJ8gYGFnZ3JlZ2F0
+ZS5tZGDvvIjlubPlnYfjgIHmnIDlsI/jgIHmnIDlpKfvvInvvJtgdGVhbXJ1bi5weSAtLWNvbXBh
+cmUg55SyIOS5mWAg5oqK5YWp57WE57WQ5p6c5Lim5o6S5Y2w5Ye644CC5pW45a2X6YO955Sx56iL
+5byP5b6e5q+P5qyh5Z+36KGM55qE5qqU5qGI566X5Ye677yIYHJ1bnJlcG9ydC5weWDvvInvvIzk
+uI3miYvlr6vjgIJDbGF1ZGUgQ29kZSDmiJDlk6HvvIhbYGNsYXVkZV9hZ2VudHMucHlgXShleGFt
+cGxlcy9zbGlkZV90ZWFtL2NsYXVkZV9hZ2VudHMucHkp77yJ5q+P5Zue5ZCI6LeR5LiA5qyhIGBj
+bGF1ZGUgLXBg77yM5LiN6LyJ5YWl6YCZ5Y+w5qmf5Zmo55qEIENMQVVERS5tZOOAgWhvb2sg5ZKM
+IE1DUCDkvLrmnI3lmajvvIhgLS1zYWZlLW1vZGVg77yJ77yM5Lmf5LiN57Wm5bel5YW377yM5Y+q
+5pyJ576O6KGT55yL5ZyW5pmC5Y+v5Lul55SoIFJlYWTvvJtgZmFrZWAg5oiQ5ZOh54Wn6IWz5pys
+5Zue562U77yM55So5L6G6Kmm6LeR6ICM5LiN5ZG85Y+r5Lu75L2V5qih5Z6L44CCCgojIyDpmaTp
+jK/vvJrmiJDlk6Hlk6roo6Hlh7rkuobllY/poYzjgIHoqbLmgI7purzovqYKCmBweXRob24zIC1t
+IGhlcmRyX3B5LmRpYWdub3NlIOWft+ihjOizh+aWmeWkvmAg6K6A5LiA5qyh5Z+36KGM55WZ5LiL
+55qE57SA6YyE77yI5bi46aeQ56iL5byP55qEIGBzdGF0ZS9ldmVudHMuanNvbmxg44CBQ29kZXgg
+5oiQ5ZOh55qEIGB3b3JrL2NvZGV4L2V2ZW50cy5qc29ubGDjgIHlnJjpmornmoQgYHdvcmsvY2hh
+dC5qc29ubGDvvInvvIzliJflh7rmr4/kvY3miJDlk6HnmoTovKrmlbjjgIF0b2tlbuOAgeacieaV
+iOi8uOWHuuiIh+iiq+aOoeeUqOeahOS/ruaUue+8jOS7peWPiuaJvuWIsOeahOWVj+mhjO+8m+av
+j+WAi+WVj+mhjOmDvemZhOS4iuitieaYjuWug+eahOe0gOmMhOihjOiZn+WSjOS4gOWAi+W7uuit
+sOOAguimj+WJh+S+huiHquecn+WvpuWft+ihjO+8mui8uOWHuuWBnOWcqCB0b2tlbiDkuIrpmZDo
+gIzmspLmnInmloflrZfjgIHmlbTovKrlj6rmnInmgJ3ogIPvvIjmspLmnInmloflrZfkuZ/mspLm
+nInlt6Xlhbflkbzlj6vvvInjgIHlsI3oqbHkuK3pgJTooqvlo5PnuK7ogIzlm57opoborormiJDm
+kZjopoHjgIHlm57opobkuI3mmK/opoHmsYLnmoTmoLzlvI/jgIHotoXpgY7mr4/ovKrmmYLplpPk
+uIrpmZDjgIHmlbTovKrlm6DpjK/oqqTlpLHmlZfjgIHlkIzkuIDlgIvlt6XlhbfpjK/oqqTmiJbm
+rIrpmZDmi5LntZXkuIDlho3nmbznlJ/jgIHlkIzkuIDovKrnmoTnqIvlvI/mqqLmn6XmspLpgY7l
+jbvlrqPnqLHlrozmiJDjgIHkv67mlLnkuIDlho3ooqvpgIDlm57jgIHku4Dpurzpg73mspLmlLnl
+sLHlgZzkuIvjgILmr4/kuIDovKrmnIDlpJrlj6rmrbjkuIDlgIvntZDmnpzvvIzmnIDlhbfpq5Tn
+moTljp/lm6DlhKrlhYjjgIJgLS1tZW1iZXIgZHJhd0EgLS10dXJuIDRgIOWNsOWHuumCo+S4gOi8
+queahOWujOaVtOe0gOmMhO+8iOaMh+S7pOmWi+mgreOAgeWbnuimhuOAgeaAneiAg+mVt+W6puOA
+geW3peWFt+WRvOWPq+OAgXRva2Vu44CB57WQ5p2f5Y6f5Zug44CB5aOT57iu44CB6Yyv6Kqk44CB
+5LmL5b6M55qE5qqi5p+l77yJ77ybYC0tanNvbmAg57Wm56iL5byP6K6A77ybYGhlcmRyX3B5LmRp
+YWdub3NlLmZpbmRpbmdzKHJ1bl9kaXIpYCDlm57lgrMgZGljdCDmuIXllq7jgIIKCiMjIOWcmOma
+iuWNs+aZgumdouadvwoK5LiA6aCB5ZSv6K6A55qEIEhUTUwg57ay6aCB77yM5Y2z5pmC55yL5LiA
+5qyh5ZyY6ZqK5Z+36KGM77ya5oiQ5ZOh5Y2h77yI54uA5oWL44CBdG9rZW7jgIHovKrmlbjjgIHn
+lKjpgY7lub7lgIsgc2Vzc2lvbuOAgeacgOW+jOiqqueahOipse+8ieOAgeWPr+S+neaIkOWToeiI
+h+eorumhnuevqemBuOeahOWwjeipseaZgumWk+i7uOOAgeavj+S4gOaOkueahOWIhuaVuOWclu+8
+iOWIneeov+iIh+avj+asoeS/ruaUueOAgeaOpeWPl+aIlumAgOWbnuOAgeS/neeVmeeahOeJiOac
+rO+8ieOAgeaIkeWAkeeahOWcluiIh+WOn+WcluS4puaOku+8iOa7keahv+WIh+aPm+avj+WAi+S/
+neeVmeeahOeJiOacrO+8ieOAgeaVmeiok+a4heWWruiIh+acgOW+jOeahOaVuOWtl+OAguiuiuWM
+lueUqCBTZXJ2ZXItU2VudCBFdmVudHMg5o6o6YCB44CCCgpgYGBiYXNoCnB5dGhvbjMgLW0gaGVy
+ZHJfcHkuZGFzaGJvYXJkIH4vLmNhY2hlL2hlcmRyLXNsaWRlcy885p+Q5qyh5Z+36KGMPiBbLS1w
+b3J0IDg3NzBdIFstLXNvY2tldCA85bi46aeQ56iL5byP55qEIHNvY2tldD5dCiMg5pyD5Y2w5Ye6
+ICBvcGVuOiBodHRwOi8vMTI3LjAuMC4xOjg3NzAvI3Rva2VuPS4uLgpweXRob24zIC1tIGhlcmRy
+X3B5LmRhc2hib2FyZCB+Ly5jYWNoZS9oZXJkci1zbGlkZXMvPOafkOasoeWft+ihjD4gLS1odG1s
+IHJ1bi5odG1sCiMg5ZCM5LiA6aCB5a2Y5oiQ5LiA5YCL5qqU5qGI77yI5Z+36KGM55W25LiL55qE
+5qij5a2Q77yJ77ya55So5Lu75L2V54CP6Ka95Zmo5omT6ZaL77yM5LiN6ZyA6KaB5Ly65pyN5Zmo
+5oiWIHRva2Vu77yM5LiN5pyD5pu05pawCmBgYAoK5a+s6J6i5bmV5LiK77yM5bCN6Kmx44CB5YiG
+5pW45ZyW5ZKM5ZyW54mH5LiJ5qyE5Lim5o6S44CC5a2Y5LiL5L6G55qE6aCB6Z2i5oqK5ZyW54mH
+5pS+5Zyo5qqU5qGI6KOh77yI6LeR5a6M44CB5pyJ5YWt5by15ZyW55qE5Z+36KGM57SEIDIgTULv
+vInvvIzlj6rmlL7lnJbniYfvvIzkuI3mnIPluLbliLAgYHN0YXRlL3Rva2VuYOOAggoKUlVOX0RJ
+UiDmmK8gYHJ1bl9kZW1vLnB5YCDnlKLnlJ/nmoTln7fooYzos4fmlpnlpL7vvIjmiJYgYGxheW91
+dF90ZWFtLnB5IC0td29ya2RpcmDvvInjgILmiJDlk6Hni4DmhYvkvoboh6ogYHdvcmsvY29kZXgv
+YWdlbnRzLmpzb25g77yIQ29kZXgg5oiQ5ZOh77yJ77yM5YqgIGAtLXNvY2tldGAg5YmH5L6G6Ieq
+IGhlcmRyLXB5IOW4uOmnkOeoi+W8j+OAgmBzdW1tYXJ5Lmpzb25gIOimgeWIsOe1kOadn+aJjeWv
+q++8jOWcqOmCo+S5i+WJjeWIhuaVuOW+nuWwjeipseiugOWHuu+8jOaJgOS7peWcluacg+maqOWf
+t+ihjOabtOaWsOOAguWSjOW4uOmnkOeoi+W8j+eahOe2sumggeS4gOaoo+WPquiBvSAxMjcuMC4w
+LjHvvIzogIzkuJTopoHnlKjljbDlh7rnmoTpgKPntZDoo6HnmoQgdG9rZW7vvJvlj6rmj5Dkvpsg
+UlVOX0RJUiDoo6HnmoTlnJbniYfmqpTjgIHkuI3ot5/pmqjku7vkvZXnrKbomZ/pgKPntZDvvIjl
+n7fooYzos4fmlpnlpL7oo6HkuZ/mnInluLjpp5DnqIvlvI/nmoQgYHN0YXRlL3Rva2VuYO+8ie+8
+jOaykuacieS7u+S9leWvq+WFpeeahOerr+m7nuOAggoKIyMg5a6J5YWoCgoyMDI2LTEwLTExIOeU
+qOS4ieWll+aOg+aPj+WZqOWcqOeUqOWujOWNs+S4n+eahOWuueWZqOijoeaqouafpemBju+8mmJh
+bmRpdCAxLjkuNO+8m3NlbWdyZXAgMS4xODAuMO+8jOimj+WJh+mbhiBwL3B5dGhvbuOAgXAvc2Vj
+dXJpdHktYXVkaXTjgIFwL3NlY3JldHPjgIFwL2dpdGh1Yi1hY3Rpb25z77ybeml6bW9yIDEuMzAu
+Me+8jOaqouafpSBDSSDoqK3lrprjgILlj6blpJblsI3ln7fooYzkuK3nmoTmnI3li5noiIfoqZXl
+iIbnqIvlvI/lr6bpmpvmlLvmk4rpgY7vvIhgdGVzdHMvdGVzdF93ZWJndWFyZC5weWDjgIFgdGVz
+dHMvdGVzdF9zYW5kYm94LnB5YOOAgWB0ZXN0cy90ZXN0X2Rpc3BsYXkucHlg77yJ44CCCgotICoq
+YWdlbnQg5a+r55qE56iL5byP5LiN5pyD55u05o6l5Zyo6YCZ5Y+w5qmf5Zmo5LiK6LeR44CCKiog
+Q2xhdWRlIOaIkOWToeWPquacieasiumZkOaooeW8j+iIh+aqlOahiOW3peWFt++8m0NvZGV4IOaI
+kOWToeWcqCBDb2RleCDnmoTllK/oroDmiJYgd29ya3NwYWNlLXdyaXRlIOaymeebkuijoeW3peS9
+nO+8m09wZW5Db2RlIOaIkOWToee2k+mBjiBkYWVtb24g55qE5qyK6ZmQ562W55Wl44CC5ZyY6ZqK
+5bel5YW377yIYEFSVElGQUNUOiBtY3Bg77yJ5Y+q6YCP6YGO5L2g57Wm55qEIGAtLW1jcC1zYW5k
+Ym94YCDmjIfku6Tln7fooYzvvIzkvovlpoLvvJoKCiAgYGBgc2gKICBkb2NrZXIgcnVuIC0tcm0g
+LWkgLS1uZXR3b3JrIG5vbmUgLS1yZWFkLW9ubHkgLS1jYXAtZHJvcCBBTEwgLS1zZWN1cml0eS1v
+cHQgbm8tbmV3LXByaXZpbGVnZXMgLS11c2VyIDY1NTM0OjY1NTM0IFwKICAgIC0tdG1wZnMgL3Rt
+cDpydyxzaXplPTE2bSAtLW1lbW9yeSAyNTZtIC0tY3B1cyAxIC0tcGlkcy1saW1pdCA2NCAtdiB7
+ZmlsZX06L3Nydi90b29sLnB5OnJvIC12IHtrYn06L2tiOnJvIElNQUdFIHB5dGhvbjMgL3Nydi90
+b29sLnB5CiAgYGBgCi0gKirmnIPln7fooYzmiJDlk6HnqIvlvI/nmoToqZXliIbnqIvlvI/vvIzl
+nKjlrrnlmajoo6Hln7fooYzjgIIqKiBgaGVyZHJfcHkvc2FuZGJveC5weWAg5q+P5YCL5oyH5Luk
+6ZaL5LiA5YCL5a655Zmo77ya5LiN6YCj57ay44CB5qC555uu6YyE5ZSv6K6A44CB5rKS5pyJIGNh
+cGFiaWxpdGllc+OAgeS4jeiDveaPkOasiuOAgeeUqOS9oOeahCB1aWTjgIHpmZDliLboqJjmhrbp
+q5ToiIcgQ1BVIOiIh+eoi+W6j+aVuO+8jOWPquaOm+mAsuW3peS9nOWJr+acrO+8m+i3keWkquS5
+heeahOaMh+S7pOmAo+WQjOWuueWZqOS4gOi1t+WBnOaOieOAgmBleGFtcGxlcy9zZWxmX2ltcHJv
+dmUvcGF0Y2hfanVkZ2UucHlg77yIYC0tc2FuZGJveCBkb2NrZXI6SU1BR0Vg77yM6aCQ6KitIGBk
+b2NrZXI6cHl0aG9uOjMtc2xpbWDvvIzkuZ/lj6/ku6UgYHBvZG1hbjpJTUFHRWDvvInoiIcgYGV4
+YW1wbGVzL2RhZy9qdWRnZS5weWDvvIhgSEVSRFJfSlVER0VfU0FOREJPWGDvvInpg73nlKjlroPj
+gILln7fooYzku7vkvZXmnbHopb/kuYvliY3vvIzlhYjnorroqo3lrrnlmajnnIvlvpfliLDlia/m
+nKzvvIhjb2xpbWEg5Y+q5oqK5a6255uu6YyE5bqV5LiL55qE6LOH5paZ5aS+5YiG5Lqr57Wm5a6D
+55qEIFZN77yJ44CC5rKS5pyJIGRvY2tlciDlsLHku6XoqZXliIbpjK/oqqTlgZzkuIvjgIJgbm9u
+ZWAg5piv5Zyo6YCZ5Y+w5qmf5Zmo5LiK55u05o6l6LeR77ya5Y+q5pyJ5L2g5piO6Kqq5omN5pyD
+6YCZ5qij5YGa77yM5Yik5a6a55qE6Kqq5piO5Lmf5pyD5LulIGBbbm8gc2FuZGJveF1gIOmWi+mg
+reOAguS9oOiHquW3seWvq+eahOipleWIhueoi+W8j+WmguaenOacg+Wft+ihjOaIkOWToeeahOeo
+i+W8j++8jOS5n+imgemAmeaoo+WBmuOAggotICoq57ay6aCB5pyN5YuZKirvvIhgZW5naW5ldmll
+dyAtLXNlcnZlYOOAgWBzZXJ2ZSAtLWh0dHBg44CB6Z2i5p2/44CBYG5vdGVib29rIHNlcnZlYO+8
+ieaykuaMh+WumuaZguWPquiBvSAxMjcuMC4wLjHvvIzogIzkuJTlj6rlm57mh4nmjIflkI3pgJnl
+j7DmqZ/lmajnmoToq4vmsYLvvIhsb2NhbGhvc3TjgIExMjcuMC4wLjHjgIE6OjHvvInvvJrliKXn
+moTntrLpoIHmioroh6rlt7HnmoTntrLln5/mjIfliLAgMTI3LjAuMC4x77yIRE5TIOmHjee2geWu
+mu+8ieacg+aLv+WIsCA0MDPvvIzoroDkuI3liLDln7fooYzntIDpjITmiJbnrYboqJjmnKzjgILl
+iY3pnaLmnInku6PnkIbjgIHogIzkuJTku6PnkIbmnIPmiorlhazplovlkI3nqLHlgrPpgLLkvobm
+mYLvvIzliqAgYC0tYWxsb3ctaG9zdCDlkI3nqLFg44CC5LiL5oyH5Luk6KaB5pyJ6YCj57WQIGAj
+YCDlvozpnaLnmoTmrIrmnZbvvJvmrIrmnZbnlKjlm7rlrprmmYLplpPmr5TlsI3vvIzoq4vmsYLl
+haflrrnmnInplbfluqbkuIrpmZDvvIzkuI3mmK/mlbTmlbjnmoQgYENvbnRlbnQtTGVuZ3RoYCDk
+uIDlvovmi5LntZXjgIIKLSAqKue1guerr+apnyoq5LiN5pyD5pS25YiwIGFnZW5044CB6KmV5YiG
+56iL5byP5oiW57ay6aCB5a+r6YCy5L6G55qE5o6n5Yi25a2X5YWD6IiH6ZuZ5ZCR5paH5a2X6KaG
+5a+r77yM5LiA5b6L6aGv56S65oiQIGDvv71g77yIVStGRkZE77yJ77ya5Y+v5Lul5pS55Ymq6LK8
+57C/44CB6KaW56qX5qiZ6aGM44CB5riF55Wr6Z2i5oiW5oqK5paH5a2X5Y+N6YGO5L6G5o6S55qE
+6Lez6ISr5bqP5YiX77yM6YO95LiN5pyD5YKz5Yiw57WC56uv5qmf44CCCi0gKirnn6XorZjluqvl
+j6roroDoh6rlt7Hlr6vnmoTmqpTmoYgqKu+8iGBhcnRpZmFjdHMvPHNoYTI1Nj5g77yJ77ya6KKr
+5pS55oiQ5oyH5ZCR5Yil6JmV55qE57SA6YyE77yM5LiN5pyD6KKr6K6A5Y+W44CB5bi25YWl5oiW
+6KmV5YiG44CCCi0gKipDSSDoqK3lrpoqKuWPquiugCByZXBv44CB56ys5LiJ5pa5IGFjdGlvbiDp
+h5jlnKggY29tbWl0IFNIQeOAgeS4jeS/neeVmeaGkeitie+8m+maseengeaqouafpeacg+aTi+S4
+i+WQq+acieWAi+S6uuizh+aWmeeahCBjb21taXTjgIIKCiMjIOmDqOe9suWIsCBSSEVMIDgKCi0g
+UkhFTCA4IOeahCBgcHl0aG9uM2Ag5pivIDMuNu+8iGAvdXNyL2xpYmV4ZWMvcGxhdGZvcm0tcHl0
+aG9uYCDkuIDlrprlnKjvvInvvJpoZXJkci1weSDlj6/ku6XnlKjvvIzoqK3lrprmqpToq4vnlKgg
+SlNPTuOAggotIHNvY2tldCDopoHmlL7lnKjmnKzmqZ/mqpTmoYjns7vntbHvvIjpoJDoqK3nmoQg
+YH4vLmxvY2FsL3N0YXRlYCDljbPlj6/vvInjgILmnInkupvntrLot6/miJbomZvmk6zmqZ/lhbHk
+uqvnmoTmqpTmoYjns7vntbHkuI3og73mlL4gVW5peCBzb2NrZXTjgIIKLSBPcGVuQ29kZSDnmoQg
+Z2xpYmMg54mI5Y+v5Lul5ZyoIFJIRUwgOCDkuIrot5HvvIjlr6bmuKwgMS4xOC4zMu+8jHg4Nl82
+NCDoiIcgYWFyY2g2NO+8jOWujOaIkOecn+WvpuWwjeipse+8ie+8m211c2wg54mI5LiN6KGM44CC
+Ci0gc3lzdGVtZCDkvb/nlKjogIXmnI3li5nnr4TkvovvvJpbYGV4YW1wbGVzL2hlcmRyLXB5LnNl
+cnZpY2VgXShleGFtcGxlcy9oZXJkci1weS5zZXJ2aWNlKeOAgue2sumggeS7i+mdoumgkOioreWP
+quiBvSAxMjcuMC4wLjHvvIzopoHpgaDnq6/nnIvoq4vnlKggU1NIIOmAmumBk++8jOS4jeimgemW
+i+aUvumAo+aOpeWfoOOAggotIGBMQU5HPUNgIOS5i+S4iyBQeXRob24gMy42IOi8uOWHuuS4reaW
+h+acg+WHuumMr++8mmhlcmRyLXB5IOacg+iHquWLleaUueeUqCBVVEYtOCDovLjlh7rvvIjlt7Ll
+nKggUkhFTCA4IOeahCBDIOiqnuezu+S4i+a4rOippu+8ieOAggoKIyMg5ou/55yf55qEIE9wZW5D
+b2RlIOS8uuacjeWZqOmpl+itiQoK5ris6Kmm55So55qE5piv5YGH55qEIE9wZW5Db2Rl44CCYHNj
+cmlwdHMvY2hlY2tfb3BlbmNvZGUucHlgIOmAj+mBjuWft+ihjOS4reeahCBkYWVtb27vvIzlsI3n
+nJ/nmoTkvLrmnI3lmajot5EgOCDlgIvmg4XlooPvvIjpgKPnt5rjgIHot5HlrozjgIHnuozllY/j
+gIHnrZbnlaXlhYHoqLHjgIHnrZbnlaXmi5LntZXjgIHopoHkurrmoLjlh4bjgIHkuK3mraLjgIHp
+lovmlrAgc2Vzc2lvbu+8ie+8jOiAjOS4lOaKiiBoZXJkci1weSDnmoTliKTlrprlkozmqKHlnovm
+nInmspLmnInnhaflgZrliIbplovoqJjvvIjmqKHlnovkuI3nhafmjIfnpLrlgZrvvIzkuI3nrpcg
+aGVyZHItcHkg55qE6Yyv77yJ44CCT3BlbkNvZGUgMS4xOC4zMiDliqDlhY3osrvmqKHlnosgb3Bl
+bmNvZGUvYmlnLXBpY2tsZe+8mjgg6aCF5YWo6YGO77yIMjAyNi0xMC0wOe+8ieOAggoKYGBgc2gK
+cHl0aG9uMyBzY3JpcHRzL2NoZWNrX29wZW5jb2RlLnB5IC0tc29ja2V0IFNPQ0sgLS1vcGVuY29k
+ZSBodHRwOi8vMTI3LjAuMC4xOjQwOTYgLS1wYXNzd29yZC1maWxlIFBBU1NGSUxFIFwKICAgIC0t
+d29ya2RpciBPUEVOQ09ERV/nmoTlt6XkvZzos4fmlpnlpL4gLS1tb2RlbCBvcGVuY29kZS9iaWct
+cGlja2xlICAgICAgIyBkYWVtb24g55qE562W55Wl55SoIHNjcmlwdHMvY2hlY2tfb3BlbmNvZGVf
+cG9saWN5Lmpzb24KYGBgCgojIyDmuKzoqaYKCmBgYGJhc2gKcHl0aG9uMyAtbSB1bml0dGVzdCBk
+aXNjb3ZlciAtcyB0ZXN0cyAgICAgICAgIyA1OTQg6aCF77yM55So5YGH55qEIE9wZW5Db2RlIOS8
+uuacjeWZqOWSjOWBh+eahCBDb2RleOOAgUNsYXVkZSBDb2RlIENMSe+8jOS4jemcgOimgeaooeWe
+iwpIRVJEUl9QWV9URVNUX0lNQUdFPXB5dGhvbjozLXNsaW0gcHl0aG9uMyAtbSB1bml0dGVzdCBk
+aXNjb3ZlciAtcyB0ZXN0cyAtcCAndGVzdF9zYW5kYm94LnB5JyAgIyBkb2NrZXIg6IO955So5pmC
+77yM5rKZ566x5Zyo55yf55qE5a655Zmo6KOh5risCnB5dGhvbjMgYmVuY2gvcDIzL3ZhbGlkYXRl
+LnB5ICAgICAgICAgICAgICAgICMg5ZyoIFJIRUwgOCDmmKDlg4/oo6HpqZforYnlr6bpqZfoqZXl
+iIbnqIvlvI/vvIjpnIDopoEgRG9ja2Vy77yJCmBgYAoKR2l0SHViIEFjdGlvbnPvvIhgLmdpdGh1
+Yi93b3JrZmxvd3MvdGVzdHMueW1sYO+8ieacg+WcqCBSSEVMIDgg6Ieq5bex55qEIFB5dGhvbiAz
+LjbvvIhVQkkgOCDlrrnlmajvvInlkozmnIDmlrDniYggUHl0aG9uIOS4iui3kea4rOippu+8iHJl
+cG8g6KOh5q+P5YCLIFB5dGhvbiDmqpTvvIzljIXmi6znr4Tkvovlkozlr6bpqZfvvIzpg73opoHo
+g73lnKjpgJnlhanniYjnt6jora/jgIHogIzkuJTkuI3og73mnInorablkYrvvInvvJtgc2NyaXB0
+cy9jaV9wcml2YWN5LnB5YCDmnIPmk4vkuIvluLYgQ2xhdWRlIOe9suWQjeOAgeWutuebrumMhOi3
+r+W+keaIliBHaXRIdWIgbm9yZXBseSDku6XlpJbkv6HnrrHnmoTmj5DkuqTjgIIKCiMjIOmZkOWI
+tgoK5bi46aeQ56iL5byP5Y+q5pSv5o+0IE9wZW5Db2Rl77yI5oqV5b2x54mH5ZyY6ZqK56+E5L6L
+5Y+v5Lul6Ieq5bex6amF5YuVIENvZGV4IENMSSDlkowgQ2xhdWRlIENvZGUg5oiQ5ZOh77yJ44CC
+YWdlbnQg5o+Q5Ye655qE5ZWP6aGM5Y+q6IO96aeB5Zue44CB5LiN6IO95Zue562U44CC5LuL6Z2i
+5Y+q6aGv56S65pyA6L+R55qE5rS75YuV77yM5a6M5pW05bCN6Kmx55SoIGBoZXJkci1weSByZWFk
+YOOAguWcmOmaiuaooeW8j+mChOWcqOWvpumpl+majuaute+8jOiri+WFiOeci+Wvpumpl+e1kOae
+nOWGjeS+neiztOWug+OAggoKTUlUIOaOiOasiuOAggo=
 HERDR_PY_EOF
 cat > bench/herdr_compare/herdr_driver.py <<'HERDR_PY_EOF'
 #!/usr/bin/env python3
@@ -2573,21 +2738,37 @@ sum of the radii.
 HERDR_PY_EOF
 cat > examples/dag/judge.py <<'HERDR_PY_EOF'
 """Judge for examples/dag: every test in the step's clone must pass, and a step that adds a function must add its
-test. It follows coop.py's contract: the reply file is the last argument; one JSON line; exit code 0."""
+test. It follows coop.py's contract: the reply file is the last argument; one JSON line; exit code 0.
+
+The tests are code a member wrote, so they run in a sandbox (herdr_py/sandbox.py) with only the step's folder mounted:
+$HERDR_JUDGE_SANDBOX, default docker:python:3-slim (podman:IMAGE works too). HERDR_JUDGE_SANDBOX=none runs them on this
+machine as they are (unsafe: only for code you trust); the detail then starts with "[no sandbox]". No sandbox to run in
+exits 2, which dag.py records as a broken judge, never as a failed step."""
 import json
 import os
-import subprocess
 import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))  # the repository's herdr_py
+from herdr_py.sandbox import Sandbox, SandboxError  # noqa: E402
 
 needs_file = {"div": "test_div.py"}.get(os.environ["HERDR_DAG_NODE"])
 if needs_file and not os.path.exists(needs_file):
     print(json.dumps({"status": "invalid", "score": 0, "detail": needs_file + " is missing: a new function needs a test"}))
     sys.exit(0)
-p = subprocess.run([sys.executable, "-m", "unittest", "-q"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                   universal_newlines=True)
-ran = [line for line in p.stdout.splitlines() if line.startswith("Ran ")]
-print(json.dumps({"status": "valid" if p.returncode == 0 else "invalid", "score": int(ran[0].split()[1]) if ran else 0,
-                  "detail": (ran[0] if ran else "no tests ran") + ("" if p.returncode == 0 else ": " + p.stdout[-300:])}))
+try:
+    box = Sandbox.parse(os.environ.get("HERDR_JUDGE_SANDBOX", "docker:python:3-slim"))
+    box.check(os.getcwd())
+except (SandboxError, OSError) as exc:
+    print(f"dag judge: {exc}", file=sys.stderr)
+    sys.exit(2)
+limit = max(1, int(os.environ.get("HERDR_DAG_JUDGE_TIMEOUT", "600")) - 15)  # stop the container before dag.py stops us
+code, out = box.run([sys.executable if box.on_host else "python3", "-m", "unittest", "-q"], os.getcwd(), limit,
+                    env={"PYTHONDONTWRITEBYTECODE": "1"})
+ran = [line for line in out.splitlines() if line.startswith("Ran ")]
+detail = ("[no sandbox] " if box.on_host else "") + (ran[0] if ran else "no tests ran") + (
+    "" if code == 0 else (": did not finish in %d s" % limit if code is None else ": " + out[-300:]))
+print(json.dumps({"status": "valid" if code == 0 else "invalid", "score": int(ran[0].split()[1]) if ran else 0,
+                  "detail": detail}))
 HERDR_PY_EOF
 cat > examples/dag/make_demo.py <<'HERDR_PY_EOF'
 """Make a small repository and a DAG plan for it, to try herdr_py.dag without spending on models.
@@ -3307,6 +3488,11 @@ The answer (PATCH_FILE, coop.py's last argument) is a unified diff with paths re
    that already exists in BASE (new test files are fine) - those patches are invalid;
 4. applies the patch (git apply) to a second clean copy, runs every --test command (any failure: invalid, it broke
    something) and then every scenario on its own.
+Everything that runs code from the copy (the --test commands and the scenarios, on the base and on the patched copy) runs
+in a sandbox (herdr_py/sandbox.py): --sandbox docker:IMAGE (default docker:python:3-slim) or podman:IMAGE, with only
+the copy mounted, no network, a read-only root and no privileges. A patch is code a member wrote, so it never runs on
+this machine as it is, unless the person passes --sandbox none (for a --test command that starts its own container,
+or a machine without docker); the detail then starts with "[no sandbox]". No sandbox to run in is a judge error.
 It prints one JSON line {"status", "score", "detail"} and exits 0 (herdr_py.coop --judge-mode json). The score is how
 many scenarios pass; 0 is a valid score (nothing improved, nothing broken). A judge that cannot do its job exits 2
 with the reason on stderr, which coop records as a judge error, never as an invalid patch.
@@ -3326,6 +3512,10 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))  # the repository's herdr_py
+from herdr_py.sandbox import Sandbox, SandboxError  # noqa: E402
+
+DEFAULT_SANDBOX = "docker:python:3-slim"
 PROTECTED_DIRS = ("examples/self_improve/",)
 
 
@@ -3430,11 +3620,10 @@ def protected_problem(paths, existing, scenario_rel):
     return None
 
 
-def run_tests(commands, cwd, timeout):
-    """None when every command passed, otherwise what failed."""
-    env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+def run_tests(box, commands, copy, timeout):
+    """None when every command passed, otherwise what failed. Each runs with sh -c in the copy, in the sandbox."""
     for command in commands:
-        code, out = run(["sh", "-c", command], cwd, timeout, env)
+        code, out = box.run(["sh", "-c", command], copy, timeout, env={"PYTHONDONTWRITEBYTECODE": "1"})
         if code is None:
             return f"`{command}` did not finish within {timeout} s: {tail(out)}"
         if code:
@@ -3452,19 +3641,19 @@ def why_failed(output):
     return " | ".join((errors or lines)[-3:])
 
 
-def run_scenarios(scenarios, folder, copy, python, timeout, repeat=1):
-    """{name: (passed, tail)}: each scenario file on its own, with the copy importable, `repeat` times; it passes only
-    when every run passes (a scenario that passes sometimes is flaky, and a flaky pass earns nothing)."""
+def run_scenarios(box, scenarios, folder, copy, python, timeout, repeat=1):
+    """{name: (passed, tail)}: each scenario file on its own, in the sandbox, with the copy importable, `repeat` times;
+    it passes only when every run passes (a scenario that passes sometimes is flaky, and a flaky pass earns nothing)."""
     place = os.path.join(copy, "_scenarios")
     os.makedirs(place, exist_ok=True)
-    env = dict(os.environ, PYTHONPATH=copy, PYTHONDONTWRITEBYTECODE="1")
     results = {}
     for s in scenarios:
         shutil.copy(os.path.join(folder, s["file"]), os.path.join(place, os.path.basename(s["file"])))
         module = os.path.splitext(os.path.basename(s["file"]))[0]
         passes, why = 0, ""
         for _ in range(repeat):
-            code, out = run([python, "-B", "-m", "unittest", "-q", module], place, timeout, env)
+            code, out = box.run([python, "-B", "-m", "unittest", "-q", module], copy, timeout, cwd="_scenarios",
+                                env={"PYTHONDONTWRITEBYTECODE": "1"}, path_env={"PYTHONPATH": "."})
             if code == 0:
                 passes += 1
             elif not why:
@@ -3478,23 +3667,32 @@ def run_scenarios(scenarios, folder, copy, python, timeout, repeat=1):
     return results
 
 
+def mark(box, detail):
+    """A verdict reached without a sandbox says so first."""
+    return ("[no sandbox] " if box.on_host else "") + detail
+
+
 def judge(a):
     repo = os.path.abspath(a.repo)
     folder = os.path.abspath(a.scenarios)
     scenarios = load_scenarios(folder, a.allow_pending)
     rel = os.path.relpath(folder, repo)
     scenario_rel = None if rel.startswith("..") else rel.replace(os.sep, "/")
-    if a.work_root:
-        os.makedirs(a.work_root, exist_ok=True)
-    work = tempfile.mkdtemp(prefix="patch-judge-", dir=a.work_root)
+    box = Sandbox.parse(a.sandbox)
+    python = a.python or (sys.executable if box.on_host else "python3")
+    work_root = a.work_root or (None if box.on_host else os.path.join(os.path.expanduser("~"), ".cache", "herdr-py", "judge"))
+    if work_root:
+        os.makedirs(work_root, exist_ok=True)
+    work = tempfile.mkdtemp(prefix="patch-judge-", dir=work_root)
     try:
         if not a.no_preflight:
             clean = os.path.join(work, "base")
             export(repo, a.base, clean)
-            broken = run_tests(a.test, clean, a.timeout)
+            box.check(clean)
+            broken = run_tests(box, a.test, clean, a.timeout)
             if broken:
                 raise JudgeError(f"the base itself does not pass its tests, so the environment is broken: {broken}")
-            already = [n for n, (ok, why) in run_scenarios(scenarios, folder, clean, a.python, a.timeout, a.repeat).items()
+            already = [n for n, (ok, why) in run_scenarios(box, scenarios, folder, clean, python, a.timeout, a.repeat).items()
                        if ok or why.startswith("flaky")]
             if already:
                 raise JudgeError(f"scenarios that pass on the base, every time or sometimes, test nothing reliably: "
@@ -3523,16 +3721,17 @@ def judge(a):
         code, out = run(["git", "apply", patch_path], copy, 60)
         if code != 0:
             return {"status": "invalid", "score": None, "detail": f"git apply failed: {tail(out, 4)}"}
-        broken = run_tests(a.test, copy, a.timeout)
+        box.check(copy)
+        broken = run_tests(box, a.test, copy, a.timeout)
         if broken:
-            return {"status": "invalid", "score": None, "detail": f"breaks the existing tests: {broken}"}
-        results = run_scenarios(scenarios, folder, copy, a.python, a.timeout, a.repeat)
+            return {"status": "invalid", "score": None, "detail": mark(box, f"breaks the existing tests: {broken}")}
+        results = run_scenarios(box, scenarios, folder, copy, python, a.timeout, a.repeat)
         passed = [n for n, (ok, _) in results.items() if ok]
         failed = [f"{n} ({why})" for n, (ok, why) in results.items() if not ok]
         detail = f"{len(passed)} of {len(results)} scenario(s) pass" + (f": {', '.join(passed)}" if passed else "")
         if failed:
             detail += "; still failing: " + "; ".join(failed)
-        return {"status": "valid", "score": len(passed), "detail": detail[:1000]}
+        return {"status": "valid", "score": len(passed), "detail": mark(box, detail)[:1000]}
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -3545,11 +3744,17 @@ def main(argv=None):
     ap.add_argument("--scenarios", required=True, metavar="DIR", help="folder with scenario.json and the scenario tests")
     ap.add_argument("--test", action="append", default=[], metavar="COMMAND",
                     help="an existing test suite that must still pass (repeat for each platform); run with sh -c in the copy")
-    ap.add_argument("--python", default=sys.executable, help="the Python that runs the scenarios")
+    ap.add_argument("--python", help="the Python that runs the scenarios (default: python3 in the sandbox; this "
+                                     "Python with --sandbox none)")
+    ap.add_argument("--sandbox", default=DEFAULT_SANDBOX, metavar="ENGINE:IMAGE",
+                    help=f"where the patched code runs: docker:IMAGE or podman:IMAGE (default {DEFAULT_SANDBOX}), or "
+                         f"none to run it on this machine (unsafe: only for code you trust or a --test that starts its "
+                         f"own container)")
     ap.add_argument("--timeout", type=int, default=900, metavar="S", help="for each test command and each scenario")
-    ap.add_argument("--work-root", metavar="DIR", help="where the clean copies are made (default: the system's temporary "
-                    "folder). A --test that runs docker through colima needs a folder under your home: colima shares "
-                    "only that with its VM, so a copy under /var/folders looks empty inside the container")
+    ap.add_argument("--work-root", metavar="DIR", help="where the clean copies are made (default: ~/.cache/herdr-py/judge "
+                    "with a sandbox, the system's temporary folder with --sandbox none). It has to be a folder the "
+                    "container can see: colima shares only your home with its VM, so a copy under /var/folders looks "
+                    "empty inside the container (the judge checks this before it runs anything)")
     ap.add_argument("--repeat", type=int, default=1, metavar="N",
                     help="run every scenario N times; it passes only when all N pass (use 3 or more when a scenario "
                          "involves threads or a daemon)")
@@ -3568,7 +3773,7 @@ def main(argv=None):
         a.test = ["python3 -B -m unittest discover -s tests -q"]
     try:
         verdict = judge(a)
-    except (JudgeError, OSError, ValueError, KeyError) as exc:
+    except (JudgeError, SandboxError, OSError, ValueError, KeyError) as exc:
         print(f"patch_judge: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(verdict))
@@ -5553,8 +5758,10 @@ import datetime
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -5635,7 +5842,8 @@ def main():
                     "-e", "OPENCODE_CONFIG_CONTENT=" + json.dumps(opencode_config()),
                     "herdr-py/slides:rhel8", "opencode", "serve", "--hostname", "0.0.0.0", "--port", "4096"],
                    check=True, stdout=subprocess.DEVNULL)
-    sock = "/tmp/hps-%s.sock" % os.path.basename(run)[-6:]
+    sock_dir = tempfile.mkdtemp(prefix="hps-", dir="/tmp")  # a 0700 folder of its own: no one else can put a socket there
+    sock = os.path.join(sock_dir, "d.sock")  # and the path stays short (AF_UNIX allows about 104 bytes)
     env = dict(os.environ, PYTHONPATH=REPO, PYTHONDONTWRITEBYTECODE="1")
     daemon = subprocess.Popen([PY, "-m", "herdr_py", "--socket", sock, "serve", "--opencode", "http://127.0.0.1:%d" % a.port,
                                "--password-file", pw_file, "--policy", os.path.join(HERE, "layout", "policy.json") if a.arch == "layout"
@@ -5676,6 +5884,7 @@ def main():
         subprocess.run([PY, "-m", "herdr_py", "--socket", sock, "stop"], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         daemon.wait(timeout=30)
         subprocess.run(["docker", "stop", "-t", "5", container], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
@@ -7724,8 +7933,8 @@ def cmd_serve(a):
         policy = Policy.load(a.policy) if a.policy else Policy(default="ask")
     except (OSError, PolicyError) as exc:
         sys.exit(f"herdr-py serve: policy: {exc}")
-    client = OpenCode(url, a.username or os.environ.get("HERDR_PY_OPENCODE_USERNAME"), password)
     try:
+        client = OpenCode(url, a.username or os.environ.get("HERDR_PY_OPENCODE_USERNAME"), password)
         health = wait_healthy(client, timeout=a.wait)
     except OpenCodeError as exc:
         sys.exit(f"herdr-py serve: {exc}")
@@ -7736,7 +7945,7 @@ def cmd_serve(a):
     except ClientError:
         pass
     daemon = Daemon(client, policy, a.state_dir, socket_path=socket_path, http_addr=a.http, model=a.model, questions=a.questions,
-                    max_agents=a.max_agents, max_prompts=a.max_prompts)
+                    max_agents=a.max_agents, max_prompts=a.max_prompts, allow_hosts=a.allow_host)
     reattached = daemon.start()
     print(f"herdr-py {__version__}: OpenCode {health.get('version')} at {url}", flush=True)
     print(f"socket: {socket_path}   state: {a.state_dir}" + (f"   re-attached {reattached} agent(s)" if reattached else ""), flush=True)
@@ -7821,6 +8030,8 @@ def main(argv=None):
     s.add_argument("--password-file", help="file holding the OpenCode server password (or $HERDR_PY_OPENCODE_PASSWORD)")
     s.add_argument("--policy", help="permission policy (TOML); without one every request waits for a human")
     s.add_argument("--http", help="serve the web UI at HOST:PORT, e.g. 127.0.0.1:8765")
+    s.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                   help="the web UI also answers requests for this name (a proxy in front that passes on its public name)")
     s.add_argument("--state-dir", default=default_state_dir())
     s.add_argument("--model", help="default model, provider/model")
     s.add_argument("--questions", choices=["ask", "reject"], default="ask", help="what to do with questions agents ask")
@@ -8188,6 +8399,7 @@ import threading
 import time
 
 from . import coopview
+from .display import printable
 from .members import MemberError, Members, parse_member
 from .teamkb import TeamKB, one_line
 
@@ -8494,7 +8706,7 @@ def main(argv=None):
         summary = run.run()
     finally:
         members.close()
-    print(report(summary, a.out))
+    print(printable(report(summary, a.out)))
     return 3 if summary["stopped"] else 0
 
 
@@ -9618,6 +9830,7 @@ import time
 
 from . import dagview
 from .coop import command_judge, exit_judge
+from .display import printable
 from .members import BROKEN, MemberError, Members, parse_member
 from .teamkb import one_line
 
@@ -9900,8 +10113,10 @@ def commit_all(path, start, message):
 
 
 def judge_once(node, reply_path, cwd, env):
-    """One verdict under coop.py's contract: (status, score, detail); a judge that breaks is infra_error."""
+    """One verdict under coop.py's contract: (status, score, detail); a judge that breaks is infra_error. The judge is
+    told its time limit (HERDR_DAG_JUDGE_TIMEOUT, seconds): one that starts a container stops it before then."""
     check = (command_judge if node["judge_mode"] == "json" else exit_judge)(node["judge_argv"], timeout=node["judge_timeout"])
+    env = dict(env if env is not None else os.environ, HERDR_DAG_JUDGE_TIMEOUT=str(node["judge_timeout"]))
     try:
         status, score, detail = check(reply_path, cwd=cwd, env=env)
     except Exception as exc:  # the judge itself broke: not a fail of the step
@@ -10428,7 +10643,7 @@ def main(argv=None):
         summary = run.run()
     finally:
         members.close()
-    print(report(summary))
+    print(printable(report(summary)))
     print(f"every step on one page: {os.path.join(os.path.abspath(a.out), 'view.html')}")
     if summary["stopped"]:
         return 3
@@ -10715,7 +10930,6 @@ the folder. Nothing is ever written: there are no write endpoints.
 import argparse
 import base64
 import errno
-import hmac
 import http.server
 import json
 import math
@@ -10729,7 +10943,7 @@ import threading
 import time
 import urllib.parse
 
-from . import __version__
+from . import __version__, webguard
 from .client import Client, ClientError
 from .server import ThreadingHTTPServer
 
@@ -11213,9 +11427,11 @@ class RunFolder:
 
 # ---------------------------------------------------------------------------- HTTP
 class Dashboard:
-    def __init__(self, run_dir, host="127.0.0.1", port=8770, socket_path=None, poll_s=1.0, token=None, keepalive_s=15.0):
+    def __init__(self, run_dir, host="127.0.0.1", port=8770, socket_path=None, poll_s=1.0, token=None, keepalive_s=15.0,
+                 allow_hosts=()):
         self.run = RunFolder(run_dir, socket_path=socket_path, member_poll_s=poll_s)
         self.token = token or secrets.token_urlsafe(18)
+        self.host, self.allow_hosts = host, tuple(allow_hosts)
         self.poll_s, self.keepalive_s = poll_s, keepalive_s
         self.stopping = threading.Event()
         self.web = ThreadingHTTPServer((host, port), make_handler(self))
@@ -11244,9 +11460,8 @@ def make_handler(dash):
             pass
 
         def authorized(self, query):
-            header = self.headers.get("Authorization", "")
-            given = header[7:] if header.startswith("Bearer ") else (query.get("token") or [""])[0]
-            return hmac.compare_digest(given.encode(), dash.token.encode())
+            given = webguard.bearer(self.headers) or (query.get("token") or [""])[0]
+            return webguard.token_ok(given, dash.token)
 
         def start_reply(self, status, ctype, length=None, extra=()):
             self.send_response(status)
@@ -11263,6 +11478,8 @@ def make_handler(dash):
             self.wfile.write(body)
 
         def do_GET(self):
+            if webguard.refused(self, dash.host, dash.allow_hosts):
+                return
             url = urllib.parse.urlparse(self.path)
             if url.path in STATIC:
                 name, ctype = STATIC[url.path]
@@ -11285,6 +11502,8 @@ def make_handler(dash):
             return self.reply(404, {"error": "not found"})
 
         def refuse(self):  # a read-only server: say so, for every method that would change something
+            if webguard.refused(self, dash.host, dash.allow_hosts):
+                return
             self.reply(405, {"error": "read-only: the dashboard has no write endpoints"})
 
         do_POST = do_PUT = do_PATCH = do_DELETE = refuse
@@ -11414,6 +11633,8 @@ def parse_args(argv=None):
     ap.add_argument("run_dir", metavar="RUN_DIR", help="a run folder (with work/ inside) or a team's --workdir")
     ap.add_argument("--port", type=int, default=8770, help="0 picks a free port")
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1; reach it through an SSH tunnel)")
+    ap.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                    help="also answer requests for this name (a proxy in front that passes on its public name)")
     ap.add_argument("--socket", help="herdr-py daemon socket: members' states from the daemon instead of codex/agents.json")
     ap.add_argument("--poll", type=float, default=1.0, help="seconds between looks at the run folder and the daemon")
     ap.add_argument("--html", metavar="FILE", help="save the page with the run as it is now into one HTML file and exit "
@@ -11434,7 +11655,7 @@ def main(argv=None):
         print(f"saved: {saved['path']} ({saved['pictures']} pictures, {saved['bytes'] / 1e6:.1f} MB); open it in a browser")
         return 0
     try:
-        dash = Dashboard(a.run_dir, host=a.host, port=a.port, socket_path=a.socket, poll_s=a.poll)
+        dash = Dashboard(a.run_dir, host=a.host, port=a.port, socket_path=a.socket, poll_s=a.poll, allow_hosts=a.allow_host)
     except (ValueError, OSError) as exc:
         print(f"herdr-py dashboard: {exc}", file=sys.stderr)
         return 2
@@ -12385,8 +12606,26 @@ if __name__ == "__main__":
     sys.exit(main())
 HERDR_PY_EOF
 cat > herdr_py/display.py <<'HERDR_PY_EOF'
-"""Terminal cell widths (CJK counts as 2) and line building with ANSI colours."""
+"""Terminal cell widths (CJK counts as 2) and line building with ANSI colours.
+
+Text from agents, judges and web pages reaches the terminal only through shown() or printable(): a control character
+(ESC starts commands the terminal obeys: set the clipboard, the title, move the cursor) or a bidirectional override
+(it reorders what follows on screen) becomes U+FFFD."""
 import unicodedata
+
+BIDI = frozenset("\u061c\u200e\u200f\u202a\u202b\u202c\u202d\u202e\u2066\u2067\u2068\u2069")
+REPLACEMENT = "\ufffd"
+
+
+def shown(ch):
+    """One character as the terminal may get it."""
+    return REPLACEMENT if ch in BIDI or unicodedata.category(ch) == "Cc" else ch
+
+
+def printable(text):
+    """Text for print(): line breaks and tabs stay; every other control character (a carriage return would let the
+    rest of a line write over its start) and every bidirectional override is replaced."""
+    return "\n".join("".join(ch if ch == "\t" else shown(ch) for ch in line) for line in str(text).split("\n"))
 
 
 def width(ch):
@@ -12403,6 +12642,7 @@ def clip(text, cols):
     """Cut text to at most `cols` cells. Returns (text, cells used)."""
     out, used = [], 0
     for ch in str(text).replace("\n", " ").replace("\t", " "):
+        ch = shown(ch)
         w = width(ch)
         if used + w > cols:
             break
@@ -12415,6 +12655,7 @@ def tail(text, cols):
     """The last part of text that fits in `cols` cells."""
     out, used = [], 0
     for ch in reversed(" ".join(str(text).split())):
+        ch = shown(ch)
         w = width(ch)
         if used + w > cols:
             break
@@ -12482,8 +12723,11 @@ import time
 from . import engineview
 from .coop import FENCE, REPLY, command_judge, exit_judge, parse_reply, used
 from .dag import resolve_args
+from .display import printable
+from .lessons import LessonError, Lessons, repeated, shown_text
+from .lessons import answer as handed_text
 from .members import BROKEN, MemberError, Members, parse_member
-from .teamkb import MAX_SUMMARY, TAG, TeamKB, TeamKBError, one_line
+from .teamkb import MAX_SUMMARY, TAG, TeamKB, TeamKBError, artifact_path, one_line
 from .teamtools import KIND as TOOL_KIND, TeamTools
 
 BOARD = "TEAM_BOARD.md"
@@ -12627,7 +12871,8 @@ class EngineRun:
     def __init__(self, task, judge, members, names, planner, out, turns, planner_wakes=None, max_open=None, max_todos=None,
                  target=None, patience=0, about=None, results=3, failures=3, answer_bytes=6000, answer_name="answer.txt",
                  turn_timeout=900, judge_name="judge", stop_on_infra_error=False, planner_tries=2, member_access="read",
-                 time_limit=None, seeded=None, repairs=0, repair_below=None, wrap_up=0, repair_kinds=(), mcp_sandbox=None):
+                 time_limit=None, seeded=None, repairs=0, repair_below=None, wrap_up=0, repair_kinds=(), mcp_sandbox=None,
+                 lessons=None):
         if not names:
             raise ValueError("no members")
         if planner in names:
@@ -12660,6 +12905,13 @@ class EngineRun:
             raise ValueError("member_access: read or research")
         self.member_access = member_access  # research: read the folder and search the web (Claude members)
         os.makedirs(out, exist_ok=True)
+        with open(os.path.join(out, "task.md"), "w", encoding="utf-8") as handle:
+            handle.write(task)  # what this run was asked, for anyone who reads the run later (lessons.py reviews by it)
+        self.lessons = lessons  # corrections from earlier work, shown where their `when` matches (lessons.py)
+        if lessons is not None:  # what this run was given, for its page (the lessons file goes on changing)
+            with open(os.path.join(out, "lessons.json"), "w", encoding="utf-8") as handle:
+                json.dump([{k: l.get(k) for k in ("id", "status", "when", "wrong", "right", "detect", "by")}
+                           for l in lessons.active()], handle, ensure_ascii=False, indent=1)
         self.kb = TeamKB(os.path.join(out, "kb"))
         self.board_dir = os.path.join(out, "board")
         os.makedirs(self.board_dir, exist_ok=True)
@@ -12707,8 +12959,9 @@ class EngineRun:
             os.makedirs(files, exist_ok=True)
             for e in self.kb.entries():  # every verified result as a file members can open, however long it is
                 target = os.path.join(files, e["id"] + ".txt")
-                if e["status"] == "valid" and e.get("artifact") and not os.path.exists(target):
-                    with open(os.path.join(self.kb.folder, e["artifact"]), "rb") as src, open(target + ".tmp", "wb") as dst:
+                source = artifact_path(self.kb.folder, e["artifact"]) if e.get("artifact") else None
+                if e["status"] == "valid" and source and not os.path.exists(target):
+                    with open(source, "rb") as src, open(target + ".tmp", "wb") as dst:
                         dst.write(src.read())
                     os.replace(target + ".tmp", target)
             path = os.path.join(self.board_dir, BOARD)
@@ -12845,6 +13098,8 @@ class EngineRun:
         try:
             for attempt in range(1, self.planner_tries + 1):
                 prompt, version = self.planner_prompt(reason, problems)
+                told = self.lessons.matching(self.task) if self.lessons else []
+                prompt += shown_text(told)
                 before, start, clock = self.tokens(self.planner), time.time(), time.monotonic()
                 try:
                     reply, state = self.members.run_turn(self.planner, prompt, timeout=self.turn_timeout)
@@ -12854,6 +13109,8 @@ class EngineRun:
                 rec = {"t": round(end, 3), "start": round(start, 3), "end": round(end, 3), "kind": "wake", "wake": wake,
                        "attempt": attempt, "reason": reason, "board_version": version, "prompt_sha": sha_text(prompt),
                        "state": state, "seconds": round(took, 2), "tokens": used(before, self.tokens(self.planner))}
+                if told:
+                    rec["lessons"] = [l["id"] for l in told]
                 if state != "idle":
                     rec["problems"] = [f"the planner's turn ended {state}: {one_line(reply, 200)}"]
                     if state in BROKEN:
@@ -12881,6 +13138,9 @@ class EngineRun:
                         added.append(None)
                 added = [a for a in added if a]
                 rec.update(added=added, dropped=dropped, done=plan["done"], why=one_line(plan.get("why") or "", 300))
+                again = repeated(told, [item["text"] for item in plan["add"]])
+                if again:
+                    rec["lessons_repeated"] = again  # told, and the todos it added make the mistake anyway
                 self.record(self.elog, self.wake_records, rec)
                 if plan["done"]:
                     with self.cond:
@@ -12948,6 +13208,12 @@ class EngineRun:
                 detail = parsed["summary"]
         return outcome, status, score, entry, detail
 
+    def handed_in(self, rec):
+        """The text of every answer a turn handed in: the first and each repair."""
+        ids = [rec.get("entry")] + [x for r in rec.get("repairs") or [] for x in (r.get("of"), r.get("entry"))]
+        by_id = {e["id"]: e for e in self.kb.entries()}
+        return [handed_text(self.kb, by_id.get(i)) for i in collections.OrderedDict.fromkeys(i for i in ids if i)]
+
     def turn_notes(self, name, offer=None):
         """What a member is told about its turn besides the work: how long it may run, and (a Claude member, whose tools
         are known) which tools it has, the team's tools included."""
@@ -12980,10 +13246,15 @@ class EngineRun:
         with self.cond:
             self.now_running[name] = {"turn": turn, "wrap_up": bool(rec.get("wrap_up"))}
         outcome, status, score, entry, detail = "failed", None, None, None, None
+        told = []
         try:
             prompt, shown, version = self.member_prompt(name, todo, turn)
             offer = self.team_tools.config() if self.team_tools else None
             prompt += self.turn_notes(name, offer)
+            told = self.lessons.matching(self.task + "\n" + todo["text"]) if self.lessons else []
+            if told:
+                prompt += shown_text(told)
+                rec["lessons"] = [l["id"] for l in told]
             if offer:
                 rec["tools_offered"] = [r[len("mcp__"):] for r in offer[1]]
             mcp = offer[:2] if offer else None
@@ -13034,6 +13305,9 @@ class EngineRun:
                 rec["repairs"] = repairs
                 outcome, status, score, entry, detail = best  # the turn ends with its best version
                 rec.update(entry=entry, status=status, score=score, best_of=1 + len(repairs))
+            again = repeated(told, self.handed_in(rec))
+            if again:
+                rec["lessons_repeated"] = again  # told, and what it handed in makes the mistake anyway
         except Exception as exc:  # the engine's own mistake: recorded and the todo ended, never left taken
             rec["problem"] = detail = f"engine error: {type(exc).__name__}: {exc}"
         finally:
@@ -13276,7 +13550,11 @@ class EngineRun:
                 "tokens_planner": sum(planner_tokens) if planner_tokens else None,
                 "planner_share": ratio(sum(planner_tokens), total) if total else None,
                 "board_reads": self.board_reads(), "adoption_rate": s["adoption_rate"], "paused_seconds": round(self.paused_seconds, 1),
-                "duplicate_rate": s["duplicate_rate"], "stopped": self.stopping, "broken": self.broken}
+                "duplicate_rate": s["duplicate_rate"], "stopped": self.stopping, "broken": self.broken,
+                "lessons": None if self.lessons is None else {
+                    "turns_told": sum(1 for r in list(turns) + wakes if r.get("lessons")),
+                    "turns_repeated": sum(1 for r in list(turns) + wakes if r.get("lessons_repeated")),
+                    "repeated": dict(collections.Counter(i for r in list(turns) + wakes for i in r.get("lessons_repeated") or []))}}
 
 
 def report(s, out):
@@ -13293,6 +13571,10 @@ def report(s, out):
              + (f" (planner {s['planner_share']:.0%})" if s["planner_share"] is not None else ""),
              f"board reads: {s['board_reads']['by_member'] or 'none'} (measured for: {', '.join(s['board_reads']['measured']) or 'no member logs'})",
              f"entries and todos: python3 -m herdr_py.teamkb {os.path.join(out, 'kb')}"]
+    if s.get("lessons"):
+        lines.insert(-1, f"lessons: told in {s['lessons']['turns_told']} turns; the corrected mistake came back in "
+                         f"{s['lessons']['turns_repeated']}" + (f" ({', '.join(sorted(s['lessons']['repeated']))})"
+                                                                if s['lessons']['repeated'] else ""))
     if s["broken"]:
         lines.insert(1, "the setup broke: " + "; ".join(s["broken"][:5]))
     return "\n".join(lines)
@@ -13365,6 +13647,9 @@ def main(argv=None):
                     help="offer the members' own MCP tools (verified answers whose first line is ARTIFACT: mcp) to later "
                          "turns, each run by this command ({file}: the tool's code, {kb}: the knowledge base, {board}: the "
                          "board folder); Claude members only. Without it they are never run")
+    ap.add_argument("--lessons", metavar="FILE",
+                    help="corrections from earlier work (python3 -m herdr_py.lessons): each is told to the planner and to "
+                         "members where its `when` matches the task or the todo, and checked against what they hand in")
     ap.add_argument("--member-access", choices=["read", "research"], default="read",
                     help="read (default): members read the board folder; research: and search the web (Claude members)")
     a = ap.parse_args(argv)
@@ -13444,6 +13729,13 @@ def main(argv=None):
               + (f" ({', '.join(f'{n} {k}' for k, n in sorted(seeded['kinds'].items()))})" if seeded["kinds"] else "")
               + (f"; left out {', '.join(f'{n} {k}' for k, n in sorted(seeded['left_out'].items()))}" if seeded["left_out"] else ""),
               flush=True)
+    try:
+        lessons = Lessons(a.lessons) if a.lessons else None
+    except (LessonError, OSError) as exc:
+        print(f"herdr-py engine: --lessons: {exc}", file=sys.stderr)
+        return 2
+    if lessons is not None and lessons.bad_lines:
+        print(f"herdr-py engine: warning: {lessons.bad_lines} lines of {a.lessons} could not be read", file=sys.stderr)
     judge = (exit_judge if a.judge_mode == "exit" else command_judge)(resolve_args(a.judge, os.getcwd()), timeout=a.judge_timeout)
     members = Members(specs, os.path.join(os.path.abspath(a.out), "members"), socket=a.socket, sessions="fresh", cwd=os.getcwd())
     try:
@@ -13452,11 +13744,12 @@ def main(argv=None):
                         failures=a.show_failures, answer_bytes=a.answer_bytes, answer_name=a.answer_name,
                         turn_timeout=a.turn_timeout, stop_on_infra_error=a.stop_on_infra_error,
                         member_access=a.member_access, time_limit=a.time_limit, seeded=seeded, repairs=a.repairs,
-                        repair_below=a.repair_below, wrap_up=a.wrap_up, repair_kinds=a.repair_kind, mcp_sandbox=a.mcp_sandbox)
+                        repair_below=a.repair_below, wrap_up=a.wrap_up, repair_kinds=a.repair_kind, mcp_sandbox=a.mcp_sandbox,
+                        lessons=lessons)
         summary = run.run()
     finally:
         members.close()
-    print(report(summary, a.out))
+    print(printable(report(summary, a.out)))
     if summary["broken"] and a.stop_on_infra_error:
         return 3
     return 0 if summary["best"] is not None else 1
@@ -13498,1328 +13791,1656 @@ dGltZSBsaW1pdDogZW5naW5lLnNlbmRfY29udHJvbCkuIEl0IHByaW50cyBhIGxpbmsgd2l0aCBh
 IHRva2VuIGFmdGVyICIjIjsgYSBjb21tYW5kIHdpdGhvdXQgdGhhdAp0b2tlbiBpcyByZWZ1c2Vk
 LiBJdCBsaXN0ZW5zIG9uIHRoaXMgbWFjaGluZSBvbmx5IHVubGVzcyAtLWhvc3Qgc2F5cyBvdGhl
 cndpc2UuIEEgcGFnZSBvcGVuZWQgYXMgYSBmaWxlIGhhcyBubwpidXR0b25zOiBpdCBjYW5ub3Qg
-cmVhY2ggdGhlIHJ1bi4KIiIiCmltcG9ydCBobWFjCmltcG9ydCBodG1sCmltcG9ydCBodHRwLnNl
-cnZlcgppbXBvcnQganNvbgppbXBvcnQgb3MKaW1wb3J0IHJlCmltcG9ydCBzZWNyZXRzCmltcG9y
-dCBzb2NrZXRzZXJ2ZXIKaW1wb3J0IHN5cwppbXBvcnQgdGltZQppbXBvcnQgdXJsbGliLnBhcnNl
-Cgpmcm9tIC50ZWFta2IgaW1wb3J0IFRBRwpmcm9tIC52aWV3c3R5bGUgaW1wb3J0IFRPS0VOUwoK
-CldFQiwgRkVUQ0ggPSAoIndlYnNlYXJjaCIsICJ3ZWJfc2VhcmNoIiwgInNlYXJjaCIpLCAoIndl
-YmZldGNoIiwgIndlYl9mZXRjaCIsICJmZXRjaCIpCgoKZGVmIHRvb2xfY2xhc3MobmFtZSk6CiAg
-ICBuID0gKG5hbWUgb3IgIiIpLmxvd2VyKCkKICAgIHJldHVybiAid2ViIiBpZiBuIGluIFdFQiBl
-bHNlICgiZmV0Y2giIGlmIG4gaW4gRkVUQ0ggZWxzZSAicmVhZCIpCgoKZGVmIGVzYyh0ZXh0KToK
-ICAgIHJldHVybiBodG1sLmVzY2FwZShzdHIodGV4dCksIHF1b3RlPVRydWUpCgoKZGVmIHRpbWVz
-KG4sIHdvcmQ9InRpbWUiKToKICAgIHJldHVybiBmIntufSB7d29yZH0iICsgKCIiIGlmIG4gPT0g
-MSBlbHNlICJzIikKCgpkZWYgc2Vjcyh2LCBzcGFuKToKICAgIHJldHVybiBmInt2Oi4xZn0gcyIg
-aWYgc3BhbiA8IDEwIGVsc2UgZiJ7djouMGZ9IHMiCgoKZGVmIHJlYWRfanNvbmwocGF0aCk6CiAg
-ICByb3dzID0gW10KICAgIGlmIG5vdCBvcy5wYXRoLmlzZmlsZShwYXRoKToKICAgICAgICByZXR1
-cm4gcm93cwogICAgd2l0aCBvcGVuKHBhdGgsIGVuY29kaW5nPSJ1dGYtOCIsIGVycm9ycz0icmVw
-bGFjZSIpIGFzIGhhbmRsZToKICAgICAgICBmb3IgbGluZSBpbiBoYW5kbGU6CiAgICAgICAgICAg
-IHRyeToKICAgICAgICAgICAgICAgIHJvdyA9IGpzb24ubG9hZHMobGluZSkKICAgICAgICAgICAg
-ZXhjZXB0IFZhbHVlRXJyb3I6ICAjIGEgbGluZSBzdGlsbCBiZWluZyB3cml0dGVuCiAgICAgICAg
-ICAgICAgICBjb250aW51ZQogICAgICAgICAgICBpZiBpc2luc3RhbmNlKHJvdywgZGljdCk6CiAg
-ICAgICAgICAgICAgICByb3dzLmFwcGVuZChyb3cpCiAgICByZXR1cm4gcm93cwoKCmRlZiBsb2Fk
-KG91dCk6CiAgICBlbmdpbmUgPSByZWFkX2pzb25sKG9zLnBhdGguam9pbihvdXQsICJlbmdpbmUu
-anNvbmwiKSkKICAgIHR1cm5zID0gcmVhZF9qc29ubChvcy5wYXRoLmpvaW4ob3V0LCAicnVuLmpz
-b25sIikpCiAgICB0b2RvcyA9IHt9CiAgICBmb3IgZSBpbiByZWFkX2pzb25sKG9zLnBhdGguam9p
-bihvdXQsICJrYiIsICJldmVudHMuanNvbmwiKSk6CiAgICAgICAgaWYgZS5nZXQoInR5cGUiKSAh
-PSAidG9kbyI6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgdGlkLCBvcCA9IGUuZ2V0KCJp
-ZCIpLCBlLmdldCgib3AiKQogICAgICAgIGlmIG9wID09ICJhZGQiOgogICAgICAgICAgICB0b2Rv
-c1t0aWRdID0geyJpZCI6IHRpZCwgInRleHQiOiBlLmdldCgidGV4dCIpIG9yICIiLCAiZm9yIjog
-ZS5nZXQoImZvciIpLCAicGFyZW50cyI6IGUuZ2V0KCJwYXJlbnRzIikgb3IgW10sCiAgICAgICAg
-ICAgICAgICAgICAgICAgICAgImFmdGVyIjogZS5nZXQoImFmdGVyIikgb3IgW10sICJyZXZpZXci
-OiBib29sKGUuZ2V0KCJyZXZpZXciKSksCiAgICAgICAgICAgICAgICAgICAgICAgICAgIndha2Ui
-OiBlLmdldCgid2FrZSIpLCAiYWRkZWQiOiBlLmdldCgidCIpLCAic3RhdGUiOiAib3BlbiJ9CiAg
-ICAgICAgZWxpZiB0aWQgaW4gdG9kb3M6CiAgICAgICAgICAgIHRvZG8gPSB0b2Rvc1t0aWRdCiAg
-ICAgICAgICAgIGlmIG9wID09ICJ0YWtlIjoKICAgICAgICAgICAgICAgIHRvZG8udXBkYXRlKHN0
-YXRlPSJ0YWtlbiIsIG1lbWJlcj1lLmdldCgibWVtYmVyIiksIHRha2VuPWUuZ2V0KCJ0IikpCiAg
-ICAgICAgICAgIGVsaWYgb3AgPT0gImVuZCI6CiAgICAgICAgICAgICAgICB0b2RvLnVwZGF0ZShz
-dGF0ZT1lLmdldCgib3V0Y29tZSIpIGlmIGUuZ2V0KCJvdXRjb21lIikgaW4gKCJkb25lIiwgImRy
-b3BwZWQiKSBlbHNlICJmYWlsZWQiLCBlbmRlZD1lLmdldCgidCIpLCBlbnRyeT1lLmdldCgiZW50
-cnkiKSwKICAgICAgICAgICAgICAgICAgICAgICAgICAgIHN0YXR1cz1lLmdldCgic3RhdHVzIiks
-IHNjb3JlPWUuZ2V0KCJzY29yZSIpLCBkZXRhaWw9ZS5nZXQoImRldGFpbCIpKQogICAgICAgICAg
-ICBlbGlmIG9wID09ICJkcm9wIjoKICAgICAgICAgICAgICAgIHRvZG8udXBkYXRlKHN0YXRlPSJk
-cm9wcGVkIiwgZW5kZWQ9ZS5nZXQoInQiKSkKICAgIGVudHJpZXMsIHZlcmRpY3RzID0ge30sIHt9
-CiAgICBmb3IgZSBpbiByZWFkX2pzb25sKG9zLnBhdGguam9pbihvdXQsICJrYiIsICJldmVudHMu
-anNvbmwiKSk6CiAgICAgICAgaWYgZS5nZXQoInR5cGUiKSA9PSAicHJvcG9zZSIgYW5kIGUuZ2V0
-KCJpZCIpIG5vdCBpbiBlbnRyaWVzOgogICAgICAgICAgICBlbnRyaWVzW2VbImlkIl1dID0gZQog
-ICAgICAgIGVsaWYgZS5nZXQoInR5cGUiKSA9PSAidmVyZGljdCI6CiAgICAgICAgICAgIHZlcmRp
-Y3RzW2UuZ2V0KCJpZCIpXSA9IGUKICAgIG1hZGUgPSBbXQogICAgZm9yIGVpZCwgcCBpbiBlbnRy
-aWVzLml0ZW1zKCk6CiAgICAgICAgdiA9IHZlcmRpY3RzLmdldChlaWQpIG9yIHt9CiAgICAgICAg
-a2luZCwgbmFtZSA9IE5vbmUsIE5vbmUKICAgICAgICBpZiBwLmdldCgiYXJ0aWZhY3QiKToKICAg
-ICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgd2l0aCBvcGVuKG9zLnBhdGguam9pbihvdXQs
-ICJrYiIsIHBbImFydGlmYWN0Il0pLCBlbmNvZGluZz0idXRmLTgiLCBlcnJvcnM9InJlcGxhY2Ui
-KSBhcyBoYW5kbGU6CiAgICAgICAgICAgICAgICAgICAgaGVhZCA9IFtoYW5kbGUucmVhZGxpbmUo
-KSBmb3IgXyBpbiByYW5nZSgzMCldCiAgICAgICAgICAgICAgICBtID0gVEFHLm1hdGNoKGhlYWRb
-MF0pCiAgICAgICAgICAgICAgICBraW5kID0gbS5ncm91cCgyKS5sb3dlcigpIGlmIG0gZWxzZSBO
-b25lCiAgICAgICAgICAgICAgICBpZiBraW5kID09ICJza2lsbCI6ICAjIGEgc2tpbGwgbmFtZXMg
-aXRzZWxmIGluIGl0cyBmcm9udG1hdHRlciAobmFtZTogLi4uKQogICAgICAgICAgICAgICAgICAg
-IG5hbWUgPSBuZXh0KChyZS5zdWIociJeXHMqbmFtZVxzKjpccyoiLCAiIiwgaCkuc3RyaXAoKS5z
-dHJpcCgnIicpIGZvciBoIGluIGhlYWQgaWYgcmUubWF0Y2gociJeXHMqbmFtZVxzKjoiLCBoKSks
-IE5vbmUpCiAgICAgICAgICAgIGV4Y2VwdCBPU0Vycm9yOgogICAgICAgICAgICAgICAgcGFzcwog
-ICAgICAgIG1hZGUuYXBwZW5kKHsiaWQiOiBlaWQsICJ0IjogcC5nZXQoInQiKSwgIm1lbWJlciI6
-IHAuZ2V0KCJtZW1iZXIiKSwgInN1bW1hcnkiOiBwLmdldCgic3VtbWFyeSIpIG9yICIiLCAibmFt
-ZSI6IG5hbWUsCiAgICAgICAgICAgICAgICAgICAgICJwYXJlbnRzIjogcC5nZXQoInBhcmVudHMi
-KSBvciBbXSwgImtpbmQiOiBraW5kIG9yIHAuZ2V0KCJraW5kIiksICJzdGF0dXMiOiB2LmdldCgi
-c3RhdHVzIiwgInVuanVkZ2VkIiksCiAgICAgICAgICAgICAgICAgICAgICJzY29yZSI6IHYuZ2V0
-KCJzY29yZSIpLCAiZGV0YWlsIjogdi5nZXQoImRldGFpbCIpIG9yICIifSkKICAgIHRvb2xzID0g
-W10KICAgIGZvciBiYWNrZW5kIGluICgiY2xhdWRlIiwgIm9wZW5jb2RlIik6CiAgICAgICAgZm9y
-IHJvdyBpbiByZWFkX2pzb25sKG9zLnBhdGguam9pbihvdXQsICJtZW1iZXJzIiwgYmFja2VuZCwg
-ImV2ZW50cy5qc29ubCIpKToKICAgICAgICAgICAgZXYgPSByb3cuZ2V0KCJldmVudCIpCiAgICAg
-ICAgICAgIGlmIG5vdCBpc2luc3RhbmNlKGV2LCBkaWN0KToKICAgICAgICAgICAgICAgIGNvbnRp
-bnVlCiAgICAgICAgICAgIGNhbGxzID0gW10KICAgICAgICAgICAgaWYgZXYuZ2V0KCJ0eXBlIikg
-PT0gImFzc2lzdGFudCI6ICAjIENsYXVkZSdzIHN0cmVhbS1qc29uCiAgICAgICAgICAgICAgICBj
-YWxscyA9IFsoYi5nZXQoIm5hbWUiKSwgYi5nZXQoImlucHV0Iikgb3Ige30pIGZvciBiIGluIChl
-di5nZXQoIm1lc3NhZ2UiKSBvciB7fSkuZ2V0KCJjb250ZW50Iikgb3IgW10KICAgICAgICAgICAg
-ICAgICAgICAgICAgIGlmIGlzaW5zdGFuY2UoYiwgZGljdCkgYW5kIGIuZ2V0KCJ0eXBlIikgPT0g
-InRvb2xfdXNlIl0KICAgICAgICAgICAgZWxpZiBldi5nZXQoImtpbmQiKSA9PSAidG9vbCI6ICAj
-IGhlcmRyLXB5J3MgT3BlbkNvZGUgbWVtYmVyIGxvZwogICAgICAgICAgICAgICAgY2FsbHMgPSBb
-KGV2LmdldCgidG9vbCIpLCBldi5nZXQoImlucHV0Iikgb3Ige30pXQogICAgICAgICAgICBmb3Ig
-bmFtZSwgaW5wIGluIGNhbGxzOgogICAgICAgICAgICAgICAgd2hhdCA9IGlucC5nZXQoInF1ZXJ5
-Iikgb3IgaW5wLmdldCgidXJsIikgb3IgaW5wLmdldCgiZmlsZV9wYXRoIikgb3IgaW5wLmdldCgi
-ZmlsZVBhdGgiKSBvciBpbnAuZ2V0KCJwYXR0ZXJuIikgb3IgIiIKICAgICAgICAgICAgICAgIHRv
-b2xzLmFwcGVuZCh7InQiOiByb3cuZ2V0KCJ0IiksICJhZ2VudCI6IHJvdy5nZXQoImFnZW50Iiks
-ICJ0b29sIjogc3RyKG5hbWUpLCAid2hhdCI6IHN0cih3aGF0KVs6MTYwXX0pCiAgICBzdW1tYXJ5
-ID0gTm9uZQogICAgcGF0aCA9IG9zLnBhdGguam9pbihvdXQsICJzdW1tYXJ5Lmpzb24iKQogICAg
-aWYgb3MucGF0aC5pc2ZpbGUocGF0aCk6CiAgICAgICAgdHJ5OgogICAgICAgICAgICB3aXRoIG9w
-ZW4ocGF0aCwgZW5jb2Rpbmc9InV0Zi04IikgYXMgaGFuZGxlOgogICAgICAgICAgICAgICAgc3Vt
-bWFyeSA9IGpzb24ubG9hZChoYW5kbGUpCiAgICAgICAgZXhjZXB0IFZhbHVlRXJyb3I6CiAgICAg
-ICAgICAgIHN1bW1hcnkgPSBOb25lCiAgICByZXR1cm4gZW5naW5lLCB0dXJucywgbGlzdCh0b2Rv
-cy52YWx1ZXMoKSksIHN1bW1hcnksIG1hZGUsIHRvb2xzCgoKZGVmIHRleHRfd2lkdGgodGV4dCwg
-c2l6ZSk6CiAgICAiIiJBYm91dCBob3cgd2lkZSB0ZXh0IGlzIGRyYXduIGF0IHRoaXMgZm9udCBz
-aXplOiBhIENKSyBjaGFyYWN0ZXIgYXMgd2lkZSBhcyB0aGUgc2l6ZSwgYW55IG90aGVyIDAuNTUg
-b2YgaXQgKGluCiAgICBDaHJvbWUgd2l0aCB0aGUgc3lzdGVtIGZvbnQgdGhlIGxvb3AncyBsYWJl
-bHMgbWVhc3VyZWQgMC40MyB0byAwLjUyIG9mIHRoZSBzaXplIHBlciBjaGFyYWN0ZXIpLiIiIgog
-ICAgcmV0dXJuIHN1bShzaXplIGlmIG9yZChjKSA+IDB4MkU4MCBlbHNlIHNpemUgKiAwLjU1IGZv
-ciBjIGluIHN0cih0ZXh0KSkKCgpkZWYgZml0KHRleHQsIHB4LCBzaXplKToKICAgICIiIlRoZSB0
-ZXh0LCBjdXQgd2l0aCBhbiBlbGxpcHNpcyB3aGVuIGl0IHdvdWxkIGJlIGRyYXduIHdpZGVyIHRo
-YW4gcHggKGFuIFNWRyBsYWJlbCBkb2VzIG5vdCB3cmFwKS4iIiIKICAgIHRleHQgPSBzdHIodGV4
-dCkKICAgIGlmIHRleHRfd2lkdGgodGV4dCwgc2l6ZSkgPD0gcHg6CiAgICAgICAgcmV0dXJuIHRl
-eHQKICAgIHdoaWxlIHRleHQgYW5kIHRleHRfd2lkdGgodGV4dCArICLigKYiLCBzaXplKSA+IHB4
-OgogICAgICAgIHRleHQgPSB0ZXh0WzotMV0KICAgIHJldHVybiB0ZXh0LnJzdHJpcCgiICzCtyIp
-ICsgIuKApiIKCgpkZWYgY2xvY2soc2Vjb25kcyk6CiAgICBzID0gaW50KHJvdW5kKG1heCgwLCBz
-ZWNvbmRzKSkpCiAgICByZXR1cm4gZiJ7cyAvLyA2MH1tIHtzICUgNjA6MDJkfXMiIGlmIHMgPj0g
-NjAgZWxzZSBmIntzfXMiCgoKZGVmIG1lZGlhbih2YWx1ZXMpOgogICAgdiA9IHNvcnRlZCh2YWx1
-ZXMpCiAgICBpZiBub3QgdjoKICAgICAgICByZXR1cm4gTm9uZQogICAgbSA9IGxlbih2KSAvLyAy
-CiAgICByZXR1cm4gdlttXSBpZiBsZW4odikgJSAyIGVsc2UgKHZbbSAtIDFdICsgdlttXSkgLyAy
-CgoKTEVEID0geyJwYXNzIjogIm9rIiwgImZhaWwiOiAiYmFkIiwgImJhZCI6ICJiYWQifSAgIyBh
-IHR1cm4ncyBvdXRjb21lIC0+IHRoZSBjb2xvdXIgb2YgaXRzIG1lbWJlcidzIHN0YXR1cyBsaWdo
-dAoKCmRlZiBhZ2VudHNfcGFuZWwod2FrZXMsIHR1cm5zLCB0b2Rvcywgc3VtbWFyeSwgbWVtYmVy
-cywgcGxhbm5lciwgZmluaXNoZWQsIG1hZGU9KCksIHJlYWRzPSgpKToKICAgICIiIk9uZSByb3cg
-cGVyIGFnZW50OiB0aGUgcGxhbm5lciwgZXZlcnkgbWVtYmVyLCB0aGUganVkZ2U7IHdoYXQgZWFj
-aCBkaWQsIGZyb20gdGhlIHJlY29yZHMgb25seS4gQSBtZW1iZXIgd2l0aCBhCiAgICB0b2RvIHRh
-a2VuIGFuZCBub3QgZW5kZWQgd29ya3Mgbm93IChvbmx5IHdoaWxlIHRoZSBydW4gZ29lcyBvbik7
-IG90aGVyd2lzZSBpdHMgbGlnaHQgc2hvd3MgaXRzIGxhc3QgdHVybi4iIiIKICAgIHJvd3MgPSBb
-XQogICAgd2FrZV9uID0gbGVuKHt3LmdldCgid2FrZSIpIGZvciB3IGluIHdha2VzfSkKICAgIGJh
-Y2sgPSBzdW0oMSBmb3IgdyBpbiB3YWtlcyBpZiB3LmdldCgicHJvYmxlbXMiKSBhbmQgdy5nZXQo
-InN0YXRlIikgPT0gImlkbGUiKQogICAgdG9rZW5zID0gc3VtKHdbInRva2VucyJdIGZvciB3IGlu
-IHdha2VzIGlmIGlzaW5zdGFuY2Uody5nZXQoInRva2VucyIpLCBpbnQpKQogICAgcm93cy5hcHBl
-bmQoKCJwbGFubmVyIiwgcGxhbm5lciwgInBsYW5uZXIiLCAiaWRsZSIsIGYie3RpbWVzKHdha2Vf
-biwgJ3dha2UnKX0gwrcge3RpbWVzKGxlbih3YWtlcyksICd0dXJuJyl9IgogICAgICAgICAgICAg
-ICAgICsgKGYiIMK3IHtiYWNrfSBzZW50IGJhY2siIGlmIGJhY2sgZWxzZSAiIiksIGYie3Rva2Vu
-czosfSB0b2tlbnMiIGlmIHRva2VucyBlbHNlICIiKSkKICAgIGlkbGUsIHNwYW4gPSAoc3VtbWFy
-eSBvciB7fSkuZ2V0KCJpZGxlX3NlY29uZHMiKSBvciB7fSwgKHN1bW1hcnkgb3Ige30pLmdldCgi
-c2Vjb25kcyIpCiAgICB3b3JraW5nID0ge3QuZ2V0KCJtZW1iZXIiKTogdCBmb3IgdCBpbiB0b2Rv
-cyBpZiB0WyJzdGF0ZSJdID09ICJ0YWtlbiJ9IGlmIG5vdCBmaW5pc2hlZCBlbHNlIHt9CiAgICBm
-b3IgbmFtZSBpbiBtZW1iZXJzOgogICAgICAgIG1pbmUgPSBbdCBmb3IgdCBpbiB0dXJucyBpZiB0
-LmdldCgibWVtYmVyIikgPT0gbmFtZV0KICAgICAgICBsYXN0ID0gbWluZVstMV0gaWYgbWluZSBl
-bHNlIE5vbmUKICAgICAgICBsaWdodCA9ICJydW4iIGlmIG5hbWUgaW4gd29ya2luZyBlbHNlIChM
-RUQuZ2V0KG91dGNvbWUobGFzdCksICJpZGxlIikgaWYgbGFzdCBlbHNlICJpZGxlIikKICAgICAg
-ICB2YWxpZCA9IHN1bSgxIGZvciB0IGluIG1pbmUgaWYgdC5nZXQoInN0YXR1cyIpID09ICJ2YWxp
-ZCIpCiAgICAgICAgdXNlZCA9IHN1bSh0WyJ0b2tlbnMiXSBmb3IgdCBpbiBtaW5lIGlmIGlzaW5z
-dGFuY2UodC5nZXQoInRva2VucyIpLCBpbnQpKQogICAgICAgIGxpbmUgPSBmInt0aW1lcyhsZW4o
-bWluZSksICd0dXJuJyl9IMK3IHt2YWxpZH0gdmFsaWQiICsgKGYiIMK3IHtsZW4obWluZSkgLSB2
-YWxpZH0gbm90IiBpZiBsZW4obWluZSkgPiB2YWxpZCBlbHNlICIiKQogICAgICAgIGZyZWUgPSAo
-ZiJmcmVlIHtpZGxlW25hbWVdOi4wZn0gcyIgKyAoZiIgKHtpZGxlW25hbWVdIC8gc3BhbjouMCV9
-KSIgaWYgc3BhbiBlbHNlICIiKSkgaWYgbmFtZSBpbiBpZGxlIGVsc2UgIiIKICAgICAgICBub3cg
-PSAoZiJ3b3JrcyBvbiB7d29ya2luZ1tuYW1lXVsnaWQnXX0iIGlmIG5hbWUgaW4gd29ya2luZyBl
-bHNlCiAgICAgICAgICAgICAgIGYibGFzdDoge2xhc3QuZ2V0KCd0b2RvJyl9IHtsYXN0LmdldCgn
-c3RhdHVzJykgb3IgbGFzdC5nZXQoJ2tpbmQnKSBvciBsYXN0LmdldCgnc3RhdGUnKX0iIGlmIGxh
-c3QgZWxzZSAibm8gdHVybiB5ZXQiKQogICAgICAgIHNraWxscyA9IHtlWyJpZCJdIGZvciBlIGlu
-IG1hZGUgaWYgKGVbImtpbmQiXSBvciAiIikubG93ZXIoKSA9PSAic2tpbGwifQogICAgICAgIHdy
-b3RlID0gW2VbImlkIl0gZm9yIGUgaW4gbWFkZSBpZiBlWyJpZCJdIGluIHNraWxscyBhbmQgZVsi
-bWVtYmVyIl0gPT0gbmFtZV0KICAgICAgICBvcGVuZWQgPSBzb3J0ZWQoe2VpZCBmb3IgYWdlbnQs
-IGVpZCwgXyBpbiByZWFkcyBpZiBhZ2VudCA9PSBuYW1lIGFuZCBlaWQgaW4gc2tpbGxzfSkKICAg
-ICAgICBrbm93ID0gIiDCtyAiLmpvaW4oeCBmb3IgeCBpbiAoZiJ3cm90ZSBza2lsbCB7JywgJy5q
-b2luKHdyb3RlKX0iIGlmIHdyb3RlIGVsc2UgIiIsCiAgICAgICAgICAgICAgICAgICAgICAgICAg
-ICAgICAgICAgICAgIGYicmVhZCBza2lsbCB7JywgJy5qb2luKG9wZW5lZCl9IiBpZiBvcGVuZWQg
-ZWxzZSAiIikgaWYgeCkKICAgICAgICByb3dzLmFwcGVuZCgoIm1lbWJlciIsIG5hbWUsICJtZW1i
-ZXIiLCBsaWdodCwgbGluZSwKICAgICAgICAgICAgICAgICAgICAgIiDCtyAiLmpvaW4oeCBmb3Ig
-eCBpbiAoZiJ7dXNlZDosfSB0b2tlbnMiIGlmIHVzZWQgZWxzZSAiIiwgZnJlZSwgbm93LCBrbm93
-KSBpZiB4KSkpCiAgICBqdWRnZWQgPSBbdCBmb3IgdCBpbiB0dXJucyBpZiB0LmdldCgic3RhdHVz
-IikgaW4gKCJ2YWxpZCIsICJpbnZhbGlkIildCiAgICBzY29yZXMgPSBbdFsic2NvcmUiXSBmb3Ig
-dCBpbiBqdWRnZWQgaWYgdC5nZXQoInN0YXR1cyIpID09ICJ2YWxpZCIgYW5kIGlzaW5zdGFuY2Uo
-dC5nZXQoInNjb3JlIiksIChpbnQsIGZsb2F0KSldCiAgICByb3dzLmFwcGVuZCgoImp1ZGdlIiwg
-Imp1ZGdlIiwgImEgcHJvZ3JhbSIsICJvayIgaWYgc2NvcmVzIGVsc2UgImlkbGUiLCBmIntsZW4o
-c2NvcmVzKX0gdmFsaWQgb2Yge2xlbihqdWRnZWQpfSBqdWRnZWQiLAogICAgICAgICAgICAgICAg
-IGYiYmVzdCB7bWF4KHNjb3Jlcyk6LjZnfSIgaWYgc2NvcmVzIGVsc2UgIm5vIHZhbGlkIGFuc3dl
-ciB5ZXQiKSkKICAgIGl0ZW1zID0gIiIuam9pbihmJzxsaSBkYXRhLXJvbGU9IntraW5kfSIgZGF0
-YS1hZ2VudD0ie2VzYyhuKX0iIGRhdGEtbGVkPSJ7bGlnaHR9Ij48aSBjbGFzcz0ibGVkIHtsaWdo
-dH0iPjwvaT48Yj57ZXNjKG4pfTwvYj4gJwogICAgICAgICAgICAgICAgICAgIGYnPHNwYW4gY2xh
-c3M9InJvbGUiPntlc2Mocm9sZSl9PC9zcGFuPjxkaXYgY2xhc3M9InN1YiI+e2VzYyhhKX08L2Rp
-dj4nCiAgICAgICAgICAgICAgICAgICAgKyAoZic8ZGl2IGNsYXNzPSJzdWIiPntlc2MoYil9PC9k
-aXY+JyBpZiBiIGVsc2UgIiIpICsgIjwvbGk+IiBmb3Iga2luZCwgbiwgcm9sZSwgbGlnaHQsIGEs
-IGIgaW4gcm93cykKICAgIHJldHVybiBmJzx1bCBjbGFzcz0iYWdlbnRzIiBpZD0iYWdlbnRzIj57
-aXRlbXN9PC91bD4nCgoKZGVmIGhlYWx0aF9wYW5lbChzdGFydCwgd2FrZXMsIHR1cm5zLCBzdW1t
-YXJ5KToKICAgICIiIlRoZSBydW4ncyBudW1iZXJzIHRoYXQgc2F5IHdoZXRoZXIgdGhlIHRlYW0g
-d29ya2VkIHdlbGwsIGVhY2ggZnJvbSB0aGUgcmVjb3JkcyAobm90aGluZyBlc3RpbWF0ZWQpLiIi
-IgogICAgYWRkZWQgPSB7fQogICAgZm9yIHcgaW4gd2FrZXM6CiAgICAgICAgYWRkZWRbdy5nZXQo
-Indha2UiKV0gPSBhZGRlZC5nZXQody5nZXQoIndha2UiKSwgMCkgKyBsZW4ody5nZXQoImFkZGVk
-Iikgb3IgW10pCiAgICBpdGVtcyA9IFsoIm1lbWJlciB0dXJucyIsIGYie2xlbih0dXJucyl9IC8g
-e3N0YXJ0LmdldCgndHVybnMnLCAnPycpfSIsICIiKSwKICAgICAgICAgICAgICgicGxhbm5lciB3
-YWtlcyIsIHN0cihsZW4oYWRkZWQpKSwgZiJ7c3VtKDEgZm9yIG4gaW4gYWRkZWQudmFsdWVzKCkg
-aWYgbiA9PSAwKX0gYWRkZWQgbm8gdG9kbyIpLAogICAgICAgICAgICAgKCJyZXBsaWVzIHNlbnQg
-YmFjayIsIGYie3N1bSgxIGZvciB3IGluIHdha2VzIGlmIHcuZ2V0KCdwcm9ibGVtcycpKX0gb2Yg
-e2xlbih3YWtlcyl9IiwgIiIpXQogICAgc3BlbnQgPSBbdFsic2Vjb25kcyJdIGZvciB0IGluIHR1
-cm5zIGlmIGlzaW5zdGFuY2UodC5nZXQoInNlY29uZHMiKSwgKGludCwgZmxvYXQpKV0KICAgIGlm
-IHNwZW50OgogICAgICAgIGl0ZW1zLmFwcGVuZCgoIm1lbWJlciB0dXJuIiwgZiJ7bWVkaWFuKHNw
-ZW50KTouMGZ9IHMiLCBmIm1lZGlhbjsge21pbihzcGVudCk6LjBmfeKAk3ttYXgoc3BlbnQpOi4w
-Zn0gcyIpKQogICAgaWYgc3VtbWFyeToKICAgICAgICBpdGVtcy5hcHBlbmQoKCJ0YWtlbiB0d2lj
-ZSIsIHN0cihzdW1tYXJ5LmdldCgiZG91YmxlX3Rha2VzIikpLCAibXVzdCBiZSAwIikpCiAgICAg
-ICAgaWRsZSwgc3BhbiA9IHN1bW1hcnkuZ2V0KCJpZGxlX3NlY29uZHMiKSBvciB7fSwgc3VtbWFy
-eS5nZXQoInNlY29uZHMiKQogICAgICAgIGlmIGlkbGUgYW5kIHNwYW46CiAgICAgICAgICAgIHNo
-YXJlcyA9IFt2IC8gc3BhbiBmb3IgdiBpbiBpZGxlLnZhbHVlcygpXQogICAgICAgICAgICBpdGVt
-cy5hcHBlbmQoKCJmcmVlLCBub3RoaW5nIHRvIHRha2UiLCBmIntzdW0oc2hhcmVzKSAvIGxlbihz
-aGFyZXMpOi4wJX0iLCBmIm1lYW47IHttaW4oc2hhcmVzKTouMCV94oCTe21heChzaGFyZXMpOi4w
-JX0iKSkKICAgICAgICBpZiBzdW1tYXJ5LmdldCgidG9rZW5zIikgaXMgbm90IE5vbmU6CiAgICAg
-ICAgICAgIHNoYXJlID0gc3VtbWFyeS5nZXQoInBsYW5uZXJfc2hhcmUiKQogICAgICAgICAgICBp
-dGVtcy5hcHBlbmQoKCJ0b2tlbnMiLCBmIntzdW1tYXJ5Wyd0b2tlbnMnXTosfSIgaWYgaXNpbnN0
-YW5jZShzdW1tYXJ5WyJ0b2tlbnMiXSwgaW50KSBlbHNlIGVzYyhzdW1tYXJ5WyJ0b2tlbnMiXSks
-CiAgICAgICAgICAgICAgICAgICAgICAgICAgZiJwbGFubmVyIHtzaGFyZTouMCV9IiBpZiBpc2lu
-c3RhbmNlKHNoYXJlLCAoaW50LCBmbG9hdCkpIGVsc2UgIiIpKQogICAgY2VsbHMgPSAiIi5qb2lu
-KGYnPGRpdj48ZHQ+e2VzYyhrKX08L2R0PjxkZD57ZXNjKHYpfScgKyAoZic8c21hbGw+e2VzYyhu
-KX08L3NtYWxsPicgaWYgbiBlbHNlICIiKSArICI8L2RkPjwvZGl2PiIKICAgICAgICAgICAgICAg
-ICAgICBmb3IgaywgdiwgbiBpbiBpdGVtcykKICAgIHJldHVybiBmJzxkbCBjbGFzcz0iaGVhbHRo
-Ij57Y2VsbHN9PC9kbD4nCgoKZGVmIG91dGNvbWUodHVybik6CiAgICBpZiB0dXJuLmdldCgic3Rh
-dHVzIikgPT0gInZhbGlkIjoKICAgICAgICByZXR1cm4gInBhc3MiCiAgICBpZiB0dXJuLmdldCgi
-c3RhdHVzIikgPT0gImludmFsaWQiIG9yIHR1cm4uZ2V0KCJraW5kIikgPT0gImZhaWx1cmUiOgog
-ICAgICAgIHJldHVybiAiZmFpbCIKICAgIGlmIHR1cm4uZ2V0KCJzdGF0ZSIpIGluICgiZXJyb3Ii
-LCAiYWJvcnRlZCIsICJwcm92aWRlcl9zdGFsbCIpOgogICAgICAgIHJldHVybiAiYmFkIgogICAg
-cmV0dXJuICJub25lIiAgIyBubyB1c2FibGUgYW5zd2VyLCBhIHRpbWVvdXQsIG9yIHN0aWxsIHJ1
-bm5pbmcKCgpkZWYgbG9vcF9zdmcoc3RhcnQsIHdha2VzLCB0dXJucywgdG9kb3MsIHN1bW1hcnks
-IG1lbWJlcnMsIHBsYW5uZXIpOgogICAgIiIiVGhlIGxvb3AsIHRvcCB0byBib3R0b20sIGVhY2gg
-YXJyb3cgbGFiZWxsZWQgd2l0aCB3aGF0IHdlbnQgYWxvbmcgaXQgaW4gdGhpcyBydW4uIiIiCiAg
-ICBzZW50X2JhY2sgPSBzdW0oMSBmb3IgdyBpbiB3YWtlcyBpZiB3LmdldCgicHJvYmxlbXMiKSBh
-bmQgdy5nZXQoInN0YXRlIikgPT0gImlkbGUiKQogICAgYWRkZWQgPSBzdW0obGVuKHcuZ2V0KCJh
-ZGRlZCIpIG9yIFtdKSBmb3IgdyBpbiB3YWtlcykKICAgIGRyb3BwZWQgPSBzdW0obGVuKHcuZ2V0
-KCJkcm9wcGVkIikgb3IgW10pIGZvciB3IGluIHdha2VzKQogICAgc3RhdGVzID0ge30KICAgIGZv
-ciB0IGluIHRvZG9zOgogICAgICAgIHN0YXRlc1t0WyJzdGF0ZSJdXSA9IHN0YXRlcy5nZXQodFsi
-c3RhdGUiXSwgMCkgKyAxCiAgICBhbnN3ZXJzID0gc3VtKDEgZm9yIHQgaW4gdHVybnMgaWYgdC5n
-ZXQoImtpbmQiKSA9PSAicmVzdWx0IikKICAgIG90aGVyID0gbGVuKHR1cm5zKSAtIGFuc3dlcnMK
-ICAgIHZhbGlkID0gc3VtKDEgZm9yIHQgaW4gdHVybnMgaWYgdC5nZXQoInN0YXR1cyIpID09ICJ2
-YWxpZCIpCiAgICBpbnZhbGlkID0gc3VtKDEgZm9yIHQgaW4gdHVybnMgaWYgdC5nZXQoInN0YXR1
-cyIpID09ICJpbnZhbGlkIikKICAgIHNjb3JlcyA9IFt0WyJzY29yZSJdIGZvciB0IGluIHR1cm5z
-IGlmIHQuZ2V0KCJzdGF0dXMiKSA9PSAidmFsaWQiIGFuZCBpc2luc3RhbmNlKHQuZ2V0KCJzY29y
-ZSIpLCAoaW50LCBmbG9hdCkpXQogICAgYmVzdCA9IGYiYmVzdCB7bWF4KHNjb3Jlcyk6LjZnfSIg
-aWYgc2NvcmVzIGVsc2UgIm5vIHZhbGlkIGFuc3dlciB5ZXQiCiAgICBwbGFubmVyX3Rva2VucyA9
-IFt3WyJ0b2tlbnMiXSBmb3IgdyBpbiB3YWtlcyBpZiBpc2luc3RhbmNlKHcuZ2V0KCJ0b2tlbnMi
-KSwgaW50KV0KICAgIHJlYWRzID0gKHN1bW1hcnkgb3Ige30pLmdldCgiYm9hcmRfcmVhZHMiKSBv
-ciB7fQogICAgcmVhZF9ub3RlID0gKGYie3N1bSgocmVhZHMuZ2V0KCdieV9tZW1iZXInKSBvciB7
-fSkudmFsdWVzKCkpfSBib2FyZCByZWFkcyIgaWYgcmVhZHMuZ2V0KCJtZWFzdXJlZCIpCiAgICAg
-ICAgICAgICAgICAgZWxzZSAicmVhZCBURUFNX0JPQVJELm1kIHdoaWxlIHRoZXkgd29yayIpCiAg
-ICBub2RlcyA9IFsoImV2ZW50cyIsICJqdWRnZWQgYW5zd2VycywgZW5kZWQgdG9kb3MsIHRoZSBz
-dGFydCIpLAogICAgICAgICAgICAgKGYicGxhbm5lcjoge3BsYW5uZXJ9IiwgZiJ7bGVuKHdha2Vz
-KX0gdHVybnMiICsgKGYiLCB7c3VtKHBsYW5uZXJfdG9rZW5zKX0gdG9rZW5zIiBpZiBwbGFubmVy
-X3Rva2VucyBlbHNlICIiKSksCiAgICAgICAgICAgICAoInNoYXJlZCB0b2RvIGxpc3QiLCAiIMK3
-ICIuam9pbihmIntufSB7a30iIGZvciBrLCBuIGluIHNvcnRlZChzdGF0ZXMuaXRlbXMoKSkpIG9y
-ICJlbXB0eSIpLAogICAgICAgICAgICAgKGYibWVtYmVyczogeycsICcuam9pbihtZW1iZXJzKX0i
-IGlmIHRleHRfd2lkdGgoZiJtZW1iZXJzOiB7JywgJy5qb2luKG1lbWJlcnMpfSIsIDEzKSA8PSAy
-MzIKICAgICAgICAgICAgICBlbHNlIGYibWVtYmVycyAoe2xlbihtZW1iZXJzKX0pIiwgcmVhZF9u
-b3RlKSwKICAgICAgICAgICAgICgianVkZ2UgKGEgcHJvZ3JhbSkiLCBmInt2YWxpZH0gdmFsaWQs
-IHtpbnZhbGlkfSBpbnZhbGlkOyB7YmVzdH0iKV0KICAgIGFycm93cyA9IFtmIndva2UgdGhlIHBs
-YW5uZXIge3RpbWVzKGxlbih7dy5nZXQoJ3dha2UnKSBmb3IgdyBpbiB3YWtlc30pKX0iICsgKGYi
-ICh7c2VudF9iYWNrfSBzZW50IGJhY2spIiBpZiBzZW50X2JhY2sgZWxzZSAiIiksCiAgICAgICAg
-ICAgICAgZiJ7YWRkZWR9IHRvZG9zIGFkZGVkLCB7ZHJvcHBlZH0gZHJvcHBlZCIsCiAgICAgICAg
-ICAgICAgZiJ7c3VtKDEgZm9yIHQgaW4gdG9kb3MgaWYgdC5nZXQoJ21lbWJlcicpKX0gdG9kb3Mg
-dGFrZW4iLAogICAgICAgICAgICAgIGYie2Fuc3dlcnN9IGFuc3dlcnMiICsgKGYiLCB7b3RoZXJ9
-IHdpdGhvdXQgb25lIiBpZiBvdGhlciBlbHNlICIiKV0KICAgIGJveF94LCBib3hfdywgYm94X2gs
-IGdhcCA9IDE0LCAyNTYsIDQ4LCA1MgogICAgcnggPSBib3hfeCArIGJveF93ICsgNTAgICMgdGhl
-IGxpbmUgYmFjayB0byB0aGUgdG9wLCByaWdodCBvZiB0aGUgYXJyb3dzJyBsYWJlbHMKICAgIHBh
-cnRzID0gW10KICAgIGtleXMgPSAoImV2ZW50cyIsICJwbGFubmVyIiwgInRvZG9zIiwgIm1lbWJl
-cnMiLCAianVkZ2UiKQogICAgYXJyb3dfa2V5cyA9ICgid2FrZSIsICJ0b2RvIiwgInRha2UiLCAi
-YW5zd2VyIikKICAgIGZvciBpLCAodGl0bGUsIHN1YikgaW4gZW51bWVyYXRlKG5vZGVzKToKICAg
-ICAgICB5ID0gOCArIGkgKiAoYm94X2ggKyBnYXApCiAgICAgICAgcGFydHMuYXBwZW5kKGYnPGcg
-Y2xhc3M9Im5vZGUiIGlkPSJuLXtrZXlzW2ldfSI+PHJlY3QgeD0ie2JveF94fSIgeT0ie3l9IiB3
-aWR0aD0ie2JveF93fSIgaGVpZ2h0PSJ7Ym94X2h9IiByeD0iMTAiLz4nCiAgICAgICAgICAgICAg
-ICAgICAgIGYnPHRleHQgeD0ie2JveF94ICsgMTJ9IiB5PSJ7eSArIDIwfSIgY2xhc3M9InQiPntl
-c2MoZml0KHRpdGxlLCBib3hfdyAtIDI0LCAxMykpfTwvdGV4dD4nCiAgICAgICAgICAgICAgICAg
-ICAgIGYnPHRleHQgeD0ie2JveF94ICsgMTJ9IiB5PSJ7eSArIDM4fSIgY2xhc3M9InMiIGlkPSJz
-LXtrZXlzW2ldfSI+e2VzYyhmaXQoc3ViLCBib3hfdyAtIDI0LCAxMSkpfTwvdGV4dD48L2c+JykK
-ICAgICAgICBpZiBpIDwgbGVuKGFycm93cyk6CiAgICAgICAgICAgIHkxLCB5MiA9IHkgKyBib3hf
-aCwgeSArIGJveF9oICsgZ2FwCiAgICAgICAgICAgICMgYSBzbWFsbCBkb3QgcnVucyBkb3duIHRo
-ZSBhcnJvdyB3aGlsZSB0aGF0IHN0ZXAgaGFwcGVucyBpbiBhIHJlcGxheSAobm9uZSBhdCByZXN0
-OiBub3RoaW5nIG1vdmVzIHRoZW4pCiAgICAgICAgICAgIHBhcnRzLmFwcGVuZChmJzxnIGNsYXNz
-PSJmbG93ZyIgaWQ9ImYte2Fycm93X2tleXNbaV19Ij48bGluZSBjbGFzcz0iZmxvdyIgeDE9Inti
-b3hfeCArIDQwfSIgeTE9Int5MSArIDJ9IiB4Mj0ie2JveF94ICsgNDB9IiB5Mj0ie3kyIC0gOH0i
-Lz4nCiAgICAgICAgICAgICAgICAgICAgICAgICBmJzxwb2x5Z29uIGNsYXNzPSJoZWFkIiBwb2lu
-dHM9Intib3hfeCArIDM0fSx7eTIgLSA5fSB7Ym94X3ggKyA0Nn0se3kyIC0gOX0ge2JveF94ICsg
-NDB9LHt5MiAtIDF9Ii8+JwogICAgICAgICAgICAgICAgICAgICAgICAgZic8Y2lyY2xlIGNsYXNz
-PSJwdWxzZSIgY3g9Intib3hfeCArIDQwfSIgY3k9Int5MSArIDN9IiByPSIxLjYiIHN0eWxlPSIt
-LWxlbjp7Z2FwIC0gMTN9cHgiLz4nCiAgICAgICAgICAgICAgICAgICAgICAgICBmJzx0ZXh0IHg9
-Intib3hfeCArIDUyfSIgeT0ie3kxICsgZ2FwIC8gMiArIDR9IiBjbGFzcz0iYSIgaWQ9ImEte2Fy
-cm93X2tleXNbaV19Ij4nCiAgICAgICAgICAgICAgICAgICAgICAgICBmJ3tlc2MoZml0KGFycm93
-c1tpXSwgcnggLSBib3hfeCAtIDYwLCAxMSkpfTwvdGV4dD48L2c+JykKICAgIHRvcCwgYm90dG9t
-ID0gOCArIGJveF9oIC8gMiwgOCArIDQgKiAoYm94X2ggKyBnYXApICsgYm94X2ggLyAyCiAgICBw
-YXJ0cy5hcHBlbmQoZic8cGF0aCBjbGFzcz0iZmxvdyBiYWNrIiBkPSJNIHtib3hfeCArIGJveF93
-fSB7Ym90dG9tfSBIIHtyeH0gViB7dG9wfSBIIHtib3hfeCArIGJveF93ICsgOX0iLz4nCiAgICAg
-ICAgICAgICAgICAgZic8cG9seWdvbiBjbGFzcz0iaGVhZCIgcG9pbnRzPSJ7Ym94X3ggKyBib3hf
-dyArIDl9LHt0b3AgLSA2fSB7Ym94X3ggKyBib3hfdyArIDl9LHt0b3AgKyA2fSB7Ym94X3ggKyBi
-b3hfdyArIDF9LHt0b3B9Ii8+JwogICAgICAgICAgICAgICAgIGYnPHRleHQgY2xhc3M9ImEiIHRy
-YW5zZm9ybT0idHJhbnNsYXRlKHtyeCArIDE0fSx7KHRvcCArIGJvdHRvbSkgLyAyfSkgcm90YXRl
-KC05MCkiIHRleHQtYW5jaG9yPSJtaWRkbGUiPicKICAgICAgICAgICAgICAgICBmJ3ZlcmRpY3Rz
-IGdvIHRvIHRoZSB0ZWFtIGtub3dsZWRnZSBiYXNlOiB0aGUgbmV4dCBldmVudDwvdGV4dD4nKQog
-ICAgaGVpZ2h0ID0gOCArIDUgKiBib3hfaCArIDQgKiBnYXAgKyA4CiAgICByZXR1cm4gKGYnPHN2
-ZyB2aWV3Qm94PSIwIDAgMzUwIHtoZWlnaHR9IiB3aWR0aD0iMzUwIiBoZWlnaHQ9IntoZWlnaHR9
-IiByb2xlPSJpbWciICcKICAgICAgICAgICAgZidhcmlhLWxhYmVsPSJ0aGUgbG9vcDogZXZlbnRz
-IHdha2UgdGhlIHBsYW5uZXIsIHRoZSBwbGFubmVyIGtlZXBzIHRoZSB0b2RvIGxpc3QsIG1lbWJl
-cnMgdGFrZSB0b2RvcywgJwogICAgICAgICAgICBmJ2EgcHJvZ3JhbSBqdWRnZXMsIHZlcmRpY3Rz
-IGFyZSB0aGUgbmV4dCBldmVudHMiPnsiIi5qb2luKHBhcnRzKX08L3N2Zz4nKQoKCmRlZiB0aW1l
-bGluZV9zdmcodDAsIHQxLCB3YWtlcywgdHVybnMsIG1lbWJlcnMsIHN0b3Bfd2h5LCB0b29scz0o
-KSk6CiAgICAiIiJBIGNvbHVtbiBmb3IgdGhlIHBsYW5uZXIgYW5kIGZvciBldmVyeSBtZW1iZXIs
-IHRpbWUgcnVubmluZyBkb3duIHRoZSBwYWdlIChhIHBob25lIGlzIHRhbGwsIG5vdCB3aWRlKTog
-ZXZlcnkKICAgIHR1cm4gaXMgYSBiYXIgZnJvbSBpdHMgc3RhcnQgdG8gaXRzIGVuZCwgYW5kIGV2
-ZXJ5IHJlc3VsdCB0aGF0IHdva2UgdGhlIHBsYW5uZXIgYSBkb3R0ZWQgbGluZSB0byBpdHMgY29s
-dW1uLiIiIgogICAgbGFuZXMgPSBbInBsYW5uZXIiXSArIGxpc3QobWVtYmVycykKICAgIHdpZHRo
-LCBheGlzX3csIHRvcCA9IDM0MCwgNDQsIDMwCiAgICBjb2xfdyA9ICh3aWR0aCAtIGF4aXNfdyAt
-IDQpIC8gbGVuKGxhbmVzKQogICAgcGxvdF9oID0gbWF4KDI0MCwgbWluKDE2MDAsIDMwICogKGxl
-bih3YWtlcykgKyBsZW4odHVybnMpKSkpCiAgICBoZWlnaHQgPSB0b3AgKyBwbG90X2ggKyAyMgog
-ICAgc3BhbiA9IG1heCh0MSAtIHQwLCAxZS02KQogICAgeSA9IGxhbWJkYSB0OiB0b3AgKyAodCAt
-IHQwKSAvIHNwYW4gKiBwbG90X2ggICMgbm9xYTogRTczMQogICAgY29sX3ggPSB7bmFtZTogYXhp
-c193ICsgaSAqIGNvbF93IGZvciBpLCBuYW1lIGluIGVudW1lcmF0ZShsYW5lcyl9CiAgICBwYXJ0
-cyA9IFtdCiAgICBmb3IgbmFtZSwgY3ggaW4gY29sX3guaXRlbXMoKToKICAgICAgICBwYXJ0cy5h
-cHBlbmQoZic8dGV4dCB4PSJ7Y3ggKyBjb2xfdyAvIDI6LjFmfSIgeT0ie3RvcCAtIDEyfSIgdGV4
-dC1hbmNob3I9Im1pZGRsZSIgY2xhc3M9ImxuIj57ZXNjKG5hbWUpfTwvdGV4dD4nCiAgICAgICAg
-ICAgICAgICAgICAgIGYnPGxpbmUgY2xhc3M9ImxhbmUiIHgxPSJ7Y3g6LjFmfSIgeTE9Int0b3B9
-IiB4Mj0ie2N4Oi4xZn0iIHkyPSJ7dG9wICsgcGxvdF9ofSIvPicpCiAgICBwYXJ0cy5hcHBlbmQo
-Zic8bGluZSBjbGFzcz0ibGFuZSIgeDE9Int3aWR0aCAtIDR9IiB5MT0ie3RvcH0iIHgyPSJ7d2lk
-dGggLSA0fSIgeTI9Int0b3AgKyBwbG90X2h9Ii8+JykKCiAgICBkZWYgYmFyKGtpbmQsIGtleSwg
-cywgZSwgbGFuZSwgdGlwLCBsYWJlbCk6CiAgICAgICAgeDEsIHkxID0gY29sX3hbbGFuZV0gKyA0
-LCB5KHMpCiAgICAgICAgaCA9IG1heCh5KGUpIC0geTEsIDMpCiAgICAgICAgdGV4dCA9IGYnPHRl
-eHQgeD0ie3gxICsgNDouMWZ9IiB5PSJ7eTEgKyAxMjouMWZ9Ij57ZXNjKGxhYmVsKX08L3RleHQ+
-JyBpZiBoID4gMTUgYW5kIGxhYmVsIGVsc2UgIiIKICAgICAgICByZXR1cm4gKGYnPGcgY2xhc3M9
-ImJhciB7a2luZH0iIGRhdGEtcz0ie3N9IiBkYXRhLWU9IntlfSIgZGF0YS1pPSJ7a2V5fSI+PHRp
-dGxlPntlc2ModGlwKX08L3RpdGxlPicKICAgICAgICAgICAgICAgIGYnPHJlY3QgeD0ie3gxOi4x
-Zn0iIHk9Int5MTouMWZ9IiB3aWR0aD0ie2NvbF93IC0gODouMWZ9IiBoZWlnaHQ9IntoOi4xZn0i
-IHJ4PSIzIi8+e3RleHR9PC9nPicpCiAgICBmb3Igd2ksIHcgaW4gZW51bWVyYXRlKHdha2VzKToK
-ICAgICAgICBzLCBlID0gdy5nZXQoInN0YXJ0Iikgb3IgKHcuZ2V0KCJ0IiwgdDApIC0gKHcuZ2V0
-KCJzZWNvbmRzIikgb3IgMCkpLCB3LmdldCgiZW5kIikgb3Igdy5nZXQoInQiLCB0MCkKICAgICAg
-ICBraW5kID0gInBsYW4iIGlmIHcuZ2V0KCJzdGF0ZSIpID09ICJpZGxlIiBhbmQgbm90IHcuZ2V0
-KCJwcm9ibGVtcyIpIGVsc2UgInBsYW5iYWNrIgogICAgICAgIHBhcnRzLmFwcGVuZChiYXIoa2lu
-ZCwgZiJ3e3dpfSIsIHMsIGUsICJwbGFubmVyIiwgZiJ3YWtlIHt3LmdldCgnd2FrZScpfSBhdHRl
-bXB0IHt3LmdldCgnYXR0ZW1wdCcpfToge3cuZ2V0KCdyZWFzb24nLCAnJyl9IiwKICAgICAgICAg
-ICAgICAgICAgICAgICAgIGYid3t3LmdldCgnd2FrZScpfSIpKQogICAgZm9yIHRpLCB0IGluIGVu
-dW1lcmF0ZSh0dXJucyk6CiAgICAgICAgaWYgdC5nZXQoIm1lbWJlciIpIG5vdCBpbiBjb2xfeDoK
-ICAgICAgICAgICAgY29udGludWUKICAgICAgICBzLCBlID0gdC5nZXQoInN0YXJ0Iikgb3IgdC5n
-ZXQoInQiLCB0MCksIHQuZ2V0KCJlbmQiKSBvciAodC5nZXQoInQiLCB0MCkgKyAodC5nZXQoInNl
-Y29uZHMiKSBvciAwKSkKICAgICAgICBzY29yZSA9IGYiIHNjb3JlIHt0WydzY29yZSddOi42Z30i
-IGlmIGlzaW5zdGFuY2UodC5nZXQoInNjb3JlIiksIChpbnQsIGZsb2F0KSkgZWxzZSAiIgogICAg
-ICAgIHBhcnRzLmFwcGVuZChiYXIob3V0Y29tZSh0KSwgZiJte3RpfSIsIHMsIGUsIHRbIm1lbWJl
-ciJdLAogICAgICAgICAgICAgICAgICAgICAgICAgZiJ7dFsnbWVtYmVyJ119IHR1cm4ge3QuZ2V0
-KCd0dXJuJyl9OiB0b2RvIHt0LmdldCgndG9kbycpfToge3QuZ2V0KCdzdGF0dXMnKSBvciB0Lmdl
-dCgnc3RhdGUnKX17c2NvcmV9IiwKICAgICAgICAgICAgICAgICAgICAgICAgICh0LmdldCgidG9k
-byIpIG9yICIiKVs6NV0pKQogICAgICAgIGlmIHQuZ2V0KCJlbmQiKTogICMgdGhpcyByZXN1bHQg
-aXMgYW4gZXZlbnQ6IGl0IHdva2UgdGhlIHBsYW5uZXIKICAgICAgICAgICAgZXkgPSB5KGUpCiAg
-ICAgICAgICAgIHBhcnRzLmFwcGVuZChmJzxsaW5lIGNsYXNzPSJldmVudCB0aW1lZCIgZGF0YS10
-PSJ7ZX0iIHgxPSJ7Y29sX3hbdFsibWVtYmVyIl1dICsgNDouMWZ9IiB5MT0ie2V5Oi4xZn0iICcK
-ICAgICAgICAgICAgICAgICAgICAgICAgIGYneDI9Intjb2xfeFsicGxhbm5lciJdICsgY29sX3cg
-LSA0Oi4xZn0iIHkyPSJ7ZXk6LjFmfSIvPicpCiAgICBmb3IgYyBpbiB0b29sczogICMgZXZlcnkg
-dG9vbCBjYWxsIGEgZG90IGluIGl0cyBtZW1iZXIncyBiYXI6IHNlYXJjaGVzLCBwYWdlcyBmZXRj
-aGVkLCBmaWxlcyByZWFkCiAgICAgICAgaWYgYy5nZXQoImFnZW50Iikgbm90IGluIGNvbF94IG9y
-IG5vdCBpc2luc3RhbmNlKGMuZ2V0KCJ0IiksIChpbnQsIGZsb2F0KSk6CiAgICAgICAgICAgIGNv
-bnRpbnVlCiAgICAgICAga2luZCA9IHRvb2xfY2xhc3MoY1sidG9vbCJdKQogICAgICAgIGN4ID0g
-Y29sX3hbY1siYWdlbnQiXV0gKyBjb2xfdyAtIHsid2ViIjogMTIsICJmZXRjaCI6IDE5LCAicmVh
-ZCI6IDI2fVtraW5kXQogICAgICAgIHBhcnRzLmFwcGVuZChmJzxjaXJjbGUgY2xhc3M9InRvb2wg
-e2tpbmR9IHRpbWVkIiBkYXRhLXQ9IntjWyJ0Il19IiBjeD0ie2N4Oi4xZn0iIGN5PSJ7eShjWyJ0
-Il0pOi4xZn0iIHI9IjIuNiI+JwogICAgICAgICAgICAgICAgICAgICBmJzx0aXRsZT57ZXNjKGNb
-InRvb2wiXSArICI6ICIgKyBjWyJ3aGF0Il0pfTwvdGl0bGU+PC9jaXJjbGU+JykKICAgIGZvciBm
-cmFjIGluICgwLCAwLjI1LCAwLjUsIDAuNzUsIDEpOgogICAgICAgIHR5ID0geSh0MCArIGZyYWMg
-KiBzcGFuKQogICAgICAgIHBhcnRzLmFwcGVuZChmJzxsaW5lIGNsYXNzPSJ0aWNrIiB4MT0ie2F4
-aXNfdyAtIDR9IiB5MT0ie3R5Oi4xZn0iIHgyPSJ7YXhpc193fSIgeTI9Int0eTouMWZ9Ii8+Jwog
-ICAgICAgICAgICAgICAgICAgICBmJzx0ZXh0IHg9IntheGlzX3cgLSA2fSIgeT0ie3R5ICsgNDou
-MWZ9IiB0ZXh0LWFuY2hvcj0iZW5kIiBjbGFzcz0iYXgiPntzZWNzKGZyYWMgKiBzcGFuLCBzcGFu
-KX08L3RleHQ+JykKICAgIGlmIHN0b3Bfd2h5OgogICAgICAgIHN5ID0geSh0MSkKICAgICAgICBw
-YXJ0cy5hcHBlbmQoZic8bGluZSBjbGFzcz0ic3RvcCIgeDE9IntheGlzX3d9IiB5MT0ie3N5Oi4x
-Zn0iIHgyPSJ7d2lkdGggLSA0fSIgeTI9IntzeTouMWZ9Ii8+JwogICAgICAgICAgICAgICAgICAg
-ICBmJzx0ZXh0IHg9Int3aWR0aCAtIDZ9IiB5PSJ7c3kgKyAxNDouMWZ9IiB0ZXh0LWFuY2hvcj0i
-ZW5kIiBjbGFzcz0iYXgiPnN0b3A8L3RleHQ+JykKICAgIHBhcnRzLmFwcGVuZChmJzxsaW5lIGlk
-PSJub3ciIGNsYXNzPSJub3ciIHgxPSJ7YXhpc193IC0gNH0iIHkxPSJ7dG9wfSIgeDI9Int3aWR0
-aCAtIDR9IiB5Mj0ie3RvcH0iIHN0eWxlPSJvcGFjaXR5OjAiLz4nKQogICAgcmV0dXJuIChmJzxz
-dmcgaWQ9InRpbWVsaW5lIiBkYXRhLXRvcD0ie3RvcH0iIGRhdGEtaD0ie3Bsb3RfaH0iIHZpZXdC
-b3g9IjAgMCB7d2lkdGh9IHtoZWlnaHR9IiB3aWR0aD0ie3dpZHRofSIgJwogICAgICAgICAgICBm
-J2hlaWdodD0ie2hlaWdodH0iIHJvbGU9ImltZyIgYXJpYS1sYWJlbD0idGltZWxpbmUgZnJvbSB0
-aGUgZmlyc3QgZXZlbnQgdG8gdGhlIGVuZCwgdGltZSBydW5uaW5nIGRvd24iPnsiIi5qb2luKHBh
-cnRzKX08L3N2Zz4nKQoKCmRlZiBsaW5lYWdlX3N2ZyhtYWRlKToKICAgICIiIkV2ZXJ5IGVudHJ5
-IHRoZSB0ZWFtIG1hZGUsIGEgcm93IGVhY2ggaW4gdGltZSBvcmRlciwgaW4gYSBjb2x1bW4gYnkg
-aXRzIGtpbmQ7IGEgbGluZSBmcm9tIGVhY2ggZW50cnkgaXQgYnVpbHQgb24uIiIiCiAgICBpZiBu
-b3QgbWFkZToKICAgICAgICByZXR1cm4gJzxkaXYgY2xhc3M9Im11dGVkIj5ub3RoaW5nIG1hZGUg
-eWV0PC9kaXY+JwogICAgcm93cyA9IHNvcnRlZChtYWRlLCBrZXk9bGFtYmRhIGU6IGUuZ2V0KCJ0
-Iikgb3IgMClbOjE1MF0KICAgIG9yZGVyID0gW10KICAgIGZvciBlIGluIHJvd3M6CiAgICAgICAg
-aWYgZVsia2luZCJdIG5vdCBpbiBvcmRlcjoKICAgICAgICAgICAgb3JkZXIuYXBwZW5kKGVbImtp
-bmQiXSkKICAgIGlmIGxlbihvcmRlcikgPiA2OgogICAgICAgIG9yZGVyID0gb3JkZXJbOjVdICsg
-WyJvdGhlciJdCiAgICBjb2wgPSBsYW1iZGEgZTogb3JkZXIuaW5kZXgoZVsia2luZCJdKSBpZiBl
-WyJraW5kIl0gaW4gb3JkZXIgZWxzZSBsZW4ob3JkZXIpIC0gMSAgIyBub3FhOiBFNzMxCiAgICB3
-aWR0aCwgbGVmdCwgdG9wLCByb3dfaCA9IDM0MCwgNiwgMzQsIDI2CiAgICBjb2xfdyA9ICh3aWR0
-aCAtIDIgKiBsZWZ0KSAvIGxlbihvcmRlcikKICAgIGhlaWdodCA9IHRvcCArIGxlbihyb3dzKSAq
-IHJvd19oICsgOAogICAgcG9zLCBwYXJ0cyA9IHt9LCBbXQogICAgY291bnRzID0ge2s6IHN1bSgx
-IGZvciBlIGluIHJvd3MgaWYgKGVbImtpbmQiXSBpZiBlWyJraW5kIl0gaW4gb3JkZXIgZWxzZSAi
-b3RoZXIiKSA9PSBrKSBmb3IgayBpbiBvcmRlcn0KICAgIGZvciBpLCBrIGluIGVudW1lcmF0ZShv
-cmRlcik6CiAgICAgICAgcGFydHMuYXBwZW5kKGYnPHRleHQgeD0ie2xlZnQgKyBpICogY29sX3cg
-KyBjb2xfdyAvIDI6LjFmfSIgeT0iMTYiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJraCI+
-e2VzYyhrIG9yICI/Iil9PC90ZXh0PicKICAgICAgICAgICAgICAgICAgICAgZic8dGV4dCB4PSJ7
-bGVmdCArIGkgKiBjb2xfdyArIGNvbF93IC8gMjouMWZ9IiB5PSIyOCIgdGV4dC1hbmNob3I9Im1p
-ZGRsZSIgY2xhc3M9ImF4Ij57Y291bnRzW2tdfTwvdGV4dD4nKQogICAgZm9yIGksIGUgaW4gZW51
-bWVyYXRlKHJvd3MpOgogICAgICAgIHBvc1tlWyJpZCJdXSA9IChsZWZ0ICsgY29sKGUpICogY29s
-X3cgKyBjb2xfdyAvIDIsIHRvcCArIGkgKiByb3dfaCArIHJvd19oIC8gMikKICAgIGZvciBlIGlu
-IHJvd3M6CiAgICAgICAgZm9yIHAgaW4gZVsicGFyZW50cyJdOgogICAgICAgICAgICBpZiBwIGlu
-IHBvczoKICAgICAgICAgICAgICAgICh4MSwgeTEpLCAoeDIsIHkyKSA9IHBvc1twXSwgcG9zW2Vb
-ImlkIl1dCiAgICAgICAgICAgICAgICBwYXJ0cy5hcHBlbmQoZic8cGF0aCBjbGFzcz0ibGluIHRp
-bWVkIiBkYXRhLXQ9IntlLmdldCgidCIpIG9yIDB9IiBkPSJNIHt4MTouMWZ9IHt5MSArIDk6LjFm
-fSBDIHt4MTouMWZ9IHt5MiAtIDEyOi4xZn0sICcKICAgICAgICAgICAgICAgICAgICAgICAgICAg
-ICBmJ3t4MjouMWZ9IHt5MSArIDEyOi4xZn0sIHt4MjouMWZ9IHt5MiAtIDk6LjFmfSIvPicpCiAg
-ICBmb3IgZSBpbiByb3dzOgogICAgICAgIHgsIHkgPSBwb3NbZVsiaWQiXV0KICAgICAgICB3ID0g
-bWluKGNvbF93IC0gNiwgNjQpCiAgICAgICAgc3RhdGUgPSAicGFzcyIgaWYgZVsic3RhdHVzIl0g
-PT0gInZhbGlkIiBlbHNlICgiZmFpbCIgaWYgZVsic3RhdHVzIl0gaW4gKCJpbnZhbGlkIiwgImlu
-ZnJhX2Vycm9yIikgZWxzZSAid2FpdCIpCiAgICAgICAgc2NvcmUgPSBmIntlWydzY29yZSddOi4z
-Z30iIGlmIGlzaW5zdGFuY2UoZS5nZXQoInNjb3JlIiksIChpbnQsIGZsb2F0KSkgYW5kIGVbInN0
-YXR1cyJdID09ICJ2YWxpZCIgZWxzZSAoCiAgICAgICAgICAgICJ4IiBpZiBzdGF0ZSA9PSAiZmFp
-bCIgZWxzZSAi4oCmIikKICAgICAgICB0aXAgPSBmIntlWydpZCddfSBieSB7ZVsnbWVtYmVyJ119
-ICh7ZVsna2luZCddfSk6IHtlWydzdGF0dXMnXX0ge3Njb3JlfToge2VbJ3N1bW1hcnknXX0iICsg
-KAogICAgICAgICAgICBmIiB8IGJ1aWxkcyBvbiB7JywgJy5qb2luKGVbJ3BhcmVudHMnXSl9IiBp
-ZiBlWyJwYXJlbnRzIl0gZWxzZSAiIikgKyAoZiIgfCB7ZVsnZGV0YWlsJ119IiBpZiBlWyJkZXRh
-aWwiXSBlbHNlICIiKQogICAgICAgIHBhcnRzLmFwcGVuZChmJzxnIGNsYXNzPSJrYiB7c3RhdGV9
-IHRpbWVkIiBkYXRhLXQ9IntlLmdldCgidCIpIG9yIDB9Ij48dGl0bGU+e2VzYyh0aXApfTwvdGl0
-bGU+JwogICAgICAgICAgICAgICAgICAgICBmJzxyZWN0IHg9Int4IC0gdyAvIDI6LjFmfSIgeT0i
-e3kgLSA5Oi4xZn0iIHdpZHRoPSJ7dzouMWZ9IiBoZWlnaHQ9IjE4IiByeD0iNSIvPicKICAgICAg
-ICAgICAgICAgICAgICAgZic8dGV4dCB4PSJ7eDouMWZ9IiB5PSJ7eSArIDMuNTouMWZ9IiB0ZXh0
-LWFuY2hvcj0ibWlkZGxlIj57ZXNjKChlWyJtZW1iZXIiXSBvciAiPyIpWzo0XSl9IHtlc2Moc2Nv
-cmUpfTwvdGV4dD48L2c+JykKICAgIHJldHVybiAoZic8c3ZnIHZpZXdCb3g9IjAgMCB7d2lkdGh9
-IHtoZWlnaHR9IiB3aWR0aD0ie3dpZHRofSIgaGVpZ2h0PSJ7aGVpZ2h0fSIgcm9sZT0iaW1nIiAn
-CiAgICAgICAgICAgIGYnYXJpYS1sYWJlbD0id2hhdCB0aGUgdGVhbSBtYWRlLCBlbnRyeSBieSBl
-bnRyeSwgYW5kIHdoYXQgYnVpbHQgb24gd2hhdCI+eyIiLmpvaW4ocGFydHMpfTwvc3ZnPicpCgoK
-QVJUID0gcmUuY29tcGlsZShyImFydGlmYWN0cy8oa1tcdy1dKz8pXC50eHQiKSAgIyBib2FyZC9h
-cnRpZmFjdHMvPGVudHJ5IGlkPi50eHQgKG9ubHkgaWRzIHRoZSBrbm93bGVkZ2UgYmFzZSBoYXMg
-Y291bnQpCgoKZGVmIGFydGlmYWN0X3JlYWRzKHRvb2xzKToKICAgICIiIldoaWNoIGFnZW50IG9w
-ZW5lZCB3aGljaCBlbnRyeSdzIGZpbGUgKGJvYXJkL2FydGlmYWN0cy88aWQ+LnR4dCkgYW5kIHdo
-ZW4sIGZyb20gdGhlIG1lbWJlcnMnIHRvb2wgbG9ncy4iIiIKICAgIG91dCA9IFtdCiAgICBmb3Ig
-YyBpbiB0b29sczoKICAgICAgICBtID0gQVJULnNlYXJjaChjLmdldCgid2hhdCIpIG9yICIiKSBp
-ZiB0b29sX2NsYXNzKGMuZ2V0KCJ0b29sIikpID09ICJyZWFkIiBlbHNlIE5vbmUKICAgICAgICBp
-ZiBtIGFuZCBjLmdldCgiYWdlbnQiKToKICAgICAgICAgICAgb3V0LmFwcGVuZCgoY1siYWdlbnQi
-XSwgbS5ncm91cCgxKSwgYy5nZXQoInQiKSkpCiAgICByZXR1cm4gb3V0CgoKZGVmIGRpdmlzaW9u
-X3N2Zyh0MCwgdDEsIHRvZG9zLCBtYWRlLCBtZW1iZXJzKToKICAgICIiIldobyBkaWQgd2hpY2gg
-dG9kbzogYSBjb2x1bW4gZm9yIGVhY2ggbWVtYmVyIChhbmQgb25lIGZvciB0b2RvcyBub2JvZHkg
-dG9vayksIGVhY2ggdG9kbyBhIGJveCB3aGVyZSBhbmQgd2hlbiBpdAogICAgd2FzIHRha2VuLCBj
-b2xvdXJlZCBieSBob3cgaXQgZW5kZWQgYW5kIG5hbWVkIGJ5IHdoYXQgaXQgbWFkZTsgYSBzb2xp
-ZCBhcnJvdyBmcm9tIGEgdG9kbyBpdCBoYWQgdG8gd2FpdCBmb3IKICAgICgiYWZ0ZXIiKSwgYSBk
-YXNoZWQgbGluZSBmcm9tIHRoZSB0b2RvIHRoYXQgbWFkZSBhbiBlbnRyeSBpdCB3YXMgdG9sZCB0
-byBidWlsZCBvbi4iIiIKICAgIGlmIG5vdCB0b2RvczoKICAgICAgICByZXR1cm4gJzxkaXYgY2xh
-c3M9Im11dGVkIj5ubyB0b2RvcyB5ZXQ8L2Rpdj4nCiAgICBsb29zZSA9IGFueShub3QgdC5nZXQo
-Im1lbWJlciIpIGFuZCB0LmdldCgiZm9yIikgbm90IGluIG1lbWJlcnMgZm9yIHQgaW4gdG9kb3Mp
-CiAgICBsYW5lcyA9IGxpc3QobWVtYmVycykgKyAoWyJhbnlvbmUiXSBpZiBsb29zZSBlbHNlIFtd
-KQogICAgd2lkdGgsIHRvcCwgYm94X2ggPSAzNDAsIDMwLCAyOAogICAgY29sX3cgPSAod2lkdGgg
-LSA4KSAvIGxlbihsYW5lcykKICAgIHNwYW4gPSBtYXgodDEgLSB0MCwgMWUtNikKICAgIHBsb3Rf
-aCA9IG1heCgyNjAsIG1pbigxNDAwLCAzNCAqIGxlbih0b2RvcykpKQogICAga2luZF9vZiA9IHtl
-WyJpZCJdOiBlWyJraW5kIl0gZm9yIGUgaW4gbWFkZX0KICAgIGJ5X2VudHJ5ID0ge3QuZ2V0KCJl
-bnRyeSIpOiB0IGZvciB0IGluIHRvZG9zIGlmIHQuZ2V0KCJlbnRyeSIpfQogICAgcG9zLCBwYXJ0
-cywgYm90dG9tID0ge30sIFtdLCB7fQogICAgZm9yIG5hbWUgaW4gbGFuZXM6CiAgICAgICAgeCA9
-IDQgKyBsYW5lcy5pbmRleChuYW1lKSAqIGNvbF93CiAgICAgICAgcGFydHMuYXBwZW5kKGYnPHRl
-eHQgeD0ie3ggKyBjb2xfdyAvIDI6LjFmfSIgeT0ie3RvcCAtIDEyfSIgdGV4dC1hbmNob3I9Im1p
-ZGRsZSIgY2xhc3M9ImxuIj57ZXNjKGZpdChuYW1lLCBjb2xfdyAtIDQsIDEyKSl9PC90ZXh0PicK
-ICAgICAgICAgICAgICAgICAgICAgZic8bGluZSBjbGFzcz0ibGFuZSIgeDE9Int4Oi4xZn0iIHkx
-PSJ7dG9wfSIgeDI9Int4Oi4xZn0iIHkyPSJ7dG9wICsgcGxvdF9ofSIvPicpCiAgICBmb3IgdCBp
-biBzb3J0ZWQodG9kb3MsIGtleT1sYW1iZGEgdDogdC5nZXQoInRha2VuIikgb3IgdC5nZXQoImFk
-ZGVkIikgb3IgMCk6CiAgICAgICAgbGFuZSA9IHQuZ2V0KCJtZW1iZXIiKSBpZiB0LmdldCgibWVt
-YmVyIikgaW4gbWVtYmVycyBlbHNlICh0LmdldCgiZm9yIikgaWYgdC5nZXQoImZvciIpIGluIG1l
-bWJlcnMgZWxzZSAiYW55b25lIikKICAgICAgICB4ID0gNCArIGxhbmVzLmluZGV4KGxhbmUpICog
-Y29sX3cgKyAzCiAgICAgICAgd2hlbiA9IHQuZ2V0KCJ0YWtlbiIpIG9yIHQuZ2V0KCJhZGRlZCIp
-IG9yIHQwCiAgICAgICAgeSA9IG1heCh0b3AgKyA0ICsgKHdoZW4gLSB0MCkgLyBzcGFuICogKHBs
-b3RfaCAtIGJveF9oIC0gOCksIGJvdHRvbS5nZXQobGFuZSwgMCkgKyA0KQogICAgICAgIGJvdHRv
-bVtsYW5lXSA9IHkgKyBib3hfaAogICAgICAgIHBvc1t0WyJpZCJdXSA9ICh4LCB5KQogICAgaGVp
-Z2h0ID0gbWF4KGJvdHRvbS52YWx1ZXMoKSkgKyAxMgogICAgZGVmIGxpbmsoY2xzLCBhLCBiLCB3
-aGVuKToKICAgICAgICAiIiJGcm9tIHRoZSBib3R0b20gb2YgYSdzIGJveCB0byB0aGUgdG9wIG9m
-IGInczsgd2hlbiBiIGRvZXMgbm90IHN0YXJ0IGJlbG93IGEncyBib3R0b20gKGJvdGggd2VyZSBh
-ZGRlZCBhdAogICAgICAgIG9uY2UpLCBhIFUgdW5kZXIgYm90aCBib3hlcywgZnJvbSBib3R0b20g
-dG8gYm90dG9tLCBzbyB0aGUgbGluZSBpcyBub3QgaGlkZGVuIGJlaGluZCB0aGVtLiIiIgogICAg
-ICAgICh4MSwgeTEpLCAoeDIsIHkyKSA9IHBvc1thXSwgcG9zW2JdCiAgICAgICAgeDEsIHgyID0g
-eDEgKyBjb2xfdyAvIDIgLSAzLCB4MiArIGNvbF93IC8gMiAtIDMKICAgICAgICBpZiB5MiA+PSB5
-MSArIGJveF9oICsgNjoKICAgICAgICAgICAgZCA9IGYiTSB7eDE6LjFmfSB7eTEgKyBib3hfaDou
-MWZ9IEMge3gxOi4xZn0ge3kyIC0gMTA6LjFmfSwge3gyOi4xZn0ge3kxICsgYm94X2ggKyAxMDou
-MWZ9LCB7eDI6LjFmfSB7eTIgLSAyOi4xZn0iCiAgICAgICAgZWxzZToKICAgICAgICAgICAgbG93
-ID0gbWF4KHkxLCB5MikgKyBib3hfaCArIDE2CiAgICAgICAgICAgIGQgPSBmIk0ge3gxOi4xZn0g
-e3kxICsgYm94X2g6LjFmfSBDIHt4MTouMWZ9IHtsb3c6LjFmfSwge3gyOi4xZn0ge2xvdzouMWZ9
-LCB7eDI6LjFmfSB7eTIgKyBib3hfaDouMWZ9IgogICAgICAgIHJldHVybiBmJzxwYXRoIGNsYXNz
-PSJ7Y2xzfSB0aW1lZCIgZGF0YS10PSJ7d2hlbn0iIGQ9IntkfSIvPicKICAgIGZvciB0IGluIHRv
-ZG9zOiAgIyBsaW5lcyBmaXJzdCwgYm94ZXMgb24gdG9wCiAgICAgICAgZm9yIGEgaW4gdC5nZXQo
-ImFmdGVyIikgb3IgW106CiAgICAgICAgICAgIGlmIGEgaW4gcG9zIGFuZCB0WyJpZCJdIGluIHBv
-czoKICAgICAgICAgICAgICAgIHBhcnRzLmFwcGVuZChsaW5rKCJkZXAiLCBhLCB0WyJpZCJdLCB0
-LmdldCgiYWRkZWQiKSBvciAwKSkKICAgICAgICBmb3IgcCBpbiB0LmdldCgicGFyZW50cyIpIG9y
-IFtdOgogICAgICAgICAgICBzcmMgPSBieV9lbnRyeS5nZXQocCkKICAgICAgICAgICAgaWYgc3Jj
-IGFuZCBzcmNbImlkIl0gaW4gcG9zIGFuZCB0WyJpZCJdIGluIHBvczoKICAgICAgICAgICAgICAg
-IHBhcnRzLmFwcGVuZChsaW5rKCJ1c2VzIiwgc3JjWyJpZCJdLCB0WyJpZCJdLCB0LmdldCgiYWRk
-ZWQiKSBvciAwKSkKICAgIGZvciB0IGluIHRvZG9zOgogICAgICAgIHgsIHkgPSBwb3NbdFsiaWQi
-XV0KICAgICAgICBzdGF0ZSA9IHRbInN0YXRlIl0KICAgICAgICBtYWRlX2tpbmQgPSBraW5kX29m
-LmdldCh0LmdldCgiZW50cnkiKSkKICAgICAgICBmaXJzdCA9IHsiZG9uZSI6IG1hZGVfa2luZCBv
-ciAiZG9uZSIsICJmYWlsZWQiOiAiZmFpbGVkIiwgImRyb3BwZWQiOiAiZHJvcHBlZCIsICJvcGVu
-IjogIndhaXRpbmciLCAidGFrZW4iOiAid29ya2luZyJ9LmdldChzdGF0ZSwgc3RhdGUpCiAgICAg
-ICAgc2Vjb25kID0gKGYie3RbJ3Njb3JlJ106LjNnfSIgaWYgaXNpbnN0YW5jZSh0LmdldCgic2Nv
-cmUiKSwgKGludCwgZmxvYXQpKSBhbmQgc3RhdGUgPT0gImRvbmUiIGVsc2UgdFsiaWQiXVsxOjZd
-KQogICAgICAgIGlmIHQuZ2V0KCJyZXZpZXciKToKICAgICAgICAgICAgc2Vjb25kID0gInJldmll
-dyAiICsgc2Vjb25kCiAgICAgICAgY2xzID0geyJkb25lIjogInBhc3MiLCAiZmFpbGVkIjogImZh
-aWwiLCAiZHJvcHBlZCI6ICJkcm9wIiwgIm9wZW4iOiAid2FpdCIsICJ0YWtlbiI6ICJ3b3JrIn0u
-Z2V0KHN0YXRlLCAid2FpdCIpCiAgICAgICAgdGlwID0gKGYie3RbJ2lkJ119ICh7c3RhdGV9KSBm
-b3Ige3QuZ2V0KCdmb3InKSBvciAnYW55b25lJ30iICsgKGYiLCB0YWtlbiBieSB7dFsnbWVtYmVy
-J119IiBpZiB0LmdldCgibWVtYmVyIikgZWxzZSAiIikKICAgICAgICAgICAgICAgKyBmIjoge3Rb
-J3RleHQnXX0iICsgKGYiIHwgYWZ0ZXIgeycsICcuam9pbih0WydhZnRlciddKX0iIGlmIHQuZ2V0
-KCJhZnRlciIpIGVsc2UgIiIpCiAgICAgICAgICAgICAgICsgKGYiIHwgYnVpbGRzIG9uIHsnLCAn
-LmpvaW4odFsncGFyZW50cyddKX0iIGlmIHQuZ2V0KCJwYXJlbnRzIikgZWxzZSAiIikpCiAgICAg
-ICAgdyA9IGNvbF93IC0gNgogICAgICAgIHBhcnRzLmFwcGVuZChmJzxnIGNsYXNzPSJ0ZCB7Y2xz
-fSB0aW1lZCIgZGF0YS10PSJ7dC5nZXQoInRha2VuIikgb3IgdC5nZXQoImFkZGVkIikgb3IgMH0i
-Pjx0aXRsZT57ZXNjKHRpcCl9PC90aXRsZT4nCiAgICAgICAgICAgICAgICAgICAgIGYnPHJlY3Qg
-Y2xhc3M9InVuZGVyIiB4PSJ7eDouMWZ9IiB5PSJ7eTouMWZ9IiB3aWR0aD0ie3c6LjFmfSIgaGVp
-Z2h0PSJ7Ym94X2h9IiByeD0iNSIvPicKICAgICAgICAgICAgICAgICAgICAgZic8cmVjdCB4PSJ7
-eDouMWZ9IiB5PSJ7eTouMWZ9IiB3aWR0aD0ie3c6LjFmfSIgaGVpZ2h0PSJ7Ym94X2h9IiByeD0i
-NSIvPicKICAgICAgICAgICAgICAgICAgICAgZic8dGV4dCB4PSJ7eCArIHcgLyAyOi4xZn0iIHk9
-Int5ICsgMTI6LjFmfSIgdGV4dC1hbmNob3I9Im1pZGRsZSI+e2VzYyhmaXQoZmlyc3QsIHcgLSA0
-LCA5LjUpKX08L3RleHQ+JwogICAgICAgICAgICAgICAgICAgICBmJzx0ZXh0IHg9Int4ICsgdyAv
-IDI6LjFmfSIgeT0ie3kgKyAyMzouMWZ9IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBjbGFzcz0iYXgi
-Pntlc2MoZml0KHNlY29uZCwgdyAtIDQsIDkpKX08L3RleHQ+PC9nPicpCiAgICByZXR1cm4gKGYn
-PHN2ZyB2aWV3Qm94PSIwIDAge3dpZHRofSB7aGVpZ2h0Oi4wZn0iIHdpZHRoPSJ7d2lkdGh9IiBo
-ZWlnaHQ9IntoZWlnaHQ6LjBmfSIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJ3aG8gZGlkIHdoaWNo
-IHRvZG8sICcKICAgICAgICAgICAgZid3aGVuLCBhbmQgd2hpY2ggdG9kb3Mgd2FpdGVkIGZvciBv
-ciBidWlsdCBvbiBvdGhlcnMiPnsiIi5qb2luKHBhcnRzKX08L3N2Zz4nKQoKCmRlZiBrbm93bGVk
-Z2Vfc3ZnKG1hZGUsIHJlYWRzLCBtZW1iZXJzLCB0X3N0YXJ0KToKICAgICIiIlRoZSB0ZWFtIGtu
-b3dsZWRnZSBiYXNlIGFzIGEgZmxvdzogd2hvIHdyb3RlIGVhY2ggZW50cnkgKGxlZnQpLCB0aGUg
-ZW50cmllcyBieSBraW5kIHdpdGggc2tpbGxzIGZpcnN0IChtaWRkbGUpLAogICAgYW5kIHdobyBy
-ZWFkIHRoZSBlbnRyeSdzIGZpbGUgb3IgYnVpbHQgb24gaXQgKHJpZ2h0KS4gRW50cmllcyBmcm9t
-IGJlZm9yZSB0aGlzIHJ1biAoYSBzZWVkZWQga25vd2xlZGdlIGJhc2UpIGhhdmUKICAgIGEgZGFz
-aGVkIGVkZ2UuIiIiCiAgICBpZiBub3QgbWFkZToKICAgICAgICByZXR1cm4gJzxkaXYgY2xhc3M9
-Im11dGVkIj5ub3RoaW5nIGluIHRoZSBrbm93bGVkZ2UgYmFzZSB5ZXQ8L2Rpdj4nCiAgICBraW5k
-cyA9IHNvcnRlZCh7ZVsia2luZCJdIG9yICI/IiBmb3IgZSBpbiBtYWRlfSwga2V5PWxhbWJkYSBr
-OiAoayAhPSAic2tpbGwiLCBrKSkKICAgIHJvd3MgPSBbXQogICAgZm9yIGsgaW4ga2luZHM6CiAg
-ICAgICAgcm93cy5hcHBlbmQoKCJraW5kIiwgaykpCiAgICAgICAgcm93cyArPSBbKCJlbnRyeSIs
-IGUpIGZvciBlIGluIHNvcnRlZCgoZSBmb3IgZSBpbiBtYWRlIGlmIChlWyJraW5kIl0gb3IgIj8i
-KSA9PSBrKSwga2V5PWxhbWJkYSBlOiBlLmdldCgidCIpIG9yIDApXQogICAgd2lkdGgsIHJvd19o
-LCB0b3AgPSAzNDAsIDE5LCAyMgogICAgbGVmdF93LCByaWdodF94ID0gNjIsIDI3OAogICAgbWlk
-X3gsIG1pZF93ID0gOTIsIDE2MgogICAgYnlfaWQgPSB7ZVsiaWQiXTogZSBmb3IgZSBpbiBtYWRl
-fQogICAgdXNlZCA9IHt9CiAgICBmb3IgZSBpbiBtYWRlOgogICAgICAgIGZvciBwIGluIGVbInBh
-cmVudHMiXToKICAgICAgICAgICAgaWYgcCBpbiBieV9pZCBhbmQgZVsibWVtYmVyIl06CiAgICAg
-ICAgICAgICAgICB1c2VkLnNldGRlZmF1bHQocCwge30pLnNldGRlZmF1bHQoZVsibWVtYmVyIl0s
-IHNldCgpKS5hZGQoImJ1aWx0IG9uIikKICAgIGZvciBhZ2VudCwgZWlkLCBfIGluIHJlYWRzOgog
-ICAgICAgIGlmIGVpZCBpbiBieV9pZDoKICAgICAgICAgICAgdXNlZC5zZXRkZWZhdWx0KGVpZCwg
-e30pLnNldGRlZmF1bHQoYWdlbnQsIHNldCgpKS5hZGQoInJlYWQiKQogICAgYWdlbnRzID0gbGlz
-dChtZW1iZXJzKSArIHNvcnRlZCh7ZVsibWVtYmVyIl0gZm9yIGUgaW4gbWFkZSBpZiBlWyJtZW1i
-ZXIiXSBhbmQgZVsibWVtYmVyIl0gbm90IGluIG1lbWJlcnN9KQogICAgaGVpZ2h0ID0gdG9wICsg
-bGVuKHJvd3MpICogcm93X2ggKyAxMAogICAgYV9nYXAgPSBtYXgocm93X2gsIChoZWlnaHQgLSB0
-b3AgLSAxMCkgLyBtYXgoMSwgbGVuKGFnZW50cykpKQogICAgYV95ID0ge2E6IHRvcCArIGkgKiBh
-X2dhcCArIGFfZ2FwIC8gMiBmb3IgaSwgYSBpbiBlbnVtZXJhdGUoYWdlbnRzKX0KICAgIHBhcnRz
-ID0gW2YnPHRleHQgeD0ie2xlZnRfdyAvIDI6LjBmfSIgeT0iMTIiIHRleHQtYW5jaG9yPSJtaWRk
-bGUiIGNsYXNzPSJheCI+d3JvdGU8L3RleHQ+JwogICAgICAgICAgICAgZic8dGV4dCB4PSJ7bWlk
-X3ggKyBtaWRfdyAvIDI6LjBmfSIgeT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJh
-eCI+ZW50cmllczwvdGV4dD4nCiAgICAgICAgICAgICBmJzx0ZXh0IHg9IntyaWdodF94ICsgKHdp
-ZHRoIC0gcmlnaHRfeCkgLyAyOi4wZn0iIHk9IjEyIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBjbGFz
-cz0iYXgiPnVzZWQgYnk8L3RleHQ+J10KICAgIGVfeSA9IHt9CiAgICBmb3IgaSwgKHdoYXQsIGl0
-ZW0pIGluIGVudW1lcmF0ZShyb3dzKToKICAgICAgICB5ID0gdG9wICsgaSAqIHJvd19oICsgcm93
-X2ggLyAyCiAgICAgICAgaWYgd2hhdCA9PSAia2luZCI6CiAgICAgICAgICAgIG4gPSBzdW0oMSBm
-b3IgZSBpbiBtYWRlIGlmIChlWyJraW5kIl0gb3IgIj8iKSA9PSBpdGVtKQogICAgICAgICAgICBw
-YXJ0cy5hcHBlbmQoZic8dGV4dCB4PSJ7bWlkX3h9IiB5PSJ7eSArIDQ6LjFmfSIgY2xhc3M9Imto
-Ij57ZXNjKGl0ZW0pfSDCtyB7bn08L3RleHQ+JykKICAgICAgICBlbHNlOgogICAgICAgICAgICBl
-X3lbaXRlbVsiaWQiXV0gPSB5CiAgICBmb3IgZSBpbiBtYWRlOiAgIyB3cm90ZTogd3JpdGVyIC0+
-IGVudHJ5OyByZWFkIG9yIGJ1aWx0IG9uOiBlbnRyeSAtPiBhZ2VudAogICAgICAgIHkgPSBlX3lb
-ZVsiaWQiXV0KICAgICAgICBpZiBlWyJtZW1iZXIiXSBpbiBhX3k6CiAgICAgICAgICAgIGF5ID0g
-YV95W2VbIm1lbWJlciJdXQogICAgICAgICAgICBwYXJ0cy5hcHBlbmQoZic8cGF0aCBjbGFzcz0i
-d3JvdGV7IiBvbGQiIGlmIChlLmdldCgidCIpIG9yIDApIDwgdF9zdGFydCBlbHNlICIifSB0aW1l
-ZCIgZGF0YS10PSJ7ZS5nZXQoInQiKSBvciAwfSIgJwogICAgICAgICAgICAgICAgICAgICAgICAg
-ZidkPSJNIHtsZWZ0X3c6LjFmfSB7YXk6LjFmfSBDIHtsZWZ0X3cgKyAyMDouMWZ9IHtheTouMWZ9
-LCB7bWlkX3ggLSAyMDouMWZ9IHt5Oi4xZn0sIHttaWRfeDouMWZ9IHt5Oi4xZn0iLz4nKQogICAg
-ICAgIGZvciBhZ2VudCwgaG93IGluIHNvcnRlZCh1c2VkLmdldChlWyJpZCJdLCB7fSkuaXRlbXMo
-KSk6CiAgICAgICAgICAgIGlmIGFnZW50IGluIGFfeToKICAgICAgICAgICAgICAgIGF5ID0gYV95
-W2FnZW50XQogICAgICAgICAgICAgICAgcGFydHMuYXBwZW5kKGYnPHBhdGggY2xhc3M9InsiYnVp
-bHQiIGlmICJidWlsdCBvbiIgaW4gaG93IGVsc2UgInJlYWQifSIgZD0iTSB7bWlkX3ggKyBtaWRf
-dzouMWZ9IHt5Oi4xZn0gJwogICAgICAgICAgICAgICAgICAgICAgICAgICAgIGYnQyB7bWlkX3gg
-KyBtaWRfdyArIDE4Oi4xZn0ge3k6LjFmfSwge3JpZ2h0X3ggLSAxODouMWZ9IHtheTouMWZ9LCB7
-cmlnaHRfeDouMWZ9IHtheTouMWZ9Ij48dGl0bGU+JwogICAgICAgICAgICAgICAgICAgICAgICAg
-ICAgIGYne2VzYyhhZ2VudCArICIgIiArICIgYW5kICIuam9pbihzb3J0ZWQoaG93KSkgKyAiICIg
-KyBlWyJpZCJdKX08L3RpdGxlPjwvcGF0aD4nKQogICAgZm9yIGUgaW4gbWFkZToKICAgICAgICB5
-ID0gZV95W2VbImlkIl1dCiAgICAgICAgb2xkID0gKGUuZ2V0KCJ0Iikgb3IgMCkgPCB0X3N0YXJ0
-CiAgICAgICAgc3RhdGUgPSAicGFzcyIgaWYgZVsic3RhdHVzIl0gPT0gInZhbGlkIiBlbHNlICgi
-ZmFpbCIgaWYgZVsic3RhdHVzIl0gaW4gKCJpbnZhbGlkIiwgImluZnJhX2Vycm9yIikgZWxzZSAi
-d2FpdCIpCiAgICAgICAgc2NvcmUgPSBmIiB7ZVsnc2NvcmUnXTouM2d9IiBpZiBpc2luc3RhbmNl
-KGUuZ2V0KCJzY29yZSIpLCAoaW50LCBmbG9hdCkpIGFuZCBlWyJzdGF0dXMiXSA9PSAidmFsaWQi
-IGVsc2UgIiIKICAgICAgICB0aXAgPSAoZiJ7ZVsnaWQnXX0ge2VbJ2tpbmQnXX0gYnkge2VbJ21l
-bWJlciddfXsnIChmcm9tIGJlZm9yZSB0aGlzIHJ1biknIGlmIG9sZCBlbHNlICcnfToge2VbJ3N1
-bW1hcnknXX0iKQogICAgICAgIGxhYmVsID0gKGUuZ2V0KCJuYW1lIikgb3IgZVsiaWQiXVs6N10p
-IGlmIChlWyJraW5kIl0gb3IgIiIpID09ICJza2lsbCIgZWxzZSBmIntlWydtZW1iZXInXSBvciAn
-Pyd9IgogICAgICAgIHBhcnRzLmFwcGVuZChmJzxnIGNsYXNzPSJrYiB7c3RhdGV9eyIgb2xkIiBp
-ZiBvbGQgZWxzZSAiIn0iPjx0aXRsZT57ZXNjKHRpcCl9PC90aXRsZT4nCiAgICAgICAgICAgICAg
-ICAgICAgIGYnPHJlY3QgY2xhc3M9InVuZGVyIiB4PSJ7bWlkX3h9IiB5PSJ7eSAtIDcuNTouMWZ9
-IiB3aWR0aD0ie21pZF93fSIgaGVpZ2h0PSIxNSIgcng9IjQiLz4nCiAgICAgICAgICAgICAgICAg
-ICAgIGYnPHJlY3QgeD0ie21pZF94fSIgeT0ie3kgLSA3LjU6LjFmfSIgd2lkdGg9InttaWRfd30i
-IGhlaWdodD0iMTUiIHJ4PSI0Ii8+JwogICAgICAgICAgICAgICAgICAgICBmJzx0ZXh0IHg9Intt
-aWRfeCArIDZ9IiB5PSJ7eSArIDMuNTouMWZ9Ij57ZXNjKGZpdChsYWJlbCArIHNjb3JlLCBtaWRf
-dyAtIDEwLCA5LjUpKX08L3RleHQ+PC9nPicpCiAgICBmb3IgYSwgeSBpbiBhX3kuaXRlbXMoKToK
-ICAgICAgICBwYXJ0cy5hcHBlbmQoZic8dGV4dCB4PSJ7bGVmdF93IC0gNH0iIHk9Int5ICsgNDou
-MWZ9IiB0ZXh0LWFuY2hvcj0iZW5kIiBjbGFzcz0ibG4iPntlc2MoZml0KGEsIGxlZnRfdyAtIDYs
-IDEyKSl9PC90ZXh0PicKICAgICAgICAgICAgICAgICAgICAgZic8dGV4dCB4PSJ7cmlnaHRfeCAr
-IDR9IiB5PSJ7eSArIDQ6LjFmfSIgY2xhc3M9ImxuIj57ZXNjKGZpdChhLCB3aWR0aCAtIHJpZ2h0
-X3ggLSA2LCAxMikpfTwvdGV4dD4nKQogICAgcmV0dXJuIChmJzxzdmcgdmlld0JveD0iMCAwIHt3
-aWR0aH0ge2hlaWdodDouMGZ9IiB3aWR0aD0ie3dpZHRofSIgaGVpZ2h0PSJ7aGVpZ2h0Oi4wZn0i
-IHJvbGU9ImltZyIgYXJpYS1sYWJlbD0idGhlIGtub3dsZWRnZSAnCiAgICAgICAgICAgIGYnYmFz
-ZTogd2hvIHdyb3RlIGVhY2ggZW50cnksIGFuZCB3aG8gcmVhZCBpdCBvciBidWlsdCBvbiBpdCI+
-eyIiLmpvaW4ocGFydHMpfTwvc3ZnPicpCgoKZGVmIHNraWxsc19saXN0KG1hZGUsIHJlYWRzPSgp
-KToKICAgIHNraWxscyA9IFtlIGZvciBlIGluIG1hZGUgaWYgKGVbImtpbmQiXSBvciAiIikubG93
-ZXIoKSA9PSAic2tpbGwiIGFuZCBlWyJzdGF0dXMiXSA9PSAidmFsaWQiXQogICAgaWYgbm90IHNr
-aWxsczoKICAgICAgICByZXR1cm4gIiIKICAgIHVzZXJzID0ge3NbImlkIl06IFtlIGZvciBlIGlu
-IG1hZGUgaWYgc1siaWQiXSBpbiBlWyJwYXJlbnRzIl1dIGZvciBzIGluIHNraWxsc30KICAgIHJl
-YWRlcnMgPSB7fQogICAgZm9yIGFnZW50LCBlaWQsIF8gaW4gcmVhZHM6CiAgICAgICAgcmVhZGVy
-cy5zZXRkZWZhdWx0KGVpZCwgW10pLmFwcGVuZChhZ2VudCkKICAgIHJvd3MgPSBbXQogICAgZm9y
-IHMgaW4gc29ydGVkKHNraWxscywga2V5PWxhbWJkYSBlOiBlLmdldCgidCIpIG9yIDApOgogICAg
-ICAgIHVzZWQgPSB1c2Vyc1tzWyJpZCJdXQogICAgICAgIHJlYWQgPSBzb3J0ZWQoc2V0KHJlYWRl
-cnMuZ2V0KHNbImlkIl0sIFtdKSkpCiAgICAgICAgcm93cy5hcHBlbmQoZic8bGk+PGRpdj48Yj57
-ZXNjKHNbImlkIl0pfTwvYj4gYnkge2VzYyhzWyJtZW1iZXIiXSl9PC9kaXY+PGRpdj57ZXNjKHNb
-InN1bW1hcnkiXSl9PC9kaXY+JwogICAgICAgICAgICAgICAgICAgIGYnPGRpdiBjbGFzcz0ibXV0
-ZWQiPicgKyAoZiJyZWFkIGJ5IHtsZW4ocmVhZCl9OiAiICsgZXNjKCIsICIuam9pbihyZWFkKSkg
-aWYgcmVhZCBlbHNlICJub2JvZHkgb3BlbmVkIGl0cyBmaWxlIikKICAgICAgICAgICAgICAgICAg
-ICArICc8L2Rpdj48ZGl2IGNsYXNzPSJtdXRlZCI+JyArIChmImJ1aWx0IG9uIGJ5IHtsZW4odXNl
-ZCl9OiAiICsgZXNjKCIsICIuam9pbihmInt1WydpZCddfSAoe3VbJ21lbWJlciddfSwge3VbJ2tp
-bmQnXX0pIiBmb3IgdSBpbiB1c2VkKSkKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg
-ICAgICAgICAgICAgICAgICAgICBpZiB1c2VkIGVsc2UgIm5vdCBidWlsdCBvbiB5ZXQiKSArICc8
-L2Rpdj48L2xpPicpCiAgICByZXR1cm4gJzxoMj5Ub29scyB0aGUgdGVhbSB3cm90ZSBmb3IgaXRz
-ZWxmPC9oMj48dWwgY2xhc3M9ImNhcmRzIj4nICsgIiIuam9pbihyb3dzKSArICI8L3VsPiIKCgpk
-ZWYgY2FsbHNfaW4odHVybiwgdG9vbHMsIHQwKToKICAgIHMgPSB0dXJuLmdldCgic3RhcnQiKSBv
-ciB0dXJuLmdldCgidCIsIHQwKQogICAgZSA9IHR1cm4uZ2V0KCJlbmQiKSBvciAocyArICh0dXJu
-LmdldCgic2Vjb25kcyIpIG9yIDApKQogICAgcmV0dXJuIFtjIGZvciBjIGluIHRvb2xzIGlmIGMu
-Z2V0KCJhZ2VudCIpID09IHR1cm4uZ2V0KCJtZW1iZXIiKSBhbmQgaXNpbnN0YW5jZShjLmdldCgi
-dCIpLCAoaW50LCBmbG9hdCkpIGFuZCBzIC0gMSA8PSBjWyJ0Il0gPD0gZSArIDFdCgoKZGVmIGdh
-dGhlcl9saXN0KHR1cm5zLCB0b29scywgdDApOgogICAgcm93cyA9IFtdCiAgICBmb3IgdCBpbiBz
-b3J0ZWQodHVybnMsIGtleT1sYW1iZGEgdDogdC5nZXQoInN0YXJ0Iikgb3IgdC5nZXQoInQiKSBv
-ciAwKToKICAgICAgICBjYWxscyA9IGNhbGxzX2luKHQsIHRvb2xzLCB0MCkKICAgICAgICBpZiBu
-b3QgY2FsbHM6CiAgICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgd2ViID0gW2NbIndoYXQiXSBm
-b3IgYyBpbiBjYWxscyBpZiB0b29sX2NsYXNzKGNbInRvb2wiXSkgPT0gIndlYiJdCiAgICAgICAg
-cGFnZXMgPSBsaXN0KGRpY3QuZnJvbWtleXMocmUuc3ViKHIiXmh0dHBzPzovLyhbXi9dKykuKiQi
-LCByIlwxIiwgY1sid2hhdCJdKSBmb3IgYyBpbiBjYWxscyBpZiB0b29sX2NsYXNzKGNbInRvb2wi
-XSkgPT0gImZldGNoIikpCiAgICAgICAgZmlsZXMgPSBsaXN0KGRpY3QuZnJvbWtleXMob3MucGF0
-aC5iYXNlbmFtZShjWyJ3aGF0Il0pIG9yIGNbIndoYXQiXSBmb3IgYyBpbiBjYWxscyBpZiB0b29s
-X2NsYXNzKGNbInRvb2wiXSkgPT0gInJlYWQiKSkKICAgICAgICBsaW5lcyA9IFtdCiAgICAgICAg
-aWYgd2ViOgogICAgICAgICAgICBsaW5lcy5hcHBlbmQoZiJzZWFyY2hlZCB7dGltZXMobGVuKHdl
-YikpfTogIiArICI7ICIuam9pbih3ZWJbOjhdKSArIChmIiAoYW5kIHtsZW4od2ViKSAtIDh9IG1v
-cmUpIiBpZiBsZW4od2ViKSA+IDggZWxzZSAiIikpCiAgICAgICAgaWYgcGFnZXM6CiAgICAgICAg
-ICAgIGxpbmVzLmFwcGVuZChmImZldGNoZWQge2xlbihwYWdlcyl9IHNpdGVzOiAiICsgIiwgIi5q
-b2luKHBhZ2VzWzo4XSkpCiAgICAgICAgaWYgZmlsZXM6CiAgICAgICAgICAgIGxpbmVzLmFwcGVu
-ZChmInJlYWQge2xlbihmaWxlcyl9IGZpbGVzOiAiICsgIiwgIi5qb2luKGZpbGVzWzo4XSkpCiAg
-ICAgICAgdmVyZGljdCA9IGYiIMK3IHt0WydzdGF0dXMnXX0iICsgKGYiIHt0WydzY29yZSddOi42
-Z30iIGlmIGlzaW5zdGFuY2UodC5nZXQoInNjb3JlIiksIChpbnQsIGZsb2F0KSkgZWxzZSAiIikg
-aWYgdC5nZXQoInN0YXR1cyIpIGVsc2UgIiIKICAgICAgICByb3dzLmFwcGVuZChmJzxsaSBkYXRh
-LWFkZGVkPSJ7dC5nZXQoInN0YXJ0Iikgb3IgdC5nZXQoInQiKSBvciAwfSI+PGRpdj48Yj57ZXNj
-KHRbIm1lbWJlciJdKX08L2I+IMK3IHR1cm4ge2VzYyh0LmdldCgidHVybiIpKX0gwrcgJwogICAg
-ICAgICAgICAgICAgICAgIGYndG9kbyB7ZXNjKHQuZ2V0KCJ0b2RvIikpfXtlc2ModmVyZGljdCl9
-PC9kaXY+JyArICIiLmpvaW4oZic8ZGl2IGNsYXNzPSJtdXRlZCI+e2VzYyh4KX08L2Rpdj4nIGZv
-ciB4IGluIGxpbmVzKSArICI8L2xpPiIpCiAgICByZXR1cm4gZic8dWwgY2xhc3M9ImNhcmRzIiBp
-ZD0iZ2F0aGVyIj57IiIuam9pbihyb3dzKSBvciAiPGxpPm5vIHRvb2wgY2FsbHMgcmVjb3JkZWQ8
-L2xpPiJ9PC91bD4nCgoKZGVmIGJlc3Rfc3ZnKHQwLCB0MSwgdHVybnMpOgogICAgcG9pbnRzLCBi
-ZXN0ID0gW10sIE5vbmUKICAgIGZvciB0IGluIHNvcnRlZCgodCBmb3IgdCBpbiB0dXJucyBpZiB0
+cmVhY2ggdGhlIHJ1bi4KIiIiCmltcG9ydCBjb2xsZWN0aW9ucwppbXBvcnQgaHRtbAppbXBvcnQg
+aHR0cC5zZXJ2ZXIKaW1wb3J0IGpzb24KaW1wb3J0IG9zCmltcG9ydCByZQppbXBvcnQgc2VjcmV0
+cwppbXBvcnQgc29ja2V0c2VydmVyCmltcG9ydCBzeXMKaW1wb3J0IHRpbWUKaW1wb3J0IHVybGxp
+Yi5wYXJzZQoKZnJvbSAuIGltcG9ydCB3ZWJndWFyZApmcm9tIC50ZWFta2IgaW1wb3J0IFRBRywg
+YXJ0aWZhY3RfcGF0aApmcm9tIC52aWV3c3R5bGUgaW1wb3J0IFRPS0VOUwoKCldFQiwgRkVUQ0gg
+PSAoIndlYnNlYXJjaCIsICJ3ZWJfc2VhcmNoIiwgInNlYXJjaCIpLCAoIndlYmZldGNoIiwgIndl
+Yl9mZXRjaCIsICJmZXRjaCIpCgoKZGVmIHRvb2xfY2xhc3MobmFtZSk6CiAgICBuID0gKG5hbWUg
+b3IgIiIpLmxvd2VyKCkKICAgIHJldHVybiAid2ViIiBpZiBuIGluIFdFQiBlbHNlICgiZmV0Y2gi
+IGlmIG4gaW4gRkVUQ0ggZWxzZSAicmVhZCIpCgoKZGVmIGVzYyh0ZXh0KToKICAgIHJldHVybiBo
+dG1sLmVzY2FwZShzdHIodGV4dCksIHF1b3RlPVRydWUpCgoKZGVmIHRpbWVzKG4sIHdvcmQ9InRp
+bWUiKToKICAgIHJldHVybiBmIntufSB7d29yZH0iICsgKCIiIGlmIG4gPT0gMSBlbHNlICJzIikK
+CgpkZWYgc2Vjcyh2LCBzcGFuKToKICAgIHJldHVybiBmInt2Oi4xZn0gcyIgaWYgc3BhbiA8IDEw
+IGVsc2UgZiJ7djouMGZ9IHMiCgoKZGVmIHJlYWRfanNvbmwocGF0aCk6CiAgICByb3dzID0gW10K
+ICAgIGlmIG5vdCBvcy5wYXRoLmlzZmlsZShwYXRoKToKICAgICAgICByZXR1cm4gcm93cwogICAg
+d2l0aCBvcGVuKHBhdGgsIGVuY29kaW5nPSJ1dGYtOCIsIGVycm9ycz0icmVwbGFjZSIpIGFzIGhh
+bmRsZToKICAgICAgICBmb3IgbGluZSBpbiBoYW5kbGU6CiAgICAgICAgICAgIHRyeToKICAgICAg
+ICAgICAgICAgIHJvdyA9IGpzb24ubG9hZHMobGluZSkKICAgICAgICAgICAgZXhjZXB0IFZhbHVl
+RXJyb3I6ICAjIGEgbGluZSBzdGlsbCBiZWluZyB3cml0dGVuCiAgICAgICAgICAgICAgICBjb250
+aW51ZQogICAgICAgICAgICBpZiBpc2luc3RhbmNlKHJvdywgZGljdCk6CiAgICAgICAgICAgICAg
+ICByb3dzLmFwcGVuZChyb3cpCiAgICByZXR1cm4gcm93cwoKCmRlZiBsb2FkKG91dCk6CiAgICBl
+bmdpbmUgPSByZWFkX2pzb25sKG9zLnBhdGguam9pbihvdXQsICJlbmdpbmUuanNvbmwiKSkKICAg
+IHR1cm5zID0gcmVhZF9qc29ubChvcy5wYXRoLmpvaW4ob3V0LCAicnVuLmpzb25sIikpCiAgICB0
+b2RvcyA9IHt9CiAgICBmb3IgZSBpbiByZWFkX2pzb25sKG9zLnBhdGguam9pbihvdXQsICJrYiIs
+ICJldmVudHMuanNvbmwiKSk6CiAgICAgICAgaWYgZS5nZXQoInR5cGUiKSAhPSAidG9kbyI6CiAg
+ICAgICAgICAgIGNvbnRpbnVlCiAgICAgICAgdGlkLCBvcCA9IGUuZ2V0KCJpZCIpLCBlLmdldCgi
+b3AiKQogICAgICAgIGlmIG9wID09ICJhZGQiOgogICAgICAgICAgICB0b2Rvc1t0aWRdID0geyJp
+ZCI6IHRpZCwgInRleHQiOiBlLmdldCgidGV4dCIpIG9yICIiLCAiZm9yIjogZS5nZXQoImZvciIp
+LCAicGFyZW50cyI6IGUuZ2V0KCJwYXJlbnRzIikgb3IgW10sCiAgICAgICAgICAgICAgICAgICAg
+ICAgICAgImFmdGVyIjogZS5nZXQoImFmdGVyIikgb3IgW10sICJyZXZpZXciOiBib29sKGUuZ2V0
+KCJyZXZpZXciKSksCiAgICAgICAgICAgICAgICAgICAgICAgICAgIndha2UiOiBlLmdldCgid2Fr
+ZSIpLCAiYWRkZWQiOiBlLmdldCgidCIpLCAic3RhdGUiOiAib3BlbiJ9CiAgICAgICAgZWxpZiB0
+aWQgaW4gdG9kb3M6CiAgICAgICAgICAgIHRvZG8gPSB0b2Rvc1t0aWRdCiAgICAgICAgICAgIGlm
+IG9wID09ICJ0YWtlIjoKICAgICAgICAgICAgICAgIHRvZG8udXBkYXRlKHN0YXRlPSJ0YWtlbiIs
+IG1lbWJlcj1lLmdldCgibWVtYmVyIiksIHRha2VuPWUuZ2V0KCJ0IikpCiAgICAgICAgICAgIGVs
+aWYgb3AgPT0gImVuZCI6CiAgICAgICAgICAgICAgICB0b2RvLnVwZGF0ZShzdGF0ZT1lLmdldCgi
+b3V0Y29tZSIpIGlmIGUuZ2V0KCJvdXRjb21lIikgaW4gKCJkb25lIiwgImRyb3BwZWQiKSBlbHNl
+ICJmYWlsZWQiLCBlbmRlZD1lLmdldCgidCIpLCBlbnRyeT1lLmdldCgiZW50cnkiKSwKICAgICAg
+ICAgICAgICAgICAgICAgICAgICAgIHN0YXR1cz1lLmdldCgic3RhdHVzIiksIHNjb3JlPWUuZ2V0
+KCJzY29yZSIpLCBkZXRhaWw9ZS5nZXQoImRldGFpbCIpKQogICAgICAgICAgICBlbGlmIG9wID09
+ICJkcm9wIjoKICAgICAgICAgICAgICAgIHRvZG8udXBkYXRlKHN0YXRlPSJkcm9wcGVkIiwgZW5k
+ZWQ9ZS5nZXQoInQiKSkKICAgIGVudHJpZXMsIHZlcmRpY3RzID0ge30sIHt9CiAgICBmb3IgZSBp
+biByZWFkX2pzb25sKG9zLnBhdGguam9pbihvdXQsICJrYiIsICJldmVudHMuanNvbmwiKSk6CiAg
+ICAgICAgaWYgZS5nZXQoInR5cGUiKSA9PSAicHJvcG9zZSIgYW5kIGUuZ2V0KCJpZCIpIG5vdCBp
+biBlbnRyaWVzOgogICAgICAgICAgICBlbnRyaWVzW2VbImlkIl1dID0gZQogICAgICAgIGVsaWYg
+ZS5nZXQoInR5cGUiKSA9PSAidmVyZGljdCI6CiAgICAgICAgICAgIHZlcmRpY3RzW2UuZ2V0KCJp
+ZCIpXSA9IGUKICAgIG1hZGUgPSBbXQogICAgZm9yIGVpZCwgcCBpbiBlbnRyaWVzLml0ZW1zKCk6
+CiAgICAgICAgdiA9IHZlcmRpY3RzLmdldChlaWQpIG9yIHt9CiAgICAgICAga2luZCwgbmFtZSA9
+IE5vbmUsIE5vbmUKICAgICAgICBwYXRoID0gYXJ0aWZhY3RfcGF0aChvcy5wYXRoLmpvaW4ob3V0
+LCAia2IiKSwgcFsiYXJ0aWZhY3QiXSkgaWYgcC5nZXQoImFydGlmYWN0IikgZWxzZSBOb25lCiAg
+ICAgICAgaWYgcGF0aDoKICAgICAgICAgICAgdHJ5OgogICAgICAgICAgICAgICAgd2l0aCBvcGVu
+KHBhdGgsIGVuY29kaW5nPSJ1dGYtOCIsIGVycm9ycz0icmVwbGFjZSIpIGFzIGhhbmRsZToKICAg
+ICAgICAgICAgICAgICAgICBoZWFkID0gW2hhbmRsZS5yZWFkbGluZSgpIGZvciBfIGluIHJhbmdl
+KDMwKV0KICAgICAgICAgICAgICAgIG0gPSBUQUcubWF0Y2goaGVhZFswXSkKICAgICAgICAgICAg
+ICAgIGtpbmQgPSBtLmdyb3VwKDIpLmxvd2VyKCkgaWYgbSBlbHNlIE5vbmUKICAgICAgICAgICAg
+ICAgIGlmIGtpbmQgPT0gInNraWxsIjogICMgYSBza2lsbCBuYW1lcyBpdHNlbGYgaW4gaXRzIGZy
+b250bWF0dGVyIChuYW1lOiAuLi4pCiAgICAgICAgICAgICAgICAgICAgbmFtZSA9IG5leHQoKHJl
+LnN1YihyIl5ccypuYW1lXHMqOlxzKiIsICIiLCBoKS5zdHJpcCgpLnN0cmlwKCciJykgZm9yIGgg
+aW4gaGVhZCBpZiByZS5tYXRjaChyIl5ccypuYW1lXHMqOiIsIGgpKSwgTm9uZSkKICAgICAgICAg
+ICAgZXhjZXB0IE9TRXJyb3I6CiAgICAgICAgICAgICAgICBwYXNzCiAgICAgICAgbWFkZS5hcHBl
+bmQoeyJpZCI6IGVpZCwgInQiOiBwLmdldCgidCIpLCAibWVtYmVyIjogcC5nZXQoIm1lbWJlciIp
+LCAic3VtbWFyeSI6IHAuZ2V0KCJzdW1tYXJ5Iikgb3IgIiIsICJuYW1lIjogbmFtZSwKICAgICAg
+ICAgICAgICAgICAgICAgInBhcmVudHMiOiBwLmdldCgicGFyZW50cyIpIG9yIFtdLCAia2luZCI6
+IGtpbmQgb3IgcC5nZXQoImtpbmQiKSwgInN0YXR1cyI6IHYuZ2V0KCJzdGF0dXMiLCAidW5qdWRn
+ZWQiKSwKICAgICAgICAgICAgICAgICAgICAgInNjb3JlIjogdi5nZXQoInNjb3JlIiksICJkZXRh
+aWwiOiB2LmdldCgiZGV0YWlsIikgb3IgIiJ9KQogICAgdG9vbHMgPSBbXQogICAgZm9yIGJhY2tl
+bmQgaW4gKCJjbGF1ZGUiLCAib3BlbmNvZGUiKToKICAgICAgICBmb3Igcm93IGluIHJlYWRfanNv
+bmwob3MucGF0aC5qb2luKG91dCwgIm1lbWJlcnMiLCBiYWNrZW5kLCAiZXZlbnRzLmpzb25sIikp
+OgogICAgICAgICAgICBldiA9IHJvdy5nZXQoImV2ZW50IikKICAgICAgICAgICAgaWYgbm90IGlz
+aW5zdGFuY2UoZXYsIGRpY3QpOgogICAgICAgICAgICAgICAgY29udGludWUKICAgICAgICAgICAg
+Y2FsbHMgPSBbXQogICAgICAgICAgICBpZiBldi5nZXQoInR5cGUiKSA9PSAiYXNzaXN0YW50Ijog
+ICMgQ2xhdWRlJ3Mgc3RyZWFtLWpzb24KICAgICAgICAgICAgICAgIGNhbGxzID0gWyhiLmdldCgi
+bmFtZSIpLCBiLmdldCgiaW5wdXQiKSBvciB7fSkgZm9yIGIgaW4gKGV2LmdldCgibWVzc2FnZSIp
+IG9yIHt9KS5nZXQoImNvbnRlbnQiKSBvciBbXQogICAgICAgICAgICAgICAgICAgICAgICAgaWYg
+aXNpbnN0YW5jZShiLCBkaWN0KSBhbmQgYi5nZXQoInR5cGUiKSA9PSAidG9vbF91c2UiXQogICAg
+ICAgICAgICBlbGlmIGV2LmdldCgia2luZCIpID09ICJ0b29sIjogICMgaGVyZHItcHkncyBPcGVu
+Q29kZSBtZW1iZXIgbG9nCiAgICAgICAgICAgICAgICBjYWxscyA9IFsoZXYuZ2V0KCJ0b29sIiks
+IGV2LmdldCgiaW5wdXQiKSBvciB7fSldCiAgICAgICAgICAgIGZvciBuYW1lLCBpbnAgaW4gY2Fs
+bHM6CiAgICAgICAgICAgICAgICB3aGF0ID0gaW5wLmdldCgicXVlcnkiKSBvciBpbnAuZ2V0KCJ1
+cmwiKSBvciBpbnAuZ2V0KCJmaWxlX3BhdGgiKSBvciBpbnAuZ2V0KCJmaWxlUGF0aCIpIG9yIGlu
+cC5nZXQoInBhdHRlcm4iKSBvciAiIgogICAgICAgICAgICAgICAgdG9vbHMuYXBwZW5kKHsidCI6
+IHJvdy5nZXQoInQiKSwgImFnZW50Ijogcm93LmdldCgiYWdlbnQiKSwgInRvb2wiOiBzdHIobmFt
+ZSksICJ3aGF0Ijogc3RyKHdoYXQpWzoxNjBdfSkKICAgIHN1bW1hcnkgPSBOb25lCiAgICBwYXRo
+ID0gb3MucGF0aC5qb2luKG91dCwgInN1bW1hcnkuanNvbiIpCiAgICBpZiBvcy5wYXRoLmlzZmls
+ZShwYXRoKToKICAgICAgICB0cnk6CiAgICAgICAgICAgIHdpdGggb3BlbihwYXRoLCBlbmNvZGlu
+Zz0idXRmLTgiKSBhcyBoYW5kbGU6CiAgICAgICAgICAgICAgICBzdW1tYXJ5ID0ganNvbi5sb2Fk
+KGhhbmRsZSkKICAgICAgICBleGNlcHQgVmFsdWVFcnJvcjoKICAgICAgICAgICAgc3VtbWFyeSA9
+IE5vbmUKICAgIHJldHVybiBlbmdpbmUsIHR1cm5zLCBsaXN0KHRvZG9zLnZhbHVlcygpKSwgc3Vt
+bWFyeSwgbWFkZSwgdG9vbHMKCgpkZWYgdGV4dF93aWR0aCh0ZXh0LCBzaXplKToKICAgICIiIkFi
+b3V0IGhvdyB3aWRlIHRleHQgaXMgZHJhd24gYXQgdGhpcyBmb250IHNpemU6IGEgQ0pLIGNoYXJh
+Y3RlciBhcyB3aWRlIGFzIHRoZSBzaXplLCBhbnkgb3RoZXIgMC41NSBvZiBpdCAoaW4KICAgIENo
+cm9tZSB3aXRoIHRoZSBzeXN0ZW0gZm9udCB0aGUgbG9vcCdzIGxhYmVscyBtZWFzdXJlZCAwLjQz
+IHRvIDAuNTIgb2YgdGhlIHNpemUgcGVyIGNoYXJhY3RlcikuIiIiCiAgICByZXR1cm4gc3VtKHNp
+emUgaWYgb3JkKGMpID4gMHgyRTgwIGVsc2Ugc2l6ZSAqIDAuNTUgZm9yIGMgaW4gc3RyKHRleHQp
+KQoKCmRlZiBmaXQodGV4dCwgcHgsIHNpemUpOgogICAgIiIiVGhlIHRleHQsIGN1dCB3aXRoIGFu
+IGVsbGlwc2lzIHdoZW4gaXQgd291bGQgYmUgZHJhd24gd2lkZXIgdGhhbiBweCAoYW4gU1ZHIGxh
+YmVsIGRvZXMgbm90IHdyYXApLiIiIgogICAgdGV4dCA9IHN0cih0ZXh0KQogICAgaWYgdGV4dF93
+aWR0aCh0ZXh0LCBzaXplKSA8PSBweDoKICAgICAgICByZXR1cm4gdGV4dAogICAgd2hpbGUgdGV4
+dCBhbmQgdGV4dF93aWR0aCh0ZXh0ICsgIuKApiIsIHNpemUpID4gcHg6CiAgICAgICAgdGV4dCA9
+IHRleHRbOi0xXQogICAgcmV0dXJuIHRleHQucnN0cmlwKCIgLMK3IikgKyAi4oCmIgoKCmRlZiBj
+bG9jayhzZWNvbmRzKToKICAgIHMgPSBpbnQocm91bmQobWF4KDAsIHNlY29uZHMpKSkKICAgIHJl
+dHVybiBmIntzIC8vIDYwfW0ge3MgJSA2MDowMmR9cyIgaWYgcyA+PSA2MCBlbHNlIGYie3N9cyIK
+CgpkZWYgbWVkaWFuKHZhbHVlcyk6CiAgICB2ID0gc29ydGVkKHZhbHVlcykKICAgIGlmIG5vdCB2
+OgogICAgICAgIHJldHVybiBOb25lCiAgICBtID0gbGVuKHYpIC8vIDIKICAgIHJldHVybiB2W21d
+IGlmIGxlbih2KSAlIDIgZWxzZSAodlttIC0gMV0gKyB2W21dKSAvIDIKCgpMRUQgPSB7InBhc3Mi
+OiAib2siLCAiZmFpbCI6ICJiYWQiLCAiYmFkIjogImJhZCJ9ICAjIGEgdHVybidzIG91dGNvbWUg
+LT4gdGhlIGNvbG91ciBvZiBpdHMgbWVtYmVyJ3Mgc3RhdHVzIGxpZ2h0CgoKZGVmIGFnZW50c19w
+YW5lbCh3YWtlcywgdHVybnMsIHRvZG9zLCBzdW1tYXJ5LCBtZW1iZXJzLCBwbGFubmVyLCBmaW5p
+c2hlZCwgbWFkZT0oKSwgcmVhZHM9KCkpOgogICAgIiIiT25lIHJvdyBwZXIgYWdlbnQ6IHRoZSBw
+bGFubmVyLCBldmVyeSBtZW1iZXIsIHRoZSBqdWRnZTsgd2hhdCBlYWNoIGRpZCwgZnJvbSB0aGUg
+cmVjb3JkcyBvbmx5LiBBIG1lbWJlciB3aXRoIGEKICAgIHRvZG8gdGFrZW4gYW5kIG5vdCBlbmRl
+ZCB3b3JrcyBub3cgKG9ubHkgd2hpbGUgdGhlIHJ1biBnb2VzIG9uKTsgb3RoZXJ3aXNlIGl0cyBs
+aWdodCBzaG93cyBpdHMgbGFzdCB0dXJuLiIiIgogICAgcm93cyA9IFtdCiAgICB3YWtlX24gPSBs
+ZW4oe3cuZ2V0KCJ3YWtlIikgZm9yIHcgaW4gd2FrZXN9KQogICAgYmFjayA9IHN1bSgxIGZvciB3
+IGluIHdha2VzIGlmIHcuZ2V0KCJwcm9ibGVtcyIpIGFuZCB3LmdldCgic3RhdGUiKSA9PSAiaWRs
+ZSIpCiAgICB0b2tlbnMgPSBzdW0od1sidG9rZW5zIl0gZm9yIHcgaW4gd2FrZXMgaWYgaXNpbnN0
+YW5jZSh3LmdldCgidG9rZW5zIiksIGludCkpCiAgICByb3dzLmFwcGVuZCgoInBsYW5uZXIiLCBw
+bGFubmVyLCAicGxhbm5lciIsICJpZGxlIiwgZiJ7dGltZXMod2FrZV9uLCAnd2FrZScpfSDCtyB7
+dGltZXMobGVuKHdha2VzKSwgJ3R1cm4nKX0iCiAgICAgICAgICAgICAgICAgKyAoZiIgwrcge2Jh
+Y2t9IHNlbnQgYmFjayIgaWYgYmFjayBlbHNlICIiKSwgZiJ7dG9rZW5zOix9IHRva2VucyIgaWYg
+dG9rZW5zIGVsc2UgIiIpKQogICAgaWRsZSwgc3BhbiA9IChzdW1tYXJ5IG9yIHt9KS5nZXQoImlk
+bGVfc2Vjb25kcyIpIG9yIHt9LCAoc3VtbWFyeSBvciB7fSkuZ2V0KCJzZWNvbmRzIikKICAgIHdv
+cmtpbmcgPSB7dC5nZXQoIm1lbWJlciIpOiB0IGZvciB0IGluIHRvZG9zIGlmIHRbInN0YXRlIl0g
+PT0gInRha2VuIn0gaWYgbm90IGZpbmlzaGVkIGVsc2Uge30KICAgIGZvciBuYW1lIGluIG1lbWJl
+cnM6CiAgICAgICAgbWluZSA9IFt0IGZvciB0IGluIHR1cm5zIGlmIHQuZ2V0KCJtZW1iZXIiKSA9
+PSBuYW1lXQogICAgICAgIGxhc3QgPSBtaW5lWy0xXSBpZiBtaW5lIGVsc2UgTm9uZQogICAgICAg
+IGxpZ2h0ID0gInJ1biIgaWYgbmFtZSBpbiB3b3JraW5nIGVsc2UgKExFRC5nZXQob3V0Y29tZShs
+YXN0KSwgImlkbGUiKSBpZiBsYXN0IGVsc2UgImlkbGUiKQogICAgICAgIHZhbGlkID0gc3VtKDEg
+Zm9yIHQgaW4gbWluZSBpZiB0LmdldCgic3RhdHVzIikgPT0gInZhbGlkIikKICAgICAgICB1c2Vk
+ID0gc3VtKHRbInRva2VucyJdIGZvciB0IGluIG1pbmUgaWYgaXNpbnN0YW5jZSh0LmdldCgidG9r
+ZW5zIiksIGludCkpCiAgICAgICAgbGluZSA9IGYie3RpbWVzKGxlbihtaW5lKSwgJ3R1cm4nKX0g
+wrcge3ZhbGlkfSB2YWxpZCIgKyAoZiIgwrcge2xlbihtaW5lKSAtIHZhbGlkfSBub3QiIGlmIGxl
+bihtaW5lKSA+IHZhbGlkIGVsc2UgIiIpCiAgICAgICAgZnJlZSA9IChmImZyZWUge2lkbGVbbmFt
+ZV06LjBmfSBzIiArIChmIiAoe2lkbGVbbmFtZV0gLyBzcGFuOi4wJX0pIiBpZiBzcGFuIGVsc2Ug
+IiIpKSBpZiBuYW1lIGluIGlkbGUgZWxzZSAiIgogICAgICAgIG5vdyA9IChmIndvcmtzIG9uIHt3
+b3JraW5nW25hbWVdWydpZCddfSIgaWYgbmFtZSBpbiB3b3JraW5nIGVsc2UKICAgICAgICAgICAg
+ICAgZiJsYXN0OiB7bGFzdC5nZXQoJ3RvZG8nKX0ge2xhc3QuZ2V0KCdzdGF0dXMnKSBvciBsYXN0
+LmdldCgna2luZCcpIG9yIGxhc3QuZ2V0KCdzdGF0ZScpfSIgaWYgbGFzdCBlbHNlICJubyB0dXJu
+IHlldCIpCiAgICAgICAgc2tpbGxzID0ge2VbImlkIl0gZm9yIGUgaW4gbWFkZSBpZiAoZVsia2lu
+ZCJdIG9yICIiKS5sb3dlcigpID09ICJza2lsbCJ9CiAgICAgICAgd3JvdGUgPSBbZVsiaWQiXSBm
+b3IgZSBpbiBtYWRlIGlmIGVbImlkIl0gaW4gc2tpbGxzIGFuZCBlWyJtZW1iZXIiXSA9PSBuYW1l
+XQogICAgICAgIG9wZW5lZCA9IHNvcnRlZCh7ZWlkIGZvciBhZ2VudCwgZWlkLCBfIGluIHJlYWRz
+IGlmIGFnZW50ID09IG5hbWUgYW5kIGVpZCBpbiBza2lsbHN9KQogICAgICAgIGtub3cgPSAiIMK3
+ICIuam9pbih4IGZvciB4IGluIChmIndyb3RlIHNraWxsIHsnLCAnLmpvaW4od3JvdGUpfSIgaWYg
+d3JvdGUgZWxzZSAiIiwKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZiJy
+ZWFkIHNraWxsIHsnLCAnLmpvaW4ob3BlbmVkKX0iIGlmIG9wZW5lZCBlbHNlICIiKSBpZiB4KQog
+ICAgICAgIHJvd3MuYXBwZW5kKCgibWVtYmVyIiwgbmFtZSwgIm1lbWJlciIsIGxpZ2h0LCBsaW5l
+LAogICAgICAgICAgICAgICAgICAgICAiIMK3ICIuam9pbih4IGZvciB4IGluIChmInt1c2VkOix9
+IHRva2VucyIgaWYgdXNlZCBlbHNlICIiLCBmcmVlLCBub3csIGtub3cpIGlmIHgpKSkKICAgIGp1
+ZGdlZCA9IFt0IGZvciB0IGluIHR1cm5zIGlmIHQuZ2V0KCJzdGF0dXMiKSBpbiAoInZhbGlkIiwg
+ImludmFsaWQiKV0KICAgIHNjb3JlcyA9IFt0WyJzY29yZSJdIGZvciB0IGluIGp1ZGdlZCBpZiB0
 LmdldCgic3RhdHVzIikgPT0gInZhbGlkIiBhbmQgaXNpbnN0YW5jZSh0LmdldCgic2NvcmUiKSwg
-KGludCwgZmxvYXQpKSksCiAgICAgICAgICAgICAgICAgICAga2V5PWxhbWJkYSB0OiB0LmdldCgi
-ZW5kIikgb3IgdC5nZXQoInQiLCAwKSk6CiAgICAgICAgaWYgYmVzdCBpcyBOb25lIG9yIHRbInNj
-b3JlIl0gPiBiZXN0OgogICAgICAgICAgICBiZXN0ID0gdFsic2NvcmUiXQogICAgICAgICAgICBw
-b2ludHMuYXBwZW5kKCh0LmdldCgiZW5kIikgb3IgdC5nZXQoInQiLCB0MCksIGJlc3QpKQogICAg
-aWYgbm90IHBvaW50czoKICAgICAgICByZXR1cm4gJzxkaXYgY2xhc3M9Im11dGVkIj5ubyB2YWxp
-ZCBhbnN3ZXIgeWV0PC9kaXY+JwogICAgd2lkdGgsIGhlaWdodCwgbGVmdCwgcGFkID0gMzQwLCAx
-NTAsIDQ4LCAxNAogICAgbG8sIGhpID0gbWluKHBbMV0gZm9yIHAgaW4gcG9pbnRzKSwgbWF4KHBb
-MV0gZm9yIHAgaW4gcG9pbnRzKQogICAgaWYgaGkgPT0gbG86CiAgICAgICAgbG8sIGhpID0gbG8g
-LSAxLCBoaSArIDEKICAgIHNwYW4gPSBtYXgodDEgLSB0MCwgMWUtNikKICAgIHggPSBsYW1iZGEg
-dDogbGVmdCArICh0IC0gdDApIC8gc3BhbiAqICh3aWR0aCAtIGxlZnQgLSBwYWQpICAjIG5vcWE6
-IEU3MzEKICAgIHkgPSBsYW1iZGEgdjogcGFkICsgMTQgKyAoaGkgLSB2KSAvIChoaSAtIGxvKSAq
-IChoZWlnaHQgLSAyICogcGFkIC0gMjgpICAjIG5vcWE6IEU3MzEgIChyb29tIGFib3ZlIGZvciBs
-YWJlbHMpCiAgICBwYXRoLCBsYXN0ID0gW10sIE5vbmUKICAgIGZvciB0LCB2IGluIHBvaW50czoK
-ICAgICAgICBpZiBsYXN0IGlzIE5vbmU6CiAgICAgICAgICAgIHBhdGguYXBwZW5kKGYiTSB7eCh0
-KTouMWZ9IHt5KHYpOi4xZn0iKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIHBhdGguYXBwZW5k
-KGYiSCB7eCh0KTouMWZ9IFYge3kodik6LjFmfSIpCiAgICAgICAgbGFzdCA9ICh0LCB2KQogICAg
-cGF0aC5hcHBlbmQoZiJIIHt4KHQxKTouMWZ9IikKICAgIGxhYmVscyA9IFtdCiAgICBmb3IgaSwg
-KHQsIHYpIGluIGVudW1lcmF0ZShwb2ludHMpOiAgIyBhIGxhYmVsIG5ldmVyIHJ1bnMgaW50byB0
-aGUgbmV4dCBzdGVwOyB0aGUgbGFzdCBvbmUgc2l0cyBhdCB0aGUgcmlnaHQgZW5kCiAgICAgICAg
-dGV4dCA9IGYie3Y6LjZnfSIKICAgICAgICBpZiBpID09IGxlbihwb2ludHMpIC0gMToKICAgICAg
-ICAgICAgbGFiZWxzLmFwcGVuZChmJzx0ZXh0IHg9Int3aWR0aCAtIHBhZH0iIHk9Int5KHYpIC0g
-ODouMWZ9IiB0ZXh0LWFuY2hvcj0iZW5kIiBjbGFzcz0iYXgiPnt0ZXh0fTwvdGV4dD4nKQogICAg
-ICAgIGVsaWYgeChwb2ludHNbaSArIDFdWzBdKSAtIHgodCkgPj0gNi42ICogbGVuKHRleHQpICsg
-MTA6CiAgICAgICAgICAgIGxhYmVscy5hcHBlbmQoZic8dGV4dCB4PSJ7eCh0KSArIDU6LjFmfSIg
-eT0ie3kodikgLSA4Oi4xZn0iIGNsYXNzPSJheCI+e3RleHR9PC90ZXh0PicpCiAgICBkb3RzID0g
-IiIuam9pbihmJzxjaXJjbGUgY3g9Int4KHQpOi4xZn0iIGN5PSJ7eSh2KTouMWZ9IiByPSIzLjUi
-Lz4nIGZvciB0LCB2IGluIHBvaW50cykgKyAiIi5qb2luKGxhYmVscykKICAgIGF4aXMgPSAoZic8
-dGV4dCB4PSJ7bGVmdCAtIDR9IiB5PSJ7eShoaSkgKyA0Oi4xZn0iIHRleHQtYW5jaG9yPSJlbmQi
-IGNsYXNzPSJheCI+e2hpOi40Z308L3RleHQ+JwogICAgICAgICAgICBmJzx0ZXh0IHg9IntsZWZ0
-IC0gNH0iIHk9Int5KGxvKSArIDQ6LjFmfSIgdGV4dC1hbmNob3I9ImVuZCIgY2xhc3M9ImF4Ij57
-bG86LjRnfTwvdGV4dD4nCiAgICAgICAgICAgIGYnPHRleHQgeD0ie2xlZnR9IiB5PSJ7aGVpZ2h0
-IC0gMn0iIGNsYXNzPSJheCI+MCBzPC90ZXh0PicKICAgICAgICAgICAgZic8dGV4dCB4PSJ7d2lk
-dGggLSBwYWR9IiB5PSJ7aGVpZ2h0IC0gMn0iIHRleHQtYW5jaG9yPSJlbmQiIGNsYXNzPSJheCI+
-e3NlY3Moc3Bhbiwgc3Bhbil9PC90ZXh0PicpCiAgICByZXR1cm4gKGYnPHN2ZyB2aWV3Qm94PSIw
-IDAge3dpZHRofSB7aGVpZ2h0fSIgd2lkdGg9Int3aWR0aH0iIGhlaWdodD0ie2hlaWdodH0iIHJv
-bGU9ImltZyIgJwogICAgICAgICAgICBmJ2FyaWEtbGFiZWw9ImJlc3QgdmVyaWZpZWQgc2NvcmUg
-b3ZlciB0aW1lIj48cGF0aCBjbGFzcz0iYmVzdCIgZD0ieyIgIi5qb2luKHBhdGgpfSIvPicKICAg
-ICAgICAgICAgZic8ZyBjbGFzcz0iZG90cyI+e2RvdHN9PC9nPntheGlzfTwvc3ZnPicpCgoKZGVm
-IHJlbCh0LCB0MCk6CiAgICByZXR1cm4gZiIre3QgLSB0MDouMWZ9IHMiIGlmIGlzaW5zdGFuY2Uo
-dCwgKGludCwgZmxvYXQpKSBlbHNlICI/IgoKCmRlZiB0b2RvX2xpc3QodG9kb3MsIHQwKToKICAg
-IHJvd3MgPSBbXQogICAgZm9yIHQgaW4gc29ydGVkKHRvZG9zLCBrZXk9bGFtYmRhIHQ6IHQuZ2V0
-KCJhZGRlZCIpIG9yIDApOgogICAgICAgIHN0YXRlID0gdFsic3RhdGUiXQogICAgICAgIGhlYWQg
-PSBmJzxiPntlc2ModFsiaWQiXSl9PC9iPiA8c3BhbiBjbGFzcz0ic3Qge2VzYyhzdGF0ZSl9Ij57
-ZXNjKHN0YXRlKX08L3NwYW4+JwogICAgICAgIGlmIGlzaW5zdGFuY2UodC5nZXQoInNjb3JlIiks
-IChpbnQsIGZsb2F0KSk6CiAgICAgICAgICAgIGhlYWQgKz0gZiIgwrcgc2NvcmUge3RbJ3Njb3Jl
-J106LjZnfSIKICAgICAgICB3aGVuID0gW2YiYWRkZWQge3JlbCh0LmdldCgnYWRkZWQnKSwgdDAp
-fSAod2FrZSB7ZXNjKHQuZ2V0KCd3YWtlJykpfSwgZm9yIHtlc2ModC5nZXQoJ2ZvcicpIG9yICdh
-bnlvbmUnKX0pIl0KICAgICAgICBpZiB0LmdldCgibWVtYmVyIik6CiAgICAgICAgICAgIHdoZW4u
-YXBwZW5kKGYidGFrZW4ge3JlbCh0LmdldCgndGFrZW4nKSwgdDApfSBieSB7ZXNjKHRbJ21lbWJl
-ciddKX0iKQogICAgICAgIGlmIHQuZ2V0KCJlbmRlZCIpOgogICAgICAgICAgICB0b29rID0gZiIs
-IHt0WydlbmRlZCddIC0gdFsndGFrZW4nXTouMWZ9IHMiIGlmIGlzaW5zdGFuY2UodC5nZXQoInRh
-a2VuIiksIChpbnQsIGZsb2F0KSkgZWxzZSAiIgogICAgICAgICAgICB3aGVuLmFwcGVuZChmImVu
-ZGVkIHtyZWwodC5nZXQoJ2VuZGVkJyksIHQwKX17dG9va30iKQogICAgICAgIGJ1aWxkcyA9IGYn
-PGRpdiBjbGFzcz0ibXV0ZWQiPmJ1aWxkcyBvbiB7ZXNjKCIsICIuam9pbih0WyJwYXJlbnRzIl0p
-KX08L2Rpdj4nIGlmIHQuZ2V0KCJwYXJlbnRzIikgZWxzZSAiIgogICAgICAgIHNhaWQgPSBmJzxk
-aXYgY2xhc3M9InNhaWQiPntlc2ModFsiZGV0YWlsIl0pfTwvZGl2PicgaWYgdC5nZXQoImRldGFp
-bCIpIGFuZCBzdGF0ZSA9PSAiZmFpbGVkIiBlbHNlICIiCiAgICAgICAgcm93cy5hcHBlbmQoZic8
-bGkgZGF0YS1hZGRlZD0ie3QuZ2V0KCJhZGRlZCIpIG9yIDB9Ij48ZGl2PntoZWFkfTwvZGl2Pjxk
-aXY+e2VzYyh0WyJ0ZXh0Il0pfTwvZGl2PntidWlsZHN9JwogICAgICAgICAgICAgICAgICAgIGYn
-PGRpdiBjbGFzcz0ibXV0ZWQiPnsiIMK3ICIuam9pbih3aGVuKX08L2Rpdj57c2FpZH08L2xpPicp
-CiAgICByZXR1cm4gZic8dWwgY2xhc3M9ImNhcmRzIiBpZD0idG9kb3MiPnsiIi5qb2luKHJvd3Mp
-IG9yICI8bGk+bm8gdG9kb3MgeWV0PC9saT4ifTwvdWw+JwoKCmRlZiBjb250cm9sX2xpc3QoY29u
-dHJvbHMsIHQwKToKICAgIGlmIG5vdCBjb250cm9sczoKICAgICAgICByZXR1cm4gIiIKICAgIHJv
-d3MgPSBbXQogICAgZm9yIGMgaW4gY29udHJvbHM6CiAgICAgICAgd2hhdCA9IChjLmdldCgiY29t
-bWFuZCIpIG9yICI/IikgKyAoZiIge2NbJ3ZhbHVlJ119IiBpZiBjLmdldCgidmFsdWUiKSBpcyBu
-b3QgTm9uZSBlbHNlICIiKQogICAgICAgIHJvd3MuYXBwZW5kKGYnPGxpIGRhdGEtcz0ie2MuZ2V0
-KCJ0Iikgb3IgMH0iPjxkaXY+PGI+e2VzYyh3aGF0KX08L2I+IMK3IHtyZWwoYy5nZXQoInQiKSwg
-dDApfSDCtyBieSB7ZXNjKGMuZ2V0KCJieSIpIG9yICI/Iil9PC9kaXY+JwogICAgICAgICAgICAg
-ICAgICAgICsgKGYnPGRpdiBjbGFzcz0ic2FpZCI+cmVmdXNlZDoge2VzYyhjWyJyZWZ1c2VkIl0p
-fTwvZGl2PicgaWYgYy5nZXQoInJlZnVzZWQiKSBlbHNlICIiKQogICAgICAgICAgICAgICAgICAg
-ICsgKGYnPGRpdiBjbGFzcz0ibXV0ZWQiPnRoZSBtZW1iZXIgdHVybnMgYXJlIG5vdyB7ZXNjKGNb
-ImFwcGxpZWQiXSl9PC9kaXY+JyBpZiBjLmdldCgiYXBwbGllZCIpIGVsc2UgIiIpICsgIjwvbGk+
-IikKICAgIHJldHVybiAnPHNlY3Rpb24gY2xhc3M9InBhbmVsIj48aDI+Q29tbWFuZHMgZnJvbSBw
-ZW9wbGU8L2gyPjx1bCBjbGFzcz0iY2FyZHMiIGlkPSJjb250cm9scy1zZW50Ij4nICsgIiIuam9p
-bihyb3dzKSArICI8L3VsPjwvc2VjdGlvbj4iCgoKZGVmIHdha2VfbGlzdCh3YWtlcywgdDApOgog
-ICAgcm93cyA9IFtdCiAgICBmb3IgdyBpbiB3YWtlczoKICAgICAgICBoZWFkID0gZic8Yj53YWtl
-IHtlc2Mody5nZXQoIndha2UiKSl9PC9iPiDCtyBhdHRlbXB0IHtlc2Mody5nZXQoImF0dGVtcHQi
-KSl9IMK3IHtyZWwody5nZXQoInN0YXJ0IiksIHQwKX0gwrcge2VzYyh3LmdldCgic2Vjb25kcyIp
-KX0gcycKICAgICAgICB3aGF0ID0gW10KICAgICAgICBpZiB3LmdldCgiYWRkZWQiKToKICAgICAg
-ICAgICAgd2hhdC5hcHBlbmQoImFkZGVkICIgKyAiLCAiLmpvaW4od1siYWRkZWQiXSkpCiAgICAg
-ICAgaWYgdy5nZXQoImRyb3BwZWQiKToKICAgICAgICAgICAgd2hhdC5hcHBlbmQoImRyb3BwZWQg
-IiArICIsICIuam9pbih3WyJkcm9wcGVkIl0pKQogICAgICAgIGlmIHcuZ2V0KCJkb25lIik6CiAg
-ICAgICAgICAgIHdoYXQuYXBwZW5kKCJzYWlkIHRoZSB0YXNrIGlzIGRvbmUiKQogICAgICAgIGlm
-IHcuZ2V0KCJwcm9ibGVtcyIpOgogICAgICAgICAgICB3aGF0LmFwcGVuZCgic2VudCBiYWNrOiAi
-ICsgIjsgIi5qb2luKHdbInByb2JsZW1zIl0pKQogICAgICAgIHJvd3MuYXBwZW5kKGYnPGxpIGRh
-dGEtcz0ie3cuZ2V0KCJzdGFydCIpIG9yIHcuZ2V0KCJ0Iikgb3IgMH0iPjxkaXY+e2hlYWR9PC9k
-aXY+PGRpdiBjbGFzcz0ibXV0ZWQiPndva2VuIGJlY2F1c2U6IHtlc2Mody5nZXQoInJlYXNvbiIs
-ICIiKSl9PC9kaXY+JwogICAgICAgICAgICAgICAgICAgICsgKGYnPGRpdj57ZXNjKCIgwrcgIi5q
-b2luKHdoYXQpKX08L2Rpdj4nIGlmIHdoYXQgZWxzZSAiIikKICAgICAgICAgICAgICAgICAgICAr
-IChmJzxkaXYgY2xhc3M9InNhaWQiPntlc2Mod1sid2h5Il0pfTwvZGl2PicgaWYgdy5nZXQoIndo
-eSIpIGVsc2UgIiIpICsgIjwvbGk+IikKICAgIHJldHVybiBmJzx1bCBjbGFzcz0iY2FyZHMiIGlk
-PSJ3YWtlcyI+eyIiLmpvaW4ocm93cykgb3IgIjxsaT50aGUgcGxhbm5lciBoYXMgbm90IGJlZW4g
-d29rZW4geWV0PC9saT4ifTwvdWw+JwoKClNDUklQVCA9ICcoZnVuY3Rpb24gKCkge1xuICAidXNl
-IHN0cmljdCI7XG4gIHZhciBlbCA9IGRvY3VtZW50LmdldEVsZW1lbnRCeUlkKCJydW4tZGF0YSIp
-LCBzdmcgPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgidGltZWxpbmUiKTtcbiAgaWYgKCFlbCB8
-fCAhc3ZnKSB7IHJldHVybjsgfVxuICB2YXIgRDtcbiAgdHJ5IHsgRCA9IEpTT04ucGFyc2UoZWwu
-dGV4dENvbnRlbnQpOyB9IGNhdGNoIChlcnIpIHsgcmV0dXJuOyB9XG4gIHZhciBzcGFuID0gTWF0
-aC5tYXgoRC50MSAtIEQudDAsIDFlLTYpLCBUT1AgPSArc3ZnLmdldEF0dHJpYnV0ZSgiZGF0YS10
-b3AiKSwgUEggPSArc3ZnLmdldEF0dHJpYnV0ZSgiZGF0YS1oIik7XG4gIGZ1bmN0aW9uIFkodCkg
-eyByZXR1cm4gVE9QICsgKHQgLSBELnQwKSAvIHNwYW4gKiBQSDsgfVxuICBmdW5jdGlvbiAkKGlk
-KSB7IHJldHVybiBkb2N1bWVudC5nZXRFbGVtZW50QnlJZChpZCk7IH1cbiAgZnVuY3Rpb24gZm10
-KHYpIHsgcmV0dXJuIFN0cmluZyhNYXRoLnJvdW5kKHYgKiAxZTYpIC8gMWU2KTsgfVxuICBmdW5j
-dGlvbiBhbGwoc2VsLCByb290KSB7IHJldHVybiBBcnJheS5wcm90b3R5cGUuc2xpY2UuY2FsbCgo
-cm9vdCB8fCBkb2N1bWVudCkucXVlcnlTZWxlY3RvckFsbChzZWwpKTsgfVxuICB2YXIgdGV4dHMg
-PSBbInMtZXZlbnRzIiwgInMtcGxhbm5lciIsICJzLXRvZG9zIiwgInMtbWVtYmVycyIsICJzLWp1
-ZGdlIiwgImEtd2FrZSIsICJhLXRvZG8iLCAiYS10YWtlIiwgImEtYW5zd2VyIl07XG4gIHZhciBv
-cmlnaW5hbCA9IHt9O1xuICB0ZXh0cy5mb3JFYWNoKGZ1bmN0aW9uIChpZCkgeyBpZiAoJChpZCkp
-IHsgb3JpZ2luYWxbaWRdID0gJChpZCkudGV4dENvbnRlbnQ7IH0gfSk7XG4gIHZhciBiYXJzID0g
-YWxsKCIuYmFyIiwgc3ZnKSwgbGluZXMgPSBhbGwoIi50aW1lZCIpLCBub3cgPSAkKCJub3ciKTtc
-biAgdmFyIHRvZG9DYXJkcyA9IGFsbCgiI3RvZG9zIGxpW2RhdGEtYWRkZWRdLCAjZ2F0aGVyIGxp
-W2RhdGEtYWRkZWRdIiksIHdha2VDYXJkcyA9IGFsbCgiI3dha2VzIGxpW2RhdGEtc10iKTtcbiAg
-dmFyIGFnZW50Um93cyA9IGFsbCgiI2FnZW50cyBsaVtkYXRhLXJvbGVdIiksIGZsb3dzID0gWyJm
-LXdha2UiLCAiZi10b2RvIiwgImYtdGFrZSIsICJmLWFuc3dlciJdO1xuICBiYXJzLmZvckVhY2go
-ZnVuY3Rpb24gKGcpIHtcbiAgICB2YXIgciA9IGcucXVlcnlTZWxlY3RvcigicmVjdCIpO1xuICAg
-IGcuX3kgPSArci5nZXRBdHRyaWJ1dGUoInkiKTsgZy5faCA9ICtyLmdldEF0dHJpYnV0ZSgiaGVp
-Z2h0Iik7XG4gICAgZy5fcyA9ICtnLmdldEF0dHJpYnV0ZSgiZGF0YS1zIik7IGcuX2UgPSArZy5n
-ZXRBdHRyaWJ1dGUoImRhdGEtZSIpO1xuICAgIGcuc3R5bGUuY3Vyc29yID0gInBvaW50ZXIiO1xu
-ICAgIGcuYWRkRXZlbnRMaXN0ZW5lcigiY2xpY2siLCBmdW5jdGlvbiAoKSB7IHNob3coZy5nZXRB
-dHRyaWJ1dGUoImRhdGEtaSIpKTsgfSk7XG4gIH0pO1xuICB2YXIgc2xvdCA9ICQoInBsYXllciIp
-O1xuICBzbG90LmlubmVySFRNTCA9IFwnPGJ1dHRvbiB0eXBlPSJidXR0b24iIGlkPSJwbGF5Ij7i
-lrYgUmVwbGF5PC9idXR0b24+XCcgK1xuICAgIFwnPGlucHV0IHR5cGU9InJhbmdlIiBpZD0ic2Ny
-dWIiIG1pbj0iMCIgbWF4PSIxMDAwIiBzdGVwPSIxIiB2YWx1ZT0iMTAwMCIgYXJpYS1sYWJlbD0i
-dGltZSBpbiB0aGUgcnVuIj5cJyArXG4gICAgXCc8c3BhbiBpZD0iY2xvY2siIGNsYXNzPSJtdXRl
-ZCI+PC9zcGFuPlwnO1xuICB2YXIgcGxheSA9ICQoInBsYXkiKSwgc2NydWIgPSAkKCJzY3J1YiIp
-LCBjbG9jayA9ICQoImNsb2NrIiksIGRldGFpbCA9ICQoImRldGFpbCIpO1xuICB2YXIgcGxheWlu
-ZyA9IGZhbHNlLCB0ID0gRC50MSwgbGFzdCA9IDAsIHJhdGUgPSBNYXRoLm1heCgxLCBzcGFuIC8g
-MjQpO1xuICBmdW5jdGlvbiBzZXRUZXh0KGlkLCB0ZXh0KSB7IHZhciBuID0gJChpZCk7IGlmIChu
-KSB7IG4udGV4dENvbnRlbnQgPSB0ZXh0Lmxlbmd0aCA+IDQwID8gdGV4dC5zbGljZSgwLCAzOSkg
-KyAi4oCmIiA6IHRleHQ7IH0gfVxuICBmdW5jdGlvbiBzZXRPbihpZCwgb24pIHsgdmFyIG4gPSAk
-KGlkKTsgaWYgKG4pIHsgbi5jbGFzc0xpc3QudG9nZ2xlKCJvbiIsICEhb24pOyB9IH1cbiAgZnVu
-Y3Rpb24gY291bnQobGlzdCwgdGVzdCkgeyB2YXIgbiA9IDA7IGxpc3QuZm9yRWFjaChmdW5jdGlv
-biAoeCkgeyBpZiAodGVzdCh4KSkgeyBuICs9IDE7IH0gfSk7IHJldHVybiBuOyB9XG4gIGZ1bmN0
-aW9uIGF0KHRpbWUpIHtcbiAgICB0ID0gdGltZTtcbiAgICBiYXJzLmZvckVhY2goZnVuY3Rpb24g
-KGcpIHtcbiAgICAgIHZhciByID0gZy5xdWVyeVNlbGVjdG9yKCJyZWN0Iik7XG4gICAgICBpZiAo
-dGltZSA8IGcuX3MpIHsgZy5zdHlsZS5vcGFjaXR5ID0gIjAiOyByZXR1cm47IH1cbiAgICAgIGcu
-c3R5bGUub3BhY2l0eSA9ICIxIjtcbiAgICAgIHIuc2V0QXR0cmlidXRlKCJoZWlnaHQiLCAodGlt
-ZSA+PSBnLl9lID8gZy5faCA6IE1hdGgubWF4KDMsIFkodGltZSkgLSBnLl95KSkudG9GaXhlZCgx
-KSk7XG4gICAgICBnLmNsYXNzTGlzdC50b2dnbGUoImxpdmUiLCB0aW1lIDwgZy5fZSk7XG4gICAg
-fSk7XG4gICAgbGluZXMuZm9yRWFjaChmdW5jdGlvbiAobCkgeyBsLnN0eWxlLm9wYWNpdHkgPSAr
-bC5nZXRBdHRyaWJ1dGUoImRhdGEtdCIpIDw9IHRpbWUgPyAiMSIgOiAiMCI7IH0pO1xuICAgIG5v
-dy5zZXRBdHRyaWJ1dGUoInkxIiwgWSh0aW1lKS50b0ZpeGVkKDEpKTsgbm93LnNldEF0dHJpYnV0
-ZSgieTIiLCBZKHRpbWUpLnRvRml4ZWQoMSkpO1xuICAgIG5vdy5zdHlsZS5vcGFjaXR5ID0gIjEi
-O1xuICAgIHZhciBmbGFzaCA9IE1hdGgubWF4KDAuNiwgc3BhbiAvIDYwKTtcbiAgICB2YXIgcGxh
-bm5pbmcgPSBELndha2VzLnNvbWUoZnVuY3Rpb24gKHcpIHsgcmV0dXJuIHcucyA8PSB0aW1lICYm
-IHRpbWUgPCB3LmU7IH0pO1xuICAgIHZhciB3b3JraW5nID0gRC50dXJucy5maWx0ZXIoZnVuY3Rp
-b24gKG0pIHsgcmV0dXJuIG0ucyA8PSB0aW1lICYmIHRpbWUgPCBtLmU7IH0pO1xuICAgIHZhciBl
-bmRlZCA9IEQudHVybnMuZmlsdGVyKGZ1bmN0aW9uIChtKSB7IHJldHVybiBtLmUgPD0gdGltZTsg
-fSk7XG4gICAgdmFyIGp1ZGdlZCA9IGVuZGVkLnNvbWUoZnVuY3Rpb24gKG0pIHsgcmV0dXJuIHRp
-bWUgLSBtLmUgPCBmbGFzaDsgfSk7XG4gICAgc2V0T24oIm4tcGxhbm5lciIsIHBsYW5uaW5nKTsg
-c2V0T24oIm4tbWVtYmVycyIsIHdvcmtpbmcubGVuZ3RoID4gMCk7IHNldE9uKCJuLWp1ZGdlIiwg
-anVkZ2VkKTtcbiAgICBzZXRPbigibi1ldmVudHMiLCBqdWRnZWQgfHwgRC53YWtlcy5zb21lKGZ1
-bmN0aW9uICh3KSB7IHJldHVybiB3LnMgPD0gdGltZSAmJiB0aW1lIC0gdy5zIDwgZmxhc2g7IH0p
-KTtcbiAgICB2YXIgd29rZSA9IHt9O1xuICAgIEQud2FrZXMuZm9yRWFjaChmdW5jdGlvbiAodykg
-eyBpZiAody5zIDw9IHRpbWUpIHsgd29rZVt3Lndha2VdID0gMTsgfSB9KTtcbiAgICB2YXIgYmFj
-ayA9IGNvdW50KEQud2FrZXMsIGZ1bmN0aW9uICh3KSB7IHJldHVybiB3LmUgPD0gdGltZSAmJiB3
-LmtpbmQgPT09ICJwbGFuYmFjayI7IH0pO1xuICAgIHZhciBhZGRlZCA9IGNvdW50KEQudG9kb3Ms
-IGZ1bmN0aW9uICh4KSB7IHJldHVybiB4LmFkZGVkIDw9IHRpbWU7IH0pO1xuICAgIHZhciBkcm9w
-cGVkID0gY291bnQoRC50b2RvcywgZnVuY3Rpb24gKHgpIHsgcmV0dXJuIHguc3RhdGUgPT09ICJk
-cm9wcGVkIiAmJiB4LmVuZGVkIDw9IHRpbWU7IH0pO1xuICAgIHZhciB0YWtlbiA9IGNvdW50KEQu
-dG9kb3MsIGZ1bmN0aW9uICh4KSB7IHJldHVybiB4LnRha2VuICYmIHgudGFrZW4gPD0gdGltZTsg
-fSk7XG4gICAgdmFyIGRvbmUgPSBjb3VudChELnRvZG9zLCBmdW5jdGlvbiAoeCkgeyByZXR1cm4g
-eC5zdGF0ZSA9PT0gImRvbmUiICYmIHguZW5kZWQgPD0gdGltZTsgfSk7XG4gICAgdmFyIGZhaWxl
-ZCA9IGNvdW50KEQudG9kb3MsIGZ1bmN0aW9uICh4KSB7IHJldHVybiB4LnN0YXRlID09PSAiZmFp
-bGVkIiAmJiB4LmVuZGVkIDw9IHRpbWU7IH0pO1xuICAgIHZhciBhbnN3ZXJzID0gY291bnQoZW5k
-ZWQsIGZ1bmN0aW9uIChtKSB7IHJldHVybiBtLmtpbmQgPT09ICJyZXN1bHQiOyB9KTtcbiAgICB2
-YXIgdmFsaWQgPSBlbmRlZC5maWx0ZXIoZnVuY3Rpb24gKG0pIHsgcmV0dXJuIG0uc3RhdHVzID09
-PSAidmFsaWQiOyB9KTtcbiAgICB2YXIgaW52YWxpZCA9IGNvdW50KGVuZGVkLCBmdW5jdGlvbiAo
-bSkgeyByZXR1cm4gbS5zdGF0dXMgPT09ICJpbnZhbGlkIjsgfSk7XG4gICAgdmFyIGJlc3QgPSBu
-dWxsO1xuICAgIHZhbGlkLmZvckVhY2goZnVuY3Rpb24gKG0pIHsgaWYgKGJlc3QgPT09IG51bGwg
-fHwgbS5zY29yZSA+IGJlc3QpIHsgYmVzdCA9IG0uc2NvcmU7IH0gfSk7XG4gICAgc2V0T24oImYt
-d2FrZSIsIHBsYW5uaW5nKTsgc2V0T24oImYtdG9kbyIsIEQud2FrZXMuc29tZShmdW5jdGlvbiAo
-dykgeyByZXR1cm4gdy5lIDw9IHRpbWUgJiYgdGltZSAtIHcuZSA8IGZsYXNoOyB9KSk7XG4gICAg
-c2V0T24oImYtdGFrZSIsIEQudHVybnMuc29tZShmdW5jdGlvbiAobSkgeyByZXR1cm4gbS5zIDw9
-IHRpbWUgJiYgdGltZSAtIG0ucyA8IGZsYXNoOyB9KSk7IHNldE9uKCJmLWFuc3dlciIsIGp1ZGdl
-ZCk7XG4gICAgYWdlbnRSb3dzLmZvckVhY2goZnVuY3Rpb24gKGxpKSB7XG4gICAgICB2YXIgcm9s
-ZSA9IGxpLmdldEF0dHJpYnV0ZSgiZGF0YS1yb2xlIiksIG5hbWUgPSBsaS5nZXRBdHRyaWJ1dGUo
-ImRhdGEtYWdlbnQiKSwgayA9ICJpZGxlIjtcbiAgICAgIGlmIChyb2xlID09PSAicGxhbm5lciIp
-IHsgayA9IHBsYW5uaW5nID8gInJ1biIgOiAiaWRsZSI7IH1cbiAgICAgIGVsc2UgaWYgKHJvbGUg
-PT09ICJqdWRnZSIpIHsgayA9IHZhbGlkLmxlbmd0aCA/ICJvayIgOiAiaWRsZSI7IH1cbiAgICAg
-IGVsc2UgaWYgKHdvcmtpbmcuc29tZShmdW5jdGlvbiAobSkgeyByZXR1cm4gbS5tZW1iZXIgPT09
-IG5hbWU7IH0pKSB7IGsgPSAicnVuIjsgfVxuICAgICAgZWxzZSB7XG4gICAgICAgIHZhciBtaW5l
-ID0gZW5kZWQuZmlsdGVyKGZ1bmN0aW9uIChtKSB7IHJldHVybiBtLm1lbWJlciA9PT0gbmFtZTsg
-fSksIG8gPSBtaW5lW21pbmUubGVuZ3RoIC0gMV07XG4gICAgICAgIGlmIChvKSB7IGsgPSBvLnN0
-YXR1cyA9PT0gInZhbGlkIiA/ICJvayIgOiAoby5zdGF0dXMgPT09ICJpbnZhbGlkIiB8fCBvLmtp
-bmQgPT09ICJmYWlsdXJlIiB8fCBbImVycm9yIiwgImFib3J0ZWQiLCAicHJvdmlkZXJfc3RhbGwi
-XS5pbmRleE9mKG8uc3RhdGUpID49IDAgPyAiYmFkIiA6ICJpZGxlIik7IH1cbiAgICAgIH1cbiAg
-ICAgIGxpLnF1ZXJ5U2VsZWN0b3IoIi5sZWQiKS5jbGFzc05hbWUgPSAibGVkICIgKyBrO1xuICAg
-IH0pO1xuICAgIHZhciBudyA9IE9iamVjdC5rZXlzKHdva2UpLmxlbmd0aDtcbiAgICBzZXRUZXh0
-KCJhLXdha2UiLCAid29rZSB0aGUgcGxhbm5lciAiICsgbncgKyAobncgPT09IDEgPyAiIHRpbWUi
-IDogIiB0aW1lcyIpICsgKGJhY2sgPyAiICgiICsgYmFjayArICIgc2VudCBiYWNrKSIgOiAiIikp
-O1xuICAgIHNldFRleHQoImEtdG9kbyIsIGFkZGVkICsgIiB0b2RvcyBhZGRlZCwgIiArIGRyb3Bw
-ZWQgKyAiIGRyb3BwZWQiKTtcbiAgICBzZXRUZXh0KCJhLXRha2UiLCB0YWtlbiArICIgdG9kb3Mg
-dGFrZW4iKTtcbiAgICBzZXRUZXh0KCJhLWFuc3dlciIsIGFuc3dlcnMgKyAiIGFuc3dlcnMiICsg
-KGVuZGVkLmxlbmd0aCA+IGFuc3dlcnMgPyAiLCAiICsgKGVuZGVkLmxlbmd0aCAtIGFuc3dlcnMp
-ICsgIiB3aXRob3V0IG9uZSIgOiAiIikpO1xuICAgIHNldFRleHQoInMtdG9kb3MiLCAoYWRkZWQg
-LSB0YWtlbiAtIGRyb3BwZWQpICsgIiBvcGVuIMK3ICIgKyAodGFrZW4gLSBkb25lIC0gZmFpbGVk
-KSArICIgdGFrZW4gwrcgIiArIGRvbmUgKyAiIGRvbmUgwrcgIiArIGZhaWxlZCArICIgZmFpbGVk
-Iik7XG4gICAgc2V0VGV4dCgicy1tZW1iZXJzIiwgd29ya2luZy5sZW5ndGggPyAid29ya2luZyBu
-b3c6ICIgKyB3b3JraW5nLm1hcChmdW5jdGlvbiAobSkgeyByZXR1cm4gbS5tZW1iZXI7IH0pLmpv
-aW4oIiwgIikgOiAid2FpdGluZyBmb3IgYSB0b2RvIik7XG4gICAgc2V0VGV4dCgicy1wbGFubmVy
-IiwgcGxhbm5pbmcgPyAicGxhbm5pbmcgbm93IiA6IG9yaWdpbmFsWyJzLXBsYW5uZXIiXSk7XG4g
-ICAgc2V0VGV4dCgicy1qdWRnZSIsIHZhbGlkLmxlbmd0aCArICIgdmFsaWQsICIgKyBpbnZhbGlk
-ICsgIiBpbnZhbGlkOyAiICsgKGJlc3QgPT09IG51bGwgPyAibm8gdmFsaWQgYW5zd2VyIHlldCIg
-OiAiYmVzdCAiICsgZm10KGJlc3QpKSk7XG4gICAgdG9kb0NhcmRzLmZvckVhY2goZnVuY3Rpb24g
-KGxpKSB7IGxpLmNsYXNzTGlzdC50b2dnbGUoImZ1dHVyZSIsICtsaS5nZXRBdHRyaWJ1dGUoImRh
-dGEtYWRkZWQiKSA+IHRpbWUpOyB9KTtcbiAgICB3YWtlQ2FyZHMuZm9yRWFjaChmdW5jdGlvbiAo
-bGkpIHsgbGkuY2xhc3NMaXN0LnRvZ2dsZSgiZnV0dXJlIiwgK2xpLmdldEF0dHJpYnV0ZSgiZGF0
-YS1zIikgPiB0aW1lKTsgfSk7XG4gICAgY2xvY2sudGV4dENvbnRlbnQgPSAodGltZSAtIEQudDAp
-LnRvRml4ZWQoMSkgKyAiIHMgb2YgIiArIHNwYW4udG9GaXhlZCgwKSArICIgcyI7XG4gICAgc2Ny
-dWIudmFsdWUgPSBTdHJpbmcoTWF0aC5yb3VuZCgodGltZSAtIEQudDApIC8gc3BhbiAqIDEwMDAp
-KTtcbiAgfVxuICBmdW5jdGlvbiByZXN0KCkge1xuICAgIGJhcnMuZm9yRWFjaChmdW5jdGlvbiAo
-ZykgeyBnLnN0eWxlLm9wYWNpdHkgPSAiMSI7IGcuY2xhc3NMaXN0LnJlbW92ZSgibGl2ZSIpOyBn
-LnF1ZXJ5U2VsZWN0b3IoInJlY3QiKS5zZXRBdHRyaWJ1dGUoImhlaWdodCIsIGcuX2gudG9GaXhl
-ZCgxKSk7IH0pO1xuICAgIGxpbmVzLmZvckVhY2goZnVuY3Rpb24gKGwpIHsgbC5zdHlsZS5vcGFj
-aXR5ID0gIjEiOyB9KTtcbiAgICBub3cuc3R5bGUub3BhY2l0eSA9ICIwIjtcbiAgICBbIm4tZXZl
-bnRzIiwgIm4tcGxhbm5lciIsICJuLXRvZG9zIiwgIm4tbWVtYmVycyIsICJuLWp1ZGdlIl0uY29u
-Y2F0KGZsb3dzKS5mb3JFYWNoKGZ1bmN0aW9uIChpZCkgeyBzZXRPbihpZCwgZmFsc2UpOyB9KTtc
-biAgICBhZ2VudFJvd3MuZm9yRWFjaChmdW5jdGlvbiAobGkpIHsgbGkucXVlcnlTZWxlY3Rvcigi
-LmxlZCIpLmNsYXNzTmFtZSA9ICJsZWQgIiArIGxpLmdldEF0dHJpYnV0ZSgiZGF0YS1sZWQiKTsg
-fSk7XG4gICAgT2JqZWN0LmtleXMob3JpZ2luYWwpLmZvckVhY2goZnVuY3Rpb24gKGlkKSB7IHNl
-dFRleHQoaWQsIG9yaWdpbmFsW2lkXSk7IH0pO1xuICAgIHRvZG9DYXJkcy5jb25jYXQod2FrZUNh
-cmRzKS5mb3JFYWNoKGZ1bmN0aW9uIChsaSkgeyBsaS5jbGFzc0xpc3QucmVtb3ZlKCJmdXR1cmUi
-KTsgfSk7XG4gICAgY2xvY2sudGV4dENvbnRlbnQgPSBzcGFuLnRvRml4ZWQoMCkgKyAiIHMgaW4g
-YWxsIiArIChELmZpbmlzaGVkID8gIiIgOiAiIHNvIGZhciIpO1xuICAgIHNjcnViLnZhbHVlID0g
-IjEwMDAiO1xuICAgIHQgPSBELnQxO1xuICB9XG4gIGZ1bmN0aW9uIHN0b3AoKSB7IHBsYXlpbmcg
-PSBmYWxzZTsgcGxheS50ZXh0Q29udGVudCA9ICLilrYgUmVwbGF5IjsgfVxuICBmdW5jdGlvbiBm
-cmFtZSh0cykge1xuICAgIGlmICghcGxheWluZykgeyByZXR1cm47IH1cbiAgICB2YXIgbmV4dCA9
-IHQgKyAobGFzdCA/ICh0cyAtIGxhc3QpIC8gMTAwMCA6IDApICogcmF0ZTtcbiAgICBsYXN0ID0g
-dHM7XG4gICAgaWYgKG5leHQgPj0gRC50MSkgeyBzdG9wKCk7IHJlc3QoKTsgcmV0dXJuOyB9XG4g
-ICAgYXQobmV4dCk7XG4gICAgd2luZG93LnJlcXVlc3RBbmltYXRpb25GcmFtZShmcmFtZSk7XG4g
-IH1cbiAgcGxheS5hZGRFdmVudExpc3RlbmVyKCJjbGljayIsIGZ1bmN0aW9uICgpIHtcbiAgICBp
-ZiAocGxheWluZykgeyBzdG9wKCk7IHJldHVybjsgfVxuICAgIHBsYXlpbmcgPSB0cnVlOyBsYXN0
-ID0gMDsgcGxheS50ZXh0Q29udGVudCA9ICLinZrinZogUGF1c2UiO1xuICAgIGlmICh0ID49IEQu
-dDEpIHsgYXQoRC50MCk7IH1cbiAgICB3aW5kb3cucmVxdWVzdEFuaW1hdGlvbkZyYW1lKGZyYW1l
-KTtcbiAgfSk7XG4gIHNjcnViLmFkZEV2ZW50TGlzdGVuZXIoImlucHV0IiwgZnVuY3Rpb24gKCkg
-e1xuICAgIHN0b3AoKTtcbiAgICB2YXIgdiA9ICtzY3J1Yi52YWx1ZTtcbiAgICBpZiAodiA+PSAx
-MDAwKSB7IHJlc3QoKTsgfSBlbHNlIHsgYXQoRC50MCArIHYgLyAxMDAwICogc3Bhbik7IH1cbiAg
-fSk7XG4gIGZ1bmN0aW9uIHNob3coa2V5KSB7XG4gICAgdmFyIGl0ZW0gPSBrZXkuY2hhckF0KDAp
-ID09PSAidyIgPyBELndha2VzWytrZXkuc2xpY2UoMSldIDogRC50dXJuc1sra2V5LnNsaWNlKDEp
-XTtcbiAgICBpZiAoIWl0ZW0pIHsgcmV0dXJuOyB9XG4gICAgdmFyIG91dCA9IFtdO1xuICAgIGlm
-IChrZXkuY2hhckF0KDApID09PSAidyIpIHtcbiAgICAgIG91dC5wdXNoKCJwbGFubmVyIHdha2Ug
-IiArIGl0ZW0ud2FrZSArICIsIGF0dGVtcHQgIiArIGl0ZW0uYXR0ZW1wdCArICIgwrcgIiArIChp
-dGVtLmUgLSBpdGVtLnMpLnRvRml4ZWQoMSkgKyAiIHMiKTtcbiAgICAgIG91dC5wdXNoKCJ3b2tl
-biBiZWNhdXNlOiAiICsgaXRlbS5yZWFzb24pO1xuICAgICAgaWYgKGl0ZW0uYWRkZWQgJiYgaXRl
-bS5hZGRlZC5sZW5ndGgpIHsgb3V0LnB1c2goImFkZGVkICIgKyBpdGVtLmFkZGVkLmpvaW4oIiwg
-IikpOyB9XG4gICAgICBpZiAoaXRlbS5kcm9wcGVkICYmIGl0ZW0uZHJvcHBlZC5sZW5ndGgpIHsg
-b3V0LnB1c2goImRyb3BwZWQgIiArIGl0ZW0uZHJvcHBlZC5qb2luKCIsICIpKTsgfVxuICAgICAg
-aWYgKGl0ZW0ucHJvYmxlbXMgJiYgaXRlbS5wcm9ibGVtcy5sZW5ndGgpIHsgb3V0LnB1c2goInNl
-bnQgYmFjazogIiArIGl0ZW0ucHJvYmxlbXMuam9pbigiOyAiKSk7IH1cbiAgICAgIGlmIChpdGVt
-LmRvbmUpIHsgb3V0LnB1c2goInNhaWQgdGhlIHRhc2sgaXMgZG9uZSIpOyB9XG4gICAgICBpZiAo
-aXRlbS53aHkpIHsgb3V0LnB1c2goaXRlbS53aHkpOyB9XG4gICAgfSBlbHNlIHtcbiAgICAgIHZh
-ciB0b2RvID0gRC50b2Rvcy5maWx0ZXIoZnVuY3Rpb24gKHgpIHsgcmV0dXJuIHguaWQgPT09IGl0
-ZW0udG9kbzsgfSlbMF0gfHwge307XG4gICAgICBvdXQucHVzaChpdGVtLm1lbWJlciArICIsIHR1
-cm4gIiArIGl0ZW0udHVybiArICIgwrcgIiArIChpdGVtLmUgLSBpdGVtLnMpLnRvRml4ZWQoMSkg
-KyAiIHMiKTtcbiAgICAgIG91dC5wdXNoKCJ0b2RvICIgKyBpdGVtLnRvZG8gKyAiOiAiICsgKHRv
-ZG8udGV4dCB8fCAiIikpO1xuICAgICAgb3V0LnB1c2goKGl0ZW0uc3RhdHVzIHx8IGl0ZW0uc3Rh
-dGUgfHwgIiIpICsgKHR5cGVvZiBpdGVtLnNjb3JlID09PSAibnVtYmVyIiA/ICIgwrcgc2NvcmUg
-IiArIGZtdChpdGVtLnNjb3JlKSA6ICIiKSArIChpdGVtLmVudHJ5ID8gIiDCtyBlbnRyeSAiICsg
-aXRlbS5lbnRyeSA6ICIiKSk7XG4gICAgICBpZiAoaXRlbS5wcm9ibGVtKSB7IG91dC5wdXNoKGl0
-ZW0ucHJvYmxlbSk7IH1cbiAgICAgIHZhciB3ZWIgPSBbXSwgZ290ID0gW10sIHJlYWQgPSBbXTtc
-biAgICAgIChpdGVtLnRvb2xzIHx8IFtdKS5mb3JFYWNoKGZ1bmN0aW9uIChjKSB7IHZhciBuID0g
-KGNbMF0gfHwgIiIpLnRvTG93ZXJDYXNlKCk7IGlmIChuID09PSAid2Vic2VhcmNoIikgeyB3ZWIu
-cHVzaChjWzFdKTsgfSBlbHNlIGlmIChuID09PSAid2ViZmV0Y2giKSB7IGdvdC5wdXNoKGNbMV0p
-OyB9IGVsc2UgeyByZWFkLnB1c2goY1sxXSk7IH0gfSk7XG4gICAgICBpZiAod2ViLmxlbmd0aCkg
-eyBvdXQucHVzaCgic2VhcmNoZWQ6ICIgKyB3ZWIuam9pbigiOyAiKSk7IH1cbiAgICAgIGlmIChn
-b3QubGVuZ3RoKSB7IG91dC5wdXNoKCJmZXRjaGVkOiAiICsgZ290LmpvaW4oIiwgIikpOyB9XG4g
-ICAgICBpZiAocmVhZC5sZW5ndGgpIHsgb3V0LnB1c2goInJlYWQ6ICIgKyByZWFkLmpvaW4oIiwg
-IikpOyB9XG4gICAgfVxuICAgIGRldGFpbC50ZXh0Q29udGVudCA9ICIiO1xuICAgIG91dC5mb3JF
-YWNoKGZ1bmN0aW9uIChsaW5lKSB7IHZhciBkID0gZG9jdW1lbnQuY3JlYXRlRWxlbWVudCgiZGl2
-Iik7IGQudGV4dENvbnRlbnQgPSBsaW5lOyBkZXRhaWwuYXBwZW5kQ2hpbGQoZCk7IH0pO1xuICAg
-IGRldGFpbC5oaWRkZW4gPSBmYWxzZTtcbiAgfVxuICByZXN0KCk7XG4gIHZhciBjdGwgPSAkKCJj
-b250cm9scyIpLCB0b2tlbiA9ICh3aW5kb3cubG9jYXRpb24uaGFzaC5tYXRjaCgvdG9rZW49KFtB
-LVphLXowLTlfLV0rKS8pIHx8IFtdKVsxXTtcbiAgaWYgKGN0bCAmJiBELmxpdmUgJiYgdG9rZW4g
-JiYgIUQuZmluaXNoZWQpIHtcbiAgICBjdGwuaW5uZXJIVE1MID0gXCc8YnV0dG9uIHR5cGU9ImJ1
-dHRvbiIgZGF0YS1jPSJcJyArIChELnBhdXNlZCA/ICJyZXN1bWUiIDogInBhdXNlIikgKyBcJyI+
-XCcgKyAoRC5wYXVzZWQgPyAiXFx1MjVCNiBSZXN1bWUiIDogIlxcdTI3NUFcXHUyNzVBIFBhdXNl
-IikgKyAiPC9idXR0b24+IiArXG4gICAgICBcJzxidXR0b24gdHlwZT0iYnV0dG9uIiBjbGFzcz0i
-d2FybiIgZGF0YS1jPSJzdG9wIj5cXHUyNUEwIFN0b3A8L2J1dHRvbj5cJyArXG4gICAgICBcJzxs
-YWJlbD50dXJucyA8aW5wdXQgaWQ9ImMtdHVybnMiIHR5cGU9Im51bWJlciIgbWluPSIxIiBzdGVw
-PSIxIj48L2xhYmVsPjxidXR0b24gdHlwZT0iYnV0dG9uIiBkYXRhLWM9InR1cm5zIj5TZXQ8L2J1
-dHRvbj5cJyArXG4gICAgICBcJzxsYWJlbD50aW1lIGxpbWl0IChzKSA8aW5wdXQgaWQ9ImMtdGlt
-ZSIgdHlwZT0ibnVtYmVyIiBtaW49IjEiIHN0ZXA9IjEiPjwvbGFiZWw+PGJ1dHRvbiB0eXBlPSJi
-dXR0b24iIGRhdGEtYz0idGltZV9saW1pdCI+U2V0PC9idXR0b24+XCcgK1xuICAgICAgXCc8c3Bh
-biBpZD0iYy1zYWlkIiBjbGFzcz0ibXV0ZWQiPjwvc3Bhbj5cJztcbiAgICAkKCJjLXR1cm5zIiku
-dmFsdWUgPSBELnR1cm5zIHx8ICIiOyAkKCJjLXRpbWUiKS52YWx1ZSA9IEQudGltZV9saW1pdCB8
-fCAiIjtcbiAgICBjdGwuaGlkZGVuID0gZmFsc2U7XG4gICAgY3RsLmFkZEV2ZW50TGlzdGVuZXIo
-ImNsaWNrIiwgZnVuY3Rpb24gKGV2KSB7XG4gICAgICB2YXIgYiA9IGV2LnRhcmdldCwgYyA9IGIg
-JiYgYi5nZXRBdHRyaWJ1dGUgPyBiLmdldEF0dHJpYnV0ZSgiZGF0YS1jIikgOiBudWxsO1xuICAg
-ICAgaWYgKCFjKSB7IHJldHVybjsgfVxuICAgICAgaWYgKGMgPT09ICJzdG9wIiAmJiAhYi5nZXRB
-dHRyaWJ1dGUoImRhdGEtc3VyZSIpKSB7IGIuc2V0QXR0cmlidXRlKCJkYXRhLXN1cmUiLCAiMSIp
-OyBiLnRleHRDb250ZW50ID0gIlN0b3AgdGhlIHJ1bj8gVGFwIGFnYWluIjsgcmV0dXJuOyB9XG4g
-ICAgICB2YXIgdmFsdWUgPSBjID09PSAidHVybnMiID8gKyQoImMtdHVybnMiKS52YWx1ZSA6IChj
-ID09PSAidGltZV9saW1pdCIgPyArJCgiYy10aW1lIikudmFsdWUgOiBudWxsKTtcbiAgICAgICQo
-ImMtc2FpZCIpLnRleHRDb250ZW50ID0gInNlbmRpbmcgIiArIGMgKyAiXFx1MjAyNiI7XG4gICAg
-ICBmZXRjaCgiY29udHJvbCIsIHsgbWV0aG9kOiAiUE9TVCIsIGhlYWRlcnM6IHsgIkNvbnRlbnQt
-VHlwZSI6ICJhcHBsaWNhdGlvbi9qc29uIiwgIkF1dGhvcml6YXRpb24iOiAiQmVhcmVyICIgKyB0
-b2tlbiB9LFxuICAgICAgICAgICAgICAgICAgICAgICAgIGJvZHk6IEpTT04uc3RyaW5naWZ5KHsg
-Y29tbWFuZDogYywgdmFsdWU6IHZhbHVlIH0pIH0pXG4gICAgICAgIC50aGVuKGZ1bmN0aW9uIChy
-KSB7IHJldHVybiByLmpzb24oKS50aGVuKGZ1bmN0aW9uIChqKSB7XG4gICAgICAgICAgJCgiYy1z
-YWlkIikudGV4dENvbnRlbnQgPSByLm9rID8gInNlbnQgIiArIGMgKyAiOyB0aGUgcnVuIHJlYWRz
-IGl0IHdpdGhpbiBhIHF1YXJ0ZXIgc2Vjb25kIiA6ICJyZWZ1c2VkOiAiICsgKGouZXJyb3IgfHwg
-ci5zdGF0dXMpOyB9KTsgfSlcbiAgICAgICAgLmNhdGNoKGZ1bmN0aW9uICgpIHsgJCgiYy1zYWlk
-IikudGV4dENvbnRlbnQgPSAidGhlIHJ1blwncyBzZXJ2ZXIgZGlkIG5vdCBhbnN3ZXIiOyB9KTtc
-biAgICB9KTtcbiAgfVxuICBpZiAoIUQuZmluaXNoZWQpIHtcbiAgICB3aW5kb3cuc2V0VGltZW91
-dChmdW5jdGlvbiBhZ2FpbigpIHtcbiAgICAgIHZhciB0eXBpbmcgPSBkb2N1bWVudC5hY3RpdmVF
-bGVtZW50ICYmIGN0bCAmJiBjdGwuY29udGFpbnMoZG9jdW1lbnQuYWN0aXZlRWxlbWVudCk7XG4g
-ICAgICBpZiAoIXBsYXlpbmcgJiYgK3NjcnViLnZhbHVlID49IDEwMDAgJiYgIXR5cGluZykgeyB3
-aW5kb3cubG9jYXRpb24ucmVsb2FkKCk7IH0gZWxzZSB7IHdpbmRvdy5zZXRUaW1lb3V0KGFnYWlu
-LCA0MDAwKTsgfVxuICAgIH0sIDUwMDApO1xuICB9XG59KSgpOycKCgpQQUdFID0gIiIiPCFkb2N0
-eXBlIGh0bWw+CjxodG1sIGxhbmc9ImVuIj48aGVhZD48bWV0YSBjaGFyc2V0PSJ1dGYtOCI+PG1l
-dGEgbmFtZT0idmlld3BvcnQiIGNvbnRlbnQ9IndpZHRoPWRldmljZS13aWR0aCxpbml0aWFsLXNj
-YWxlPTEiPgo8dGl0bGU+e3RpdGxlfTwvdGl0bGU+CjxzdHlsZT4Ke3Rva2Vuc30qIHt7IGJveC1z
-aXppbmc6Ym9yZGVyLWJveDsgfX0KYm9keSB7eyBtYXJnaW46MDsgYmFja2dyb3VuZDp2YXIoLS1i
-Zyk7IGNvbG9yOnZhcigtLWluayk7IGZvbnQ6MTVweC8xLjUgLWFwcGxlLXN5c3RlbSwiU0YgUHJv
-IFRleHQiLCJQaW5nRmFuZyBUQyIsIk5vdG8gU2FucyBUQyIsc2Fucy1zZXJpZjsKICBwYWRkaW5n
-LWlubGluZToxNnB4OyBwYWRkaW5nLWJsb2NrOjE2cHggNDBweDsgLXdlYmtpdC1mb250LXNtb290
-aGluZzphbnRpYWxpYXNlZDsgfX0KbWFpbiB7eyBtYXgtd2lkdGg6MTE4MHB4OyBtYXJnaW46MCBh
-dXRvOyBkaXNwbGF5OmZsZXg7IGZsZXgtZGlyZWN0aW9uOmNvbHVtbjsgZ2FwOjE0cHg7IH19Ci5w
-YW5lbCB7eyBiYWNrZ3JvdW5kOnZhcigtLXBhbmVsKTsgYm9yZGVyOjFweCBzb2xpZCB2YXIoLS1s
-aW5lKTsgYm9yZGVyLXJhZGl1czoxMnB4OyBwYWRkaW5nOjE0cHg7IG1pbi13aWR0aDowOwogIGJv
-eC1zaGFkb3c6aW5zZXQgMCAxcHggMCB2YXIoLS1oaSksIDAgMTBweCAzMHB4IHJnYmEoMCwwLDAs
-LjYpOyB9fQoudG9wIHt7IGRpc3BsYXk6ZmxleDsgZmxleC1kaXJlY3Rpb246Y29sdW1uOyBnYXA6
-NnB4OyB9fQouYnJhbmQge3sgZm9udC1zaXplOi43MnJlbTsgbGV0dGVyLXNwYWNpbmc6LjA4ZW07
-IHRleHQtdHJhbnNmb3JtOnVwcGVyY2FzZTsgY29sb3I6dmFyKC0tZmFpbnQpOyB9fQpoMSB7eyBm
-b250LXNpemU6MS4zcmVtOyBtYXJnaW46MDsgb3ZlcmZsb3ctd3JhcDphbnl3aGVyZTsgZm9udC13
-ZWlnaHQ6NjUwOyB0ZXh0LXdyYXA6YmFsYW5jZTsgfX0KaDIge3sgZm9udC1zaXplOi43NnJlbTsg
-bWFyZ2luOjAgMCAxMHB4OyBsZXR0ZXItc3BhY2luZzouMDZlbTsgdGV4dC10cmFuc2Zvcm06dXBw
-ZXJjYXNlOyBjb2xvcjp2YXIoLS1tdXRlZCk7IGZvbnQtd2VpZ2h0OjYwMDsgfX0KLnN0YXRlLCAu
-bXV0ZWQge3sgY29sb3I6dmFyKC0tbXV0ZWQpOyBmb250LXNpemU6Ljg1cmVtOyBvdmVyZmxvdy13
-cmFwOmFueXdoZXJlOyB9fQouY2hpcHMge3sgZGlzcGxheTpmbGV4OyBmbGV4LXdyYXA6d3JhcDsg
-Z2FwOjZweDsgfX0KLmNoaXAge3sgZm9udC1zaXplOi43NnJlbTsgY29sb3I6dmFyKC0tbXV0ZWQp
-OyBiYWNrZ3JvdW5kOnZhcigtLWluc2V0KTsgYm9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5lKTsg
-Ym9yZGVyLXJhZGl1czo5OTlweDsKICBwYWRkaW5nOjFweCA5cHg7IG92ZXJmbG93LXdyYXA6YW55
-d2hlcmU7IGZvbnQtdmFyaWFudC1udW1lcmljOnRhYnVsYXItbnVtczsgfX0gIC8qIGEgbG9uZyBz
-dG9wIHJlYXNvbiB3cmFwcyBpbnNpZGUgaXRzIGNoaXAgKi8KLmNoaXAuYmFkIHt7IGNvbG9yOiNG
-M0E2QTY7IGJvcmRlci1jb2xvcjpyZ2JhKDIzOSw2OCw2OCwuMzUpOyB9fSAuY2hpcC5nb29kIHt7
-IGNvbG9yOiM3RkQ4QjY7IGJvcmRlci1jb2xvcjpyZ2JhKDE2LDE4NSwxMjksLjM1KTsgfX0KLmxl
-ZCB7eyBkaXNwbGF5OmlubGluZS1ibG9jazsgd2lkdGg6NnB4OyBoZWlnaHQ6NnB4OyBib3JkZXIt
-cmFkaXVzOjUwJTsgYmFja2dyb3VuZDp2YXIoLS1mYWludCk7IG1hcmdpbi1yaWdodDo3cHg7IHZl
-cnRpY2FsLWFsaWduOjJweDsgfX0KLmxlZC5vayB7eyBiYWNrZ3JvdW5kOnZhcigtLW9rKTsgfX0g
-LmxlZC5iYWQge3sgYmFja2dyb3VuZDp2YXIoLS1iYWQpOyB9fQoubGVkLnJ1biB7eyBiYWNrZ3Jv
-dW5kOnZhcigtLWluayk7IGFuaW1hdGlvbjpicmVhdGhlIDEuNnMgZWFzZS1pbi1vdXQgaW5maW5p
-dGU7IH19CkBrZXlmcmFtZXMgYnJlYXRoZSB7eyA1MCUge3sgb3BhY2l0eTouMzsgfX0gfX0KLmdy
-aWQyIHt7IGRpc3BsYXk6Z3JpZDsgZ2FwOjE0cHg7IH19CkBtZWRpYSAobWluLXdpZHRoOjkwMHB4
-KSB7eyAuZ3JpZDIge3sgZ3JpZC10ZW1wbGF0ZS1jb2x1bW5zOm1pbm1heCgwLDFmcikgbWlubWF4
-KDAsMWZyKTsgYWxpZ24taXRlbXM6c3RhcnQ7IH19IH19Ci5zaWRlIHt7IGRpc3BsYXk6ZmxleDsg
-ZmxleC1kaXJlY3Rpb246Y29sdW1uOyBnYXA6MTRweDsgbWluLXdpZHRoOjA7IH19Ci5maWcge3sg
-b3ZlcmZsb3cteDphdXRvOyB9fSAuZmlnIHN2ZyB7eyBkaXNwbGF5OmJsb2NrOyBtYXJnaW46MCBh
-dXRvOyB9fQouZmlnLmZpdCBzdmcge3sgd2lkdGg6MTAwJTsgbWF4LXdpZHRoOjQyMHB4OyBoZWln
-aHQ6YXV0bzsgfX0gLmZpZy53aWRlIHN2ZyB7eyB3aWR0aDoxMDAlOyBtYXgtd2lkdGg6NDcwcHg7
-IGhlaWdodDphdXRvOyB9fQoubm9kZSByZWN0IHt7IGZpbGw6dmFyKC0taW5zZXQpOyBzdHJva2U6
-dmFyKC0td2lyZSk7IHN0cm9rZS13aWR0aDoxOyB9fSAubm9kZS5vbiByZWN0IHt7IHN0cm9rZTp2
-YXIoLS1pY2UpOyBmaWxsOnZhcigtLWljZS1iZyk7IH19Ci5ub2RlIC50IHt7IGZpbGw6dmFyKC0t
-aW5rKTsgZm9udC1zaXplOjEzcHg7IGZvbnQtd2VpZ2h0OjYwMDsgfX0gLm5vZGUgLnMsIC5hLCAu
-YXgge3sgZmlsbDp2YXIoLS1tdXRlZCk7IGZvbnQtc2l6ZToxMXB4OyB9fQoubG4ge3sgZmlsbDp2
-YXIoLS1pbmspOyBmb250LXNpemU6MTJweDsgfX0KLmZsb3cge3sgZmlsbDpub25lOyBzdHJva2U6
-dmFyKC0td2lyZSk7IHN0cm9rZS13aWR0aDoxLjI7IH19IC5mbG93LmJhY2sge3sgc3Ryb2tlLWRh
-c2hhcnJheTo1IDQ7IH19IC5oZWFkIHt7IGZpbGw6dmFyKC0td2lyZSk7IH19Ci5wdWxzZSB7eyBm
-aWxsOnZhcigtLWljZSk7IG9wYWNpdHk6MDsgfX0gLmZsb3dnLm9uIC5wdWxzZSB7eyBvcGFjaXR5
-OjE7IGFuaW1hdGlvbjpkb3duIDEuMXMgbGluZWFyIGluZmluaXRlOyB9fQpAa2V5ZnJhbWVzIGRv
-d24ge3sgZnJvbSB7eyB0cmFuc2Zvcm06dHJhbnNsYXRlWSgwKTsgfX0gdG8ge3sgdHJhbnNmb3Jt
-OnRyYW5zbGF0ZVkodmFyKC0tbGVuKSk7IH19IH19Ci5sYW5lLCAudGljayB7eyBzdHJva2U6dmFy
-KC0tZ3JpZCk7IHN0cm9rZS13aWR0aDoxOyB9fQouYmFyIHJlY3Qge3sgc3Ryb2tlLXdpZHRoOjE7
-IH19IC5iYXIgdGV4dCB7eyBmb250LXNpemU6MTBweDsgZmlsbDp2YXIoLS1pbmspOyB9fSAuYmFy
-LmxpdmUgcmVjdCB7eyBzdHJva2Utd2lkdGg6MS44OyB9fQouYmFyLnBsYW4gcmVjdCB7eyBmaWxs
-OnZhcigtLWljZS1iZyk7IHN0cm9rZTp2YXIoLS1pY2UpOyB9fSAuYmFyLnBsYW5iYWNrIHJlY3Qg
-e3sgZmlsbDp2YXIoLS1hbWJlci1iZyk7IHN0cm9rZTp2YXIoLS1hbWJlcik7IH19Ci5iYXIucGFz
-cyByZWN0IHt7IGZpbGw6dmFyKC0tb2stYmcpOyBzdHJva2U6dmFyKC0tb2spOyB9fSAuYmFyLmZh
-aWwgcmVjdCB7eyBmaWxsOnZhcigtLWJhZC1iZyk7IHN0cm9rZTp2YXIoLS1iYWQpOyB9fQouYmFy
-LmJhZCByZWN0IHt7IGZpbGw6dmFyKC0tYmFkKTsgc3Ryb2tlOnZhcigtLWJhZCk7IH19IC5iYXIu
-bm9uZSByZWN0IHt7IGZpbGw6bm9uZTsgc3Ryb2tlOnZhcigtLWZhaW50KTsgc3Ryb2tlLWRhc2hh
-cnJheTozIDI7IH19Ci5ldmVudCB7eyBzdHJva2U6dmFyKC0tZmFpbnQpOyBzdHJva2Utd2lkdGg6
-MTsgc3Ryb2tlLWRhc2hhcnJheToyIDM7IH19IC5zdG9wIHt7IHN0cm9rZTp2YXIoLS1iYWQpOyBz
-dHJva2Utd2lkdGg6MS4yOyB9fQouYmVzdCB7eyBmaWxsOm5vbmU7IHN0cm9rZTp2YXIoLS1vayk7
-IHN0cm9rZS13aWR0aDoxLjY7IH19IC5kb3RzIGNpcmNsZSB7eyBmaWxsOnZhcigtLW9rKTsgfX0K
-Lm5vdyB7eyBzdHJva2U6dmFyKC0taWNlKTsgc3Ryb2tlLXdpZHRoOjE7IH19IC5mdXR1cmUge3sg
-b3BhY2l0eTouMzsgfX0KLnRvb2wud2ViIHt7IGZpbGw6dmFyKC0taWNlKTsgfX0gLnRvb2wuZmV0
-Y2gge3sgZmlsbDp2YXIoLS1hbWJlcik7IH19IC50b29sLnJlYWQge3sgZmlsbDp2YXIoLS1mYWlu
-dCk7IH19Ci5saW4ge3sgZmlsbDpub25lOyBzdHJva2U6dmFyKC0td2lyZSk7IHN0cm9rZS13aWR0
-aDoxOyB9fSAua2gge3sgZmlsbDp2YXIoLS1pbmspOyBmb250LXNpemU6MTFweDsgZm9udC13ZWln
-aHQ6NjAwOyB9fQoua2IgcmVjdCB7eyBzdHJva2Utd2lkdGg6MTsgfX0gLmtiIHRleHQge3sgZm9u
-dC1zaXplOjkuNXB4OyBmaWxsOnZhcigtLWluayk7IH19Ci5rYi5wYXNzIHJlY3Qge3sgZmlsbDp2
-YXIoLS1vay1iZyk7IHN0cm9rZTp2YXIoLS1vayk7IH19IC5rYi5mYWlsIHJlY3Qge3sgZmlsbDp2
-YXIoLS1iYWQtYmcpOyBzdHJva2U6dmFyKC0tYmFkKTsgfX0KLmtiLndhaXQgcmVjdCB7eyBmaWxs
-Om5vbmU7IHN0cm9rZTp2YXIoLS1mYWludCk7IHN0cm9rZS1kYXNoYXJyYXk6MyAyOyB9fSAua2Iu
-b2xkIHJlY3Qge3sgc3Ryb2tlLWRhc2hhcnJheTo0IDM7IH19Ci50ZCByZWN0IHt7IHN0cm9rZS13
-aWR0aDoxOyB9fSByZWN0LnVuZGVyIHt7IGZpbGw6dmFyKC0tcGFuZWwpICFpbXBvcnRhbnQ7IHN0
-cm9rZTpub25lICFpbXBvcnRhbnQ7IH19IC50ZCB0ZXh0IHt7IGZvbnQtc2l6ZTo5LjVweDsgZmls
-bDp2YXIoLS1pbmspOyB9fSAudGQgdGV4dC5heCB7eyBmb250LXNpemU6OXB4OyBmaWxsOnZhcigt
-LW11dGVkKTsgfX0KLnRkLnBhc3MgcmVjdCB7eyBmaWxsOnZhcigtLW9rLWJnKTsgc3Ryb2tlOnZh
-cigtLW9rKTsgfX0gLnRkLmZhaWwgcmVjdCB7eyBmaWxsOnZhcigtLWJhZC1iZyk7IHN0cm9rZTp2
-YXIoLS1iYWQpOyB9fQoudGQuZHJvcCByZWN0IHt7IGZpbGw6bm9uZTsgc3Ryb2tlOnZhcigtLWZh
-aW50KTsgc3Ryb2tlLWRhc2hhcnJheTozIDI7IH19IC50ZC5kcm9wIHRleHQge3sgZmlsbDp2YXIo
-LS1mYWludCk7IH19Ci50ZC53YWl0IHJlY3Qge3sgZmlsbDpub25lOyBzdHJva2U6dmFyKC0tYW1i
-ZXIpOyBzdHJva2UtZGFzaGFycmF5OjMgMjsgfX0gLnRkLndvcmsgcmVjdCB7eyBmaWxsOnZhcigt
-LWljZS1iZyk7IHN0cm9rZTp2YXIoLS1pY2UpOyB9fQouZGVwIHt7IGZpbGw6bm9uZTsgc3Ryb2tl
-OnZhcigtLWFtYmVyKTsgc3Ryb2tlLXdpZHRoOjEuMjsgfX0gLnVzZXMge3sgZmlsbDpub25lOyBz
-dHJva2U6dmFyKC0tbXV0ZWQpOyBzdHJva2Utd2lkdGg6MTsgc3Ryb2tlLWRhc2hhcnJheTozIDM7
-IH19Ci53cm90ZSB7eyBmaWxsOm5vbmU7IHN0cm9rZTp2YXIoLS1pY2UpOyBzdHJva2Utd2lkdGg6
-MTsgb3BhY2l0eTouNzsgfX0gLndyb3RlLm9sZCB7eyBzdHJva2UtZGFzaGFycmF5OjMgMzsgb3Bh
-Y2l0eTouNTsgfX0KLmJ1aWx0IHt7IGZpbGw6bm9uZTsgc3Ryb2tlOnZhcigtLW9rKTsgc3Ryb2tl
-LXdpZHRoOjE7IG9wYWNpdHk6Ljg7IH19IC5yZWFkIHt7IGZpbGw6bm9uZTsgc3Ryb2tlOnZhcigt
-LWZhaW50KTsgc3Ryb2tlLXdpZHRoOjE7IHN0cm9rZS1kYXNoYXJyYXk6MiAzOyB9fQoubGVnZW5k
-IGkuZGVwIHt7IGJvcmRlcjowOyBib3JkZXItdG9wOjJweCBzb2xpZCB2YXIoLS1hbWJlcik7IGhl
-aWdodDowOyBib3JkZXItcmFkaXVzOjA7IHZlcnRpY2FsLWFsaWduOjNweDsgfX0KLmxlZ2VuZCBp
-LnVzZXMge3sgYm9yZGVyOjA7IGJvcmRlci10b3A6MnB4IGRhc2hlZCB2YXIoLS1tdXRlZCk7IGhl
-aWdodDowOyBib3JkZXItcmFkaXVzOjA7IHZlcnRpY2FsLWFsaWduOjNweDsgfX0KLmxlZ2VuZCBp
-Lndyb3RlIHt7IGJvcmRlcjowOyBib3JkZXItdG9wOjJweCBzb2xpZCB2YXIoLS1pY2UpOyBoZWln
-aHQ6MDsgYm9yZGVyLXJhZGl1czowOyB2ZXJ0aWNhbC1hbGlnbjozcHg7IH19Ci5sZWdlbmQgaS5i
-dWlsdCB7eyBib3JkZXI6MDsgYm9yZGVyLXRvcDoycHggc29saWQgdmFyKC0tb2spOyBoZWlnaHQ6
-MDsgYm9yZGVyLXJhZGl1czowOyB2ZXJ0aWNhbC1hbGlnbjozcHg7IH19Ci5sZWdlbmQgaS5yZWFk
-IHt7IGJvcmRlcjowOyBib3JkZXItdG9wOjJweCBkb3R0ZWQgdmFyKC0tZmFpbnQpOyBoZWlnaHQ6
-MDsgYm9yZGVyLXJhZGl1czowOyB2ZXJ0aWNhbC1hbGlnbjozcHg7IH19Ci5sZWdlbmQgaS5kcm9w
-LCAubGVnZW5kIGkub2xkIHt7IGJvcmRlci1zdHlsZTpkYXNoZWQ7IH19IC5sZWdlbmQgaS5vbGQg
-e3sgYm9yZGVyLWNvbG9yOnZhcigtLW9rKTsgfX0gLmxlZ2VuZCBpLndhaXQge3sgYm9yZGVyLWNv
-bG9yOnZhcigtLWFtYmVyKTsgYm9yZGVyLXN0eWxlOmRhc2hlZDsgfX0KLmxlZ2VuZCB7eyBkaXNw
-bGF5OmZsZXg7IGZsZXgtd3JhcDp3cmFwOyBnYXA6NHB4IDE0cHg7IGZvbnQtc2l6ZTouNzZyZW07
-IGNvbG9yOnZhcigtLW11dGVkKTsgbWFyZ2luLXRvcDoxMHB4OyB9fQoubGVnZW5kIGkge3sgZGlz
-cGxheTppbmxpbmUtYmxvY2s7IHdpZHRoOjEycHg7IGhlaWdodDo5cHg7IGJvcmRlci1yYWRpdXM6
-M3B4OyBib3JkZXI6MXB4IHNvbGlkIHZhcigtLWZhaW50KTsgbWFyZ2luLXJpZ2h0OjVweDsgdmVy
-dGljYWwtYWxpZ246LTFweDsgfX0KLmxlZ2VuZCBpLnBsYW4ge3sgYmFja2dyb3VuZDp2YXIoLS1p
-Y2UtYmcpOyBib3JkZXItY29sb3I6dmFyKC0taWNlKTsgfX0gLmxlZ2VuZCBpLnBsYW5iYWNrIHt7
-IGJhY2tncm91bmQ6dmFyKC0tYW1iZXItYmcpOyBib3JkZXItY29sb3I6dmFyKC0tYW1iZXIpOyB9
-fQoubGVnZW5kIGkucGFzcyB7eyBiYWNrZ3JvdW5kOnZhcigtLW9rLWJnKTsgYm9yZGVyLWNvbG9y
-OnZhcigtLW9rKTsgfX0gLmxlZ2VuZCBpLmZhaWwge3sgYmFja2dyb3VuZDp2YXIoLS1iYWQtYmcp
-OyBib3JkZXItY29sb3I6dmFyKC0tYmFkKTsgfX0KLmxlZ2VuZCBpLmJhZCB7eyBiYWNrZ3JvdW5k
-OnZhcigtLWJhZCk7IGJvcmRlci1jb2xvcjp2YXIoLS1iYWQpOyB9fSAubGVnZW5kIGkubm9uZSB7
-eyBib3JkZXItc3R5bGU6ZGFzaGVkOyB9fQouZG90IHt7IGRpc3BsYXk6aW5saW5lLWJsb2NrOyB3
-aWR0aDo2cHg7IGhlaWdodDo2cHg7IGJvcmRlci1yYWRpdXM6NTAlOyBtYXJnaW4tcmlnaHQ6NnB4
-OyB2ZXJ0aWNhbC1hbGlnbjoxcHg7IH19Ci5kb3Qud2ViIHt7IGJhY2tncm91bmQ6dmFyKC0taWNl
-KTsgfX0gLmRvdC5mZXRjaCB7eyBiYWNrZ3JvdW5kOnZhcigtLWFtYmVyKTsgfX0gLmRvdC5yZWFk
-IHt7IGJhY2tncm91bmQ6dmFyKC0tZmFpbnQpOyB9fQouYWdlbnRzIHt7IGxpc3Qtc3R5bGU6bm9u
-ZTsgbWFyZ2luOjA7IHBhZGRpbmc6MDsgfX0KLmFnZW50cyBsaSB7eyBwYWRkaW5nOjlweCAwOyBi
-b3JkZXItdG9wOjFweCBzb2xpZCB2YXIoLS1saW5lKTsgb3ZlcmZsb3ctd3JhcDphbnl3aGVyZTsg
-fX0gLmFnZW50cyBsaTpmaXJzdC1jaGlsZCB7eyBib3JkZXItdG9wOjA7IHBhZGRpbmctdG9wOjA7
-IH19Ci5hZ2VudHMgYiB7eyBmb250LXdlaWdodDo2MDA7IH19IC5hZ2VudHMgLnJvbGUge3sgY29s
-b3I6dmFyKC0tZmFpbnQpOyBmb250LXNpemU6LjhyZW07IH19Ci5hZ2VudHMgLnN1YiB7eyBjb2xv
-cjp2YXIoLS1tdXRlZCk7IGZvbnQtc2l6ZTouOHJlbTsgcGFkZGluZy1sZWZ0OjEzcHg7IGZvbnQt
-dmFyaWFudC1udW1lcmljOnRhYnVsYXItbnVtczsgfX0KLmhlYWx0aCB7eyBkaXNwbGF5OmdyaWQ7
-IGdyaWQtdGVtcGxhdGUtY29sdW1uczpyZXBlYXQoMixtaW5tYXgoMCwxZnIpKTsgZ2FwOjhweDsg
-bWFyZ2luOjA7IH19Ci5oZWFsdGggZGl2IHt7IGJhY2tncm91bmQ6dmFyKC0taW5zZXQpOyBib3Jk
-ZXI6MXB4IHNvbGlkIHZhcigtLWxpbmUpOyBib3JkZXItcmFkaXVzOjhweDsgcGFkZGluZzo4cHgg
-MTBweDsgbWluLXdpZHRoOjA7IH19Ci5oZWFsdGggZHQge3sgZm9udC1zaXplOi43MnJlbTsgY29s
-b3I6dmFyKC0tZmFpbnQpOyB9fSAuaGVhbHRoIGRkIHt7IG1hcmdpbjoycHggMCAwOyBmb250LXNp
-emU6MS4wNXJlbTsgZm9udC12YXJpYW50LW51bWVyaWM6dGFidWxhci1udW1zOyB9fQouaGVhbHRo
-IHNtYWxsIHt7IGRpc3BsYXk6YmxvY2s7IGZvbnQtc2l6ZTouNzJyZW07IGNvbG9yOnZhcigtLW11
-dGVkKTsgb3ZlcmZsb3ctd3JhcDphbnl3aGVyZTsgfX0KLmhlYWx0aCBkaXY6bGFzdC1jaGlsZDpu
-dGgtY2hpbGQob2RkKSB7eyBncmlkLWNvbHVtbjoxIC8gLTE7IH19Ci5jYXJkcyB7eyBsaXN0LXN0
-eWxlOm5vbmU7IG1hcmdpbjowOyBwYWRkaW5nOjA7IGRpc3BsYXk6ZmxleDsgZmxleC1kaXJlY3Rp
-b246Y29sdW1uOyBnYXA6OHB4OyBmb250LXNpemU6Ljg2cmVtOyB9fQouY2FyZHMgbGkge3sgYmFj
-a2dyb3VuZDp2YXIoLS1pbnNldCk7IGJvcmRlcjoxcHggc29saWQgdmFyKC0tbGluZSk7IGJvcmRl
-ci1yYWRpdXM6OHB4OyBwYWRkaW5nOjhweCAxMHB4OyBvdmVyZmxvdy13cmFwOmFueXdoZXJlOyB9
-fQouc3Qge3sgZm9udC1zaXplOi43MnJlbTsgYm9yZGVyLXJhZGl1czo5OTlweDsgcGFkZGluZzow
-IDdweDsgYm9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5lKTsgY29sb3I6dmFyKC0tbXV0ZWQpOyB9
-fQouc3QuZG9uZSB7eyBjb2xvcjojN0ZEOEI2OyBib3JkZXItY29sb3I6cmdiYSgxNiwxODUsMTI5
-LC4zNSk7IH19IC5zdC5mYWlsZWQge3sgY29sb3I6I0YzQTZBNjsgYm9yZGVyLWNvbG9yOnJnYmEo
-MjM5LDY4LDY4LC4zNSk7IH19Ci5zdC50YWtlbiB7eyBjb2xvcjp2YXIoLS1pY2UpOyBib3JkZXIt
-Y29sb3I6cmdiYSgxNDcsMTk3LDI1MywuMzUpOyB9fQouc2FpZCB7eyBmb250LXNpemU6LjhyZW07
-IGNvbG9yOnZhcigtLW11dGVkKTsgfX0KLnBsYXllciB7eyBwb3NpdGlvbjpzdGlja3k7IHRvcDpl
-bnYoc2FmZS1hcmVhLWluc2V0LXRvcCwgMHB4KTsgei1pbmRleDoyOyBkaXNwbGF5OmZsZXg7IGZs
-ZXgtd3JhcDp3cmFwOyBhbGlnbi1pdGVtczpjZW50ZXI7IGdhcDoxMHB4OwogIGJhY2tncm91bmQ6
-cmdiYSg5LDEwLDE1LC45NCk7IHBhZGRpbmctYmxvY2s6OHB4OyBib3JkZXItYm90dG9tOjFweCBz
-b2xpZCB2YXIoLS1saW5lKTsgfX0KLnBsYXllcjplbXB0eSB7eyBkaXNwbGF5Om5vbmU7IH19Ci5w
-bGF5ZXIgYnV0dG9uIHt7IGZvbnQ6aW5oZXJpdDsgZm9udC1zaXplOi44NXJlbTsgcGFkZGluZzo1
-cHggMTRweDsgYm9yZGVyLXJhZGl1czo5OTlweDsgYm9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5l
-KTsKICBiYWNrZ3JvdW5kOnZhcigtLXBhbmVsKTsgY29sb3I6dmFyKC0taW5rKTsgYm94LXNoYWRv
-dzppbnNldCAwIDFweCAwIHZhcigtLWhpKTsgfX0KLnBsYXllciBpbnB1dCB7eyBmbGV4OjEgMSAx
-NTBweDsgbWluLXdpZHRoOjA7IGFjY2VudC1jb2xvcjp2YXIoLS1pY2UpOyB9fQouZGV0YWlsIHt7
-IGJhY2tncm91bmQ6dmFyKC0taW5zZXQpOyBib3JkZXI6MXB4IHNvbGlkIHZhcigtLWxpbmUpOyBi
-b3JkZXItcmFkaXVzOjhweDsgcGFkZGluZzo4cHggMTBweDsgZm9udC1zaXplOi44NnJlbTsKICBv
-dmVyZmxvdy13cmFwOmFueXdoZXJlOyBtYXJnaW4tdG9wOjEwcHg7IH19Ci5jb250cm9scyB7eyBk
-aXNwbGF5OmZsZXg7IGZsZXgtd3JhcDp3cmFwOyBhbGlnbi1pdGVtczpjZW50ZXI7IGdhcDo4cHg7
-IHBhZGRpbmc6MTBweDsgYmFja2dyb3VuZDp2YXIoLS1pbnNldCk7CiAgYm9yZGVyOjFweCBzb2xp
-ZCB2YXIoLS1saW5lKTsgYm9yZGVyLXJhZGl1czoxMHB4OyBmb250LXNpemU6Ljg1cmVtOyB9fQou
-Y29udHJvbHNbaGlkZGVuXSB7eyBkaXNwbGF5Om5vbmU7IH19Ci5jb250cm9scyBidXR0b24ge3sg
-Zm9udDppbmhlcml0OyBwYWRkaW5nOjVweCAxMnB4OyBib3JkZXItcmFkaXVzOjk5OXB4OyBib3Jk
-ZXI6MXB4IHNvbGlkIHZhcigtLWxpbmUpOyBiYWNrZ3JvdW5kOnZhcigtLXBhbmVsKTsKICBjb2xv
-cjp2YXIoLS1pbmspOyBib3gtc2hhZG93Omluc2V0IDAgMXB4IDAgdmFyKC0taGkpOyB9fSAuY29u
-dHJvbHMgYnV0dG9uLndhcm4ge3sgYm9yZGVyLWNvbG9yOnJnYmEoMjM5LDY4LDY4LC41KTsgY29s
-b3I6I0YzQTZBNjsgfX0KLmNvbnRyb2xzIGlucHV0IHt7IHdpZHRoOjUuNWVtOyBmb250OmluaGVy
-aXQ7IGJhY2tncm91bmQ6dmFyKC0tYmcpOyBjb2xvcjp2YXIoLS1pbmspOyBib3JkZXI6MXB4IHNv
-bGlkIHZhcigtLWxpbmUpOyBib3JkZXItcmFkaXVzOjZweDsgcGFkZGluZzozcHggNnB4OyB9fQpA
-bWVkaWEgKHByZWZlcnMtcmVkdWNlZC1tb3Rpb246cmVkdWNlKSB7eyAubGVkLnJ1biwgLmZsb3dn
-Lm9uIC5wdWxzZSB7eyBhbmltYXRpb246bm9uZTsgfX0gfX0KPC9zdHlsZT48L2hlYWQ+Cjxib2R5
-PjxtYWluPgo8aGVhZGVyIGNsYXNzPSJ0b3AiPgo8ZGl2IGNsYXNzPSJicmFuZCI+aGVyZHItcHkg
-wrcgZXZlbnQtZHJpdmVuIHRlYW08L2Rpdj4KPGgxPntuYW1lfTwvaDE+CjxkaXYgY2xhc3M9InN0
-YXRlIj48aSBjbGFzcz0ibGVkIHtzdGF0ZX0iPjwvaT57d2hlbn08L2Rpdj4KPGRpdiBjbGFzcz0i
-Y2hpcHMiPntjaGlwc308L2Rpdj4Ke2NvbnRyb2xzfQo8L2hlYWRlcj4KPGRpdiBjbGFzcz0icGxh
-eWVyIiBpZD0icGxheWVyIj48L2Rpdj4KPGRpdiBjbGFzcz0iZ3JpZDIiPgo8c2VjdGlvbiBjbGFz
-cz0icGFuZWwiPjxoMj5UaGUgbG9vcCwgd2l0aCB0aGlzIHJ1bidzIG51bWJlcnM8L2gyPjxkaXYg
-Y2xhc3M9ImZpZyBmaXQiPntsb29wfTwvZGl2Pjwvc2VjdGlvbj4KPGRpdiBjbGFzcz0ic2lkZSI+
-CjxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+PGgyPkFnZW50czwvaDI+e2FnZW50c308L3NlY3Rpb24+
-CjxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+PGgyPkhvdyB0aGUgcnVuIHdlbnQ8L2gyPntoZWFsdGh9
-PC9zZWN0aW9uPgo8L2Rpdj4KPC9kaXY+CjxkaXYgY2xhc3M9ImdyaWQyIj4KPHNlY3Rpb24gY2xh
-c3M9InBhbmVsIj48aDI+RnJvbSB0aGUgZmlyc3QgZXZlbnQgdG8gdGhlIGVuZDwvaDI+CjxkaXYg
-Y2xhc3M9ImZpZyI+e3RpbWVsaW5lfTwvZGl2Pgo8ZGl2IGNsYXNzPSJsZWdlbmQiPjxzcGFuPjxp
-IGNsYXNzPSJwbGFuIj48L2k+cGxhbm5lciB0dXJuPC9zcGFuPjxzcGFuPjxpIGNsYXNzPSJwbGFu
-YmFjayI+PC9pPnBsYW5uZXIgcmVwbHkgc2VudCBiYWNrPC9zcGFuPgo8c3Bhbj48aSBjbGFzcz0i
-cGFzcyI+PC9pPnZhbGlkIGFuc3dlcjwvc3Bhbj48c3Bhbj48aSBjbGFzcz0iZmFpbCI+PC9pPmlu
-dmFsaWQgYW5zd2VyIG9yIGZhaWx1cmU8L3NwYW4+PHNwYW4+PGkgY2xhc3M9ImJhZCI+PC9pPmJh
-Y2tlbmQgYnJva2U8L3NwYW4+CjxzcGFuPjxpIGNsYXNzPSJub25lIj48L2k+bm8gYW5zd2VyIG9y
-IHN0aWxsIHJ1bm5pbmc8L3NwYW4+PHNwYW4+ZG90dGVkIGxpbmU6IGEgcmVzdWx0IHRoYXQgd29r
-ZSB0aGUgcGxhbm5lcjwvc3Bhbj4KPHNwYW4+PGIgY2xhc3M9ImRvdCB3ZWIiPjwvYj53ZWIgc2Vh
-cmNoPC9zcGFuPjxzcGFuPjxiIGNsYXNzPSJkb3QgZmV0Y2giPjwvYj5wYWdlIGZldGNoZWQ8L3Nw
-YW4+PHNwYW4+PGIgY2xhc3M9ImRvdCByZWFkIj48L2I+ZmlsZSByZWFkPC9zcGFuPjwvZGl2Pgo8
-ZGl2IGNsYXNzPSJkZXRhaWwiIGlkPSJkZXRhaWwiIGhpZGRlbj48L2Rpdj48L3NlY3Rpb24+Cjxk
-aXYgY2xhc3M9InNpZGUiPgo8c2VjdGlvbiBjbGFzcz0icGFuZWwiPjxoMj5CZXN0IHZlcmlmaWVk
-IHNjb3JlIG92ZXIgdGltZTwvaDI+PGRpdiBjbGFzcz0iZmlnIj57YmVzdH08L2Rpdj48L3NlY3Rp
-b24+CjxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+PGgyPldoYXQgdGhlIHRlYW0gbWFkZSwgYW5kIHdo
-YXQgYnVpbHQgb24gd2hhdDwvaDI+PGRpdiBjbGFzcz0iZmlnIj57bGluZWFnZX08L2Rpdj4KPGRp
-diBjbGFzcz0ibGVnZW5kIj48c3Bhbj48aSBjbGFzcz0icGFzcyI+PC9pPnZlcmlmaWVkIChtZW1i
-ZXIsIHNjb3JlKTwvc3Bhbj48c3Bhbj48aSBjbGFzcz0iZmFpbCI+PC9pPmRpZCBub3QgcGFzczwv
-c3Bhbj4KPHNwYW4+YSBsaW5lIHJ1bnMgZnJvbSBhbiBlbnRyeSB0byBlYWNoIG9uZSB0aGF0IGJ1
-aWx0IG9uIGl0PC9zcGFuPjwvZGl2Pjwvc2VjdGlvbj4Ke3NraWxsc30KPC9kaXY+CjwvZGl2Pgo8
-ZGl2IGNsYXNzPSJncmlkMiI+CjxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+PGgyPldobyBkaWQgd2hp
-Y2ggdG9kbzwvaDI+PGRpdiBjbGFzcz0iZmlnIHdpZGUiPntkaXZpc2lvbn08L2Rpdj4KPGRpdiBj
-bGFzcz0ibGVnZW5kIj48c3Bhbj48aSBjbGFzcz0icGFzcyI+PC9pPmRvbmUgKHdoYXQgaXQgbWFk
-ZSwgc2NvcmUpPC9zcGFuPjxzcGFuPjxpIGNsYXNzPSJmYWlsIj48L2k+ZmFpbGVkPC9zcGFuPgo8
-c3Bhbj48aSBjbGFzcz0iZHJvcCI+PC9pPmRyb3BwZWQ8L3NwYW4+PHNwYW4+PGkgY2xhc3M9Indh
-aXQiPjwvaT5ub3QgdGFrZW4geWV0PC9zcGFuPjxzcGFuPjxpIGNsYXNzPSJkZXAiPjwvaT5oYWQg
-dG8gd2FpdCBmb3IgKGFmdGVyKTwvc3Bhbj4KPHNwYW4+PGkgY2xhc3M9InVzZXMiPjwvaT50b2xk
-IHRvIGJ1aWxkIG9uIGl0cyByZXN1bHQ8L3NwYW4+PC9kaXY+PC9zZWN0aW9uPgo8c2VjdGlvbiBj
-bGFzcz0icGFuZWwiPjxoMj5Lbm93bGVkZ2U6IHdobyB3cm90ZSBhbmQgd2hvIHJlYWQgZWFjaCBl
-bnRyeTwvaDI+PGRpdiBjbGFzcz0iZmlnIHdpZGUiPntrbm93bGVkZ2V9PC9kaXY+CjxkaXYgY2xh
-c3M9ImxlZ2VuZCI+PHNwYW4+PGkgY2xhc3M9Indyb3RlIj48L2k+d3JvdGUgKGRhc2hlZDogaW4g
-YW4gZWFybGllciBydW4pPC9zcGFuPjxzcGFuPjxpIGNsYXNzPSJidWlsdCI+PC9pPmJ1aWx0IG9u
-IGl0PC9zcGFuPgo8c3Bhbj48aSBjbGFzcz0icmVhZCI+PC9pPm9wZW5lZCBpdHMgZmlsZTwvc3Bh
-bj48c3Bhbj48aSBjbGFzcz0ib2xkIj48L2k+YW4gZW50cnkgZnJvbSBhbiBlYXJsaWVyIHJ1bjwv
-c3Bhbj48c3Bhbj5za2lsbHMgZmlyc3QsIGJ5IG5hbWU8L3NwYW4+PC9kaXY+PC9zZWN0aW9uPgo8
-L2Rpdj4KPHNlY3Rpb24gY2xhc3M9InBhbmVsIj48aDI+SG93IHRoZSB0ZWFtIGdhdGhlcmVkIGlu
-Zm9ybWF0aW9uPC9oMj4Ke2dhdGhlcn08L3NlY3Rpb24+CjxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+
-PGgyPkV2ZXJ5IHRvZG88L2gyPgp7dG9kb3N9PC9zZWN0aW9uPgo8c2VjdGlvbiBjbGFzcz0icGFu
-ZWwiPjxoMj5FdmVyeSBwbGFubmVyIHR1cm48L2gyPgp7d2FrZXN9PC9zZWN0aW9uPgp7c2VudH0K
-PC9tYWluPgo8c2NyaXB0IHR5cGU9ImFwcGxpY2F0aW9uL2pzb24iIGlkPSJydW4tZGF0YSI+e2Rh
-dGF9PC9zY3JpcHQ+CjxzY3JpcHQ+e3NjcmlwdH08L3NjcmlwdD4KPC9ib2R5PjwvaHRtbD4KIiIi
-CgoKZGVmIHJlbmRlcihvdXQsIGxpdmU9RmFsc2UpOgogICAgIiIiVGhlIHBhZ2U7IGxpdmU9VHJ1
-ZSAoc2VydmVkIGJ5IHNlcnZlKCkpIGFkZHMgdGhlIHJvb20gZm9yIGEgcGVyc29uJ3MgYnV0dG9u
-cywgd2hpY2ggb25seSBpdHMgc2NyaXB0IGZpbGxzLiIiIgogICAgZW5naW5lLCB0dXJucywgdG9k
-b3MsIHN1bW1hcnksIG1hZGUsIHRvb2xzID0gbG9hZChvdXQpCiAgICBzdGFydCA9IG5leHQoKGUg
-Zm9yIGUgaW4gZW5naW5lIGlmIGUuZ2V0KCJraW5kIikgPT0gInN0YXJ0IiksIHt9KQogICAgY29u
-dHJvbHMgPSBbZSBmb3IgZSBpbiBlbmdpbmUgaWYgZS5nZXQoImtpbmQiKSA9PSAiY29udHJvbCJd
-CiAgICBwYXVzZWQgPSBuZXh0KChjWyJjb21tYW5kIl0gPT0gInBhdXNlIiBmb3IgYyBpbiByZXZl
-cnNlZChjb250cm9scykgaWYgYy5nZXQoImNvbW1hbmQiKSBpbiAoInBhdXNlIiwgInJlc3VtZSIp
-KSwgRmFsc2UpCiAgICBidWRnZXQgPSBuZXh0KChjWyJhcHBsaWVkIl0gZm9yIGMgaW4gcmV2ZXJz
-ZWQoY29udHJvbHMpIGlmIGMuZ2V0KCJhcHBsaWVkIikpLCBzdGFydC5nZXQoInR1cm5zIikpCiAg
-ICBsaW1pdCA9IG5leHQoKGNbInZhbHVlIl0gZm9yIGMgaW4gcmV2ZXJzZWQoY29udHJvbHMpIGlm
-IGMuZ2V0KCJjb21tYW5kIikgPT0gInRpbWVfbGltaXQiIGFuZCBub3QgYy5nZXQoInJlZnVzZWQi
-KSksCiAgICAgICAgICAgICAgICAgc3RhcnQuZ2V0KCJ0aW1lX2xpbWl0IikpCiAgICBzdG9wID0g
-bmV4dCgoZSBmb3IgZSBpbiBlbmdpbmUgaWYgZS5nZXQoImtpbmQiKSA9PSAic3RvcCIpLCBOb25l
-KQogICAgd2FrZXMgPSBbZSBmb3IgZSBpbiBlbmdpbmUgaWYgZS5nZXQoImtpbmQiKSA9PSAid2Fr
-ZSJdCiAgICBtZW1iZXJzID0gc3RhcnQuZ2V0KCJtZW1iZXJzIikgb3Igc29ydGVkKHt0LmdldCgi
-bWVtYmVyIikgZm9yIHQgaW4gdHVybnMgaWYgdC5nZXQoIm1lbWJlciIpfSkKICAgIHBsYW5uZXIg
-PSBzdGFydC5nZXQoInBsYW5uZXIiKSBvciAicGxhbm5lciIKICAgIHQwID0gc3RhcnQuZ2V0KCJ0
-Iikgb3IgbWluKFtlLmdldCgidCIsIHRpbWUudGltZSgpKSBmb3IgZSBpbiBlbmdpbmUgKyB0dXJu
-c10gb3IgW3RpbWUudGltZSgpXSkKICAgIGVuZHMgPSBbZS5nZXQoImVuZCIpIG9yIGUuZ2V0KCJ0
-IikgZm9yIGUgaW4gd2FrZXMgKyB0dXJuc10gKyBbc3RvcC5nZXQoInQiKSBpZiBzdG9wIGVsc2Ug
-Tm9uZV0KICAgIHQxID0gbWF4KFt0IGZvciB0IGluIGVuZHMgaWYgaXNpbnN0YW5jZSh0LCAoaW50
-LCBmbG9hdCkpXSArIFt0MCArIDFdKQogICAgY2hpcHMgPSBbXQogICAgc2NvcmVzID0gW3RbInNj
-b3JlIl0gZm9yIHQgaW4gdHVybnMgaWYgdC5nZXQoInN0YXR1cyIpID09ICJ2YWxpZCIgYW5kIGlz
-aW5zdGFuY2UodC5nZXQoInNjb3JlIiksIChpbnQsIGZsb2F0KSldCiAgICBjaGlwcy5hcHBlbmQo
-Zic8c3BhbiBjbGFzcz0iY2hpcCBnb29kIj5iZXN0IHttYXgoc2NvcmVzKTouNmd9PC9zcGFuPicg
-aWYgc2NvcmVzIGVsc2UgJzxzcGFuIGNsYXNzPSJjaGlwIj5ubyB2YWxpZCBhbnN3ZXIgeWV0PC9z
-cGFuPicpCiAgICBjaGlwcy5hcHBlbmQoZic8c3BhbiBjbGFzcz0iY2hpcCI+e2xlbih0dXJucyl9
-IG9mIHtlc2Moc3RhcnQuZ2V0KCJ0dXJucyIsICI/IikpfSBtZW1iZXIgdHVybnM8L3NwYW4+JykK
-ICAgIGNoaXBzLmFwcGVuZChmJzxzcGFuIGNsYXNzPSJjaGlwIj57dGltZXMobGVuKHt3LmdldCgi
-d2FrZSIpIGZvciB3IGluIHdha2VzfSksICJwbGFubmVyIHdha2UiKX08L3NwYW4+JykKICAgIGlm
-IHN1bW1hcnk6CiAgICAgICAgY2hpcHMuYXBwZW5kKGYnPHNwYW4gY2xhc3M9ImNoaXB7IiBiYWQi
-IGlmIHN1bW1hcnkuZ2V0KCJkb3VibGVfdGFrZXMiKSBlbHNlICIifSI+dGFrZW4gdHdpY2Uge2Vz
-YyhzdW1tYXJ5LmdldCgiZG91YmxlX3Rha2VzIikpfTwvc3Bhbj4nKQogICAgICAgIGNoaXBzLmFw
-cGVuZChmJzxzcGFuIGNsYXNzPSJjaGlwIj50cmFjZWFibGUge2VzYyhzdW1tYXJ5LmdldCgidHJh
-Y2VhYmxlIikpfTwvc3Bhbj4nKQogICAgICAgIGlmIHN1bW1hcnkuZ2V0KCJ0b2tlbnMiKSBpcyBu
-b3QgTm9uZToKICAgICAgICAgICAgc2hhcmUgPSBzdW1tYXJ5LmdldCgicGxhbm5lcl9zaGFyZSIp
-CiAgICAgICAgICAgIGNoaXBzLmFwcGVuZChmJzxzcGFuIGNsYXNzPSJjaGlwIj57c3VtbWFyeVsi
-dG9rZW5zIl06LH0gdG9rZW5zJyBpZiBpc2luc3RhbmNlKHN1bW1hcnlbInRva2VucyJdLCBpbnQp
-CiAgICAgICAgICAgICAgICAgICAgICAgICBlbHNlIGYnPHNwYW4gY2xhc3M9ImNoaXAiPntlc2Mo
-c3VtbWFyeVsidG9rZW5zIl0pfSB0b2tlbnMnCiAgICAgICAgICAgICAgICAgICAgICAgICArIChm
-IiwgcGxhbm5lciB7c2hhcmU6LjAlfSIgaWYgaXNpbnN0YW5jZShzaGFyZSwgKGludCwgZmxvYXQp
-KSBlbHNlICIiKSArICI8L3NwYW4+IikKICAgIGlmIHBhdXNlZCBhbmQgbm90IHN0b3A6CiAgICAg
-ICAgY2hpcHMuYXBwZW5kKCc8c3BhbiBjbGFzcz0iY2hpcCBiYWQiPnBhdXNlZCBieSBhIHBlcnNv
-bjwvc3Bhbj4nKQogICAgaWYgc3VtbWFyeSBhbmQgc3VtbWFyeS5nZXQoInBhdXNlZF9zZWNvbmRz
-Iik6CiAgICAgICAgY2hpcHMuYXBwZW5kKGYnPHNwYW4gY2xhc3M9ImNoaXAiPnBhdXNlZCB7c3Vt
-bWFyeVsicGF1c2VkX3NlY29uZHMiXTpnfSBzPC9zcGFuPicpCiAgICBpZiBzdG9wOgogICAgICAg
-IGNoaXBzLmFwcGVuZChmJzxzcGFuIGNsYXNzPSJjaGlwIGJhZCI+c3RvcHBlZDoge2VzYyhzdG9w
-LmdldCgid2h5IikpfTwvc3Bhbj4nKQogICAgd2hlbiA9ICgoImZpbmlzaGVkIiBpZiBzdG9wIGVs
-c2UgInN0aWxsIHJ1bm5pbmcgKHdyaXR0ZW4gYWZ0ZXIgZXZlcnkgZXZlbnQpIikgKyBmIiDCtyB7
-Y2xvY2sodDEgLSB0MCl9IgogICAgICAgICAgICArIGYiICh7dDEgLSB0MDouMGZ9IHMpIMK3IHN0
-YXJ0ZWQgIiArIGVzYyh0aW1lLnN0cmZ0aW1lKCIlWS0lbS0lZCAlSDolTTolUyIsIHRpbWUubG9j
-YWx0aW1lKHQwKSkpKQogICAgbmFtZSA9IG9zLnBhdGguYmFzZW5hbWUob3MucGF0aC5hYnNwYXRo
-KG91dCkpCiAgICB0aXRsZSA9IGVzYyhmIkV2ZW50LWRyaXZlbiB0ZWFtIHtuYW1lfSIpCiAgICBz
-dGF0ZSA9ICJydW4iIGlmIG5vdCBzdG9wIGVsc2UgKCJvayIgaWYgc2NvcmVzIGVsc2UgImJhZCIp
-CiAgICBkYXRhID0geyJ0MCI6IHQwLCAidDEiOiB0MSwgImZpbmlzaGVkIjogYm9vbChzdG9wKSwg
-InBsYW5uZXIiOiBwbGFubmVyLCAibWVtYmVycyI6IG1lbWJlcnMsICJsaXZlIjogYm9vbChsaXZl
-KSwKICAgICAgICAgICAgInBhdXNlZCI6IHBhdXNlZCwgInR1cm5zIjogYnVkZ2V0LCAidGltZV9s
-aW1pdCI6IGxpbWl0LAogICAgICAgICAgICAid2FrZXMiOiBbeyJ3YWtlIjogdy5nZXQoIndha2Ui
-KSwgImF0dGVtcHQiOiB3LmdldCgiYXR0ZW1wdCIpLCAicmVhc29uIjogdy5nZXQoInJlYXNvbiIp
-LAogICAgICAgICAgICAgICAgICAgICAgICJzIjogdy5nZXQoInN0YXJ0Iikgb3IgKHcuZ2V0KCJ0
-IiwgdDApIC0gKHcuZ2V0KCJzZWNvbmRzIikgb3IgMCkpLCAiZSI6IHcuZ2V0KCJlbmQiKSBvciB3
-LmdldCgidCIsIHQwKSwKICAgICAgICAgICAgICAgICAgICAgICAia2luZCI6ICJwbGFuIiBpZiB3
-LmdldCgic3RhdGUiKSA9PSAiaWRsZSIgYW5kIG5vdCB3LmdldCgicHJvYmxlbXMiKSBlbHNlICJw
-bGFuYmFjayIsCiAgICAgICAgICAgICAgICAgICAgICAgImFkZGVkIjogdy5nZXQoImFkZGVkIikg
-b3IgW10sICJkcm9wcGVkIjogdy5nZXQoImRyb3BwZWQiKSBvciBbXSwgImRvbmUiOiBib29sKHcu
-Z2V0KCJkb25lIikpLAogICAgICAgICAgICAgICAgICAgICAgICJwcm9ibGVtcyI6IHcuZ2V0KCJw
-cm9ibGVtcyIpIG9yIFtdLCAid2h5Ijogdy5nZXQoIndoeSIpfSBmb3IgdyBpbiB3YWtlc10sCiAg
-ICAgICAgICAgICJ0dXJucyI6IFt7Im1lbWJlciI6IHQuZ2V0KCJtZW1iZXIiKSwgInR1cm4iOiB0
-LmdldCgidHVybiIpLCAidG9kbyI6IHQuZ2V0KCJ0b2RvIiksICJzIjogdC5nZXQoInN0YXJ0Iikg
-b3IgdC5nZXQoInQiLCB0MCksCiAgICAgICAgICAgICAgICAgICAgICAgImUiOiB0LmdldCgiZW5k
-Iikgb3IgKHQuZ2V0KCJ0IiwgdDApICsgKHQuZ2V0KCJzZWNvbmRzIikgb3IgMCkpLCAia2luZCI6
-IHQuZ2V0KCJraW5kIiksCiAgICAgICAgICAgICAgICAgICAgICAgInN0YXR1cyI6IHQuZ2V0KCJz
-dGF0dXMiKSwgInNjb3JlIjogdC5nZXQoInNjb3JlIiksICJzdGF0ZSI6IHQuZ2V0KCJzdGF0ZSIp
-LCAiZW50cnkiOiB0LmdldCgiZW50cnkiKSwKICAgICAgICAgICAgICAgICAgICAgICAicHJvYmxl
-bSI6IHQuZ2V0KCJwcm9ibGVtIiksCiAgICAgICAgICAgICAgICAgICAgICAgInRvb2xzIjogW1tj
-WyJ0b29sIl0sIGNbIndoYXQiXV0gZm9yIGMgaW4gY2FsbHNfaW4odCwgdG9vbHMsIHQwKV1bOjQw
-XX0gZm9yIHQgaW4gdHVybnNdLAogICAgICAgICAgICAidG9kb3MiOiBbeyJpZCI6IHRbImlkIl0s
-ICJ0ZXh0IjogdC5nZXQoInRleHQiKSwgImFkZGVkIjogdC5nZXQoImFkZGVkIikgb3IgMCwgInRh
-a2VuIjogdC5nZXQoInRha2VuIiksCiAgICAgICAgICAgICAgICAgICAgICAgImVuZGVkIjogdC5n
-ZXQoImVuZGVkIiksICJzdGF0ZSI6IHRbInN0YXRlIl19IGZvciB0IGluIHRvZG9zXX0KICAgIGJs
-b2IgPSBqc29uLmR1bXBzKGRhdGEsIGVuc3VyZV9hc2NpaT1UcnVlKS5yZXBsYWNlKCI8LyIsICI8
-XFwvIikKICAgIHJlYWRzID0gYXJ0aWZhY3RfcmVhZHModG9vbHMpCiAgICBza2lsbHMgPSBza2ls
-bHNfbGlzdChtYWRlLCByZWFkcykKICAgIHJldHVybiBQQUdFLmZvcm1hdCh0aXRsZT10aXRsZSwg
-bmFtZT1lc2MobmFtZSksIHN0YXRlPXN0YXRlLCB3aGVuPXdoZW4sIGNoaXBzPSIiLmpvaW4oY2hp
-cHMpLCBkYXRhPWJsb2IsIHNjcmlwdD1TQ1JJUFQsIHRva2Vucz1UT0tFTlMsCiAgICAgICAgICAg
-ICAgICAgICAgICAgY29udHJvbHM9JzxkaXYgY2xhc3M9ImNvbnRyb2xzIiBpZD0iY29udHJvbHMi
-IGhpZGRlbj48L2Rpdj4nIGlmIGxpdmUgZWxzZSAiIiwKICAgICAgICAgICAgICAgICAgICAgICBz
-ZW50PWNvbnRyb2xfbGlzdChjb250cm9scywgdDApLAogICAgICAgICAgICAgICAgICAgICAgIGFn
-ZW50cz1hZ2VudHNfcGFuZWwod2FrZXMsIHR1cm5zLCB0b2Rvcywgc3VtbWFyeSwgbWVtYmVycywg
-cGxhbm5lciwgYm9vbChzdG9wKSwgbWFkZSwgcmVhZHMpLAogICAgICAgICAgICAgICAgICAgICAg
-IGRpdmlzaW9uPWRpdmlzaW9uX3N2Zyh0MCwgdDEsIHRvZG9zLCBtYWRlLCBtZW1iZXJzKSwga25v
-d2xlZGdlPWtub3dsZWRnZV9zdmcobWFkZSwgcmVhZHMsIG1lbWJlcnMsIHQwKSwKICAgICAgICAg
-ICAgICAgICAgICAgICBoZWFsdGg9aGVhbHRoX3BhbmVsKHN0YXJ0LCB3YWtlcywgdHVybnMsIHN1
-bW1hcnkpLAogICAgICAgICAgICAgICAgICAgICAgIGxvb3A9bG9vcF9zdmcoc3RhcnQsIHdha2Vz
-LCB0dXJucywgdG9kb3MsIHN1bW1hcnksIG1lbWJlcnMsIHBsYW5uZXIpLAogICAgICAgICAgICAg
-ICAgICAgICAgIHRpbWVsaW5lPXRpbWVsaW5lX3N2Zyh0MCwgdDEsIHdha2VzLCB0dXJucywgbWVt
-YmVycywgc3RvcC5nZXQoIndoeSIpIGlmIHN0b3AgZWxzZSBOb25lLCB0b29scyksCiAgICAgICAg
-ICAgICAgICAgICAgICAgbGluZWFnZT1saW5lYWdlX3N2ZyhtYWRlKSwgc2tpbGxzPWYnPHNlY3Rp
-b24gY2xhc3M9InBhbmVsIj57c2tpbGxzfTwvc2VjdGlvbj4nIGlmIHNraWxscyBlbHNlICIiLAog
-ICAgICAgICAgICAgICAgICAgICAgIGdhdGhlcj1nYXRoZXJfbGlzdCh0dXJucywgdG9vbHMsIHQw
-KSwKICAgICAgICAgICAgICAgICAgICAgICBiZXN0PWJlc3Rfc3ZnKHQwLCB0MSwgdHVybnMpLCB0
-b2Rvcz10b2RvX2xpc3QodG9kb3MsIHQwKSwgd2FrZXM9d2FrZV9saXN0KHdha2VzLCB0MCkpCgoK
-Y2xhc3MgX1NlcnZlcihzb2NrZXRzZXJ2ZXIuVGhyZWFkaW5nTWl4SW4sIGh0dHAuc2VydmVyLkhU
-VFBTZXJ2ZXIpOiAgIyBUaHJlYWRpbmdIVFRQU2VydmVyIGlzIFB5dGhvbiAzLjcrCiAgICBkYWVt
-b25fdGhyZWFkcyA9IFRydWUKCgpkZWYgc2VydmUob3V0LCBob3N0PSIxMjcuMC4wLjEiLCBwb3J0
-PTg3ODAsIHRva2VuPU5vbmUsIHJlYWR5PU5vbmUpOgogICAgIiIiU2VydmUgdGhlIHJ1bidzIHBh
-Z2UgKGRyYXduIGFnYWluIGZvciBldmVyeSByZXF1ZXN0KSBhbmQgdGFrZSBhIHBlcnNvbidzIGNv
-bW1hbmRzIGZvciBpdCAoUE9TVCAvY29udHJvbCB3aXRoCiAgICAiQXV0aG9yaXphdGlvbjogQmVh
-cmVyIDx0b2tlbj4iKS4gcmVhZHkoc2VydmVyLCB0b2tlbikgaXMgY2FsbGVkIG9uY2UgaXQgbGlz
-dGVucyAodGVzdHMgc3RvcCBpdCB3aXRoIHNodXRkb3duKCkpLiIiIgogICAgZnJvbSAuZW5naW5l
-IGltcG9ydCBzZW5kX2NvbnRyb2wgICMgZW5naW5lIGltcG9ydHMgdGhpcyBtb2R1bGU7IHRoaXMg
-b25lIG5lZWRzIGVuZ2luZSBvbmx5IGhlcmUKICAgIHRva2VuID0gdG9rZW4gb3Igc2VjcmV0cy50
-b2tlbl91cmxzYWZlKDE4KQoKICAgIGNsYXNzIEhhbmRsZXIoaHR0cC5zZXJ2ZXIuQmFzZUhUVFBS
-ZXF1ZXN0SGFuZGxlcik6CiAgICAgICAgZGVmIGxvZ19tZXNzYWdlKHNlbGYsICphcmdzKToKICAg
-ICAgICAgICAgcGFzcwoKICAgICAgICBkZWYgc2VuZChzZWxmLCBjb2RlLCBib2R5LCBraW5kPSJh
-cHBsaWNhdGlvbi9qc29uIik6CiAgICAgICAgICAgIGRhdGEgPSBib2R5IGlmIGlzaW5zdGFuY2Uo
-Ym9keSwgYnl0ZXMpIGVsc2UganNvbi5kdW1wcyhib2R5KS5lbmNvZGUoInV0Zi04IikKICAgICAg
-ICAgICAgc2VsZi5zZW5kX3Jlc3BvbnNlKGNvZGUpCiAgICAgICAgICAgIHNlbGYuc2VuZF9oZWFk
-ZXIoIkNvbnRlbnQtVHlwZSIsIGtpbmQpCiAgICAgICAgICAgIHNlbGYuc2VuZF9oZWFkZXIoIkNv
-bnRlbnQtTGVuZ3RoIiwgc3RyKGxlbihkYXRhKSkpCiAgICAgICAgICAgIHNlbGYuc2VuZF9oZWFk
-ZXIoIkNhY2hlLUNvbnRyb2wiLCAibm8tc3RvcmUiKQogICAgICAgICAgICBzZWxmLmVuZF9oZWFk
-ZXJzKCkKICAgICAgICAgICAgc2VsZi53ZmlsZS53cml0ZShkYXRhKQoKICAgICAgICBkZWYgZG9f
-R0VUKHNlbGYpOgogICAgICAgICAgICBpZiB1cmxsaWIucGFyc2UudXJscGFyc2Uoc2VsZi5wYXRo
-KS5wYXRoIG5vdCBpbiAoIi8iLCAiL2luZGV4Lmh0bWwiKToKICAgICAgICAgICAgICAgIHJldHVy
-biBzZWxmLnNlbmQoNDA0LCB7ImVycm9yIjogIm5vdCBmb3VuZCJ9KQogICAgICAgICAgICByZXR1
-cm4gc2VsZi5zZW5kKDIwMCwgcmVuZGVyKG91dCwgbGl2ZT1UcnVlKS5lbmNvZGUoInV0Zi04Iiks
-ICJ0ZXh0L2h0bWw7IGNoYXJzZXQ9dXRmLTgiKQoKICAgICAgICBkZWYgZG9fUE9TVChzZWxmKToK
-ICAgICAgICAgICAgaWYgdXJsbGliLnBhcnNlLnVybHBhcnNlKHNlbGYucGF0aCkucGF0aCAhPSAi
-L2NvbnRyb2wiOgogICAgICAgICAgICAgICAgcmV0dXJuIHNlbGYuc2VuZCg0MDQsIHsiZXJyb3Ii
-OiAibm90IGZvdW5kIn0pCiAgICAgICAgICAgIGlmIG5vdCBobWFjLmNvbXBhcmVfZGlnZXN0KHNl
-bGYuaGVhZGVycy5nZXQoIkF1dGhvcml6YXRpb24iKSBvciAiIiwgIkJlYXJlciAiICsgdG9rZW4p
-OgogICAgICAgICAgICAgICAgcmV0dXJuIHNlbGYuc2VuZCg0MDMsIHsiZXJyb3IiOiAidGhpcyBu
-ZWVkcyB0aGUgdG9rZW4gZnJvbSB0aGUgbGluayB0aGUgc2VydmVyIHByaW50ZWQifSkKICAgICAg
-ICAgICAgbGVuZ3RoID0gaW50KHNlbGYuaGVhZGVycy5nZXQoIkNvbnRlbnQtTGVuZ3RoIikgb3Ig
-MCkKICAgICAgICAgICAgaWYgbGVuZ3RoID4gNDA5NjoKICAgICAgICAgICAgICAgIHJldHVybiBz
-ZWxmLnNlbmQoNDEzLCB7ImVycm9yIjogInRvbyBsb25nIn0pCiAgICAgICAgICAgIHRyeToKICAg
-ICAgICAgICAgICAgIGJvZHkgPSBqc29uLmxvYWRzKHNlbGYucmZpbGUucmVhZChsZW5ndGgpIG9y
-IGIie30iKQogICAgICAgICAgICAgICAgcmVjID0gc2VuZF9jb250cm9sKG91dCwgYm9keS5nZXQo
-ImNvbW1hbmQiKSwgYm9keS5nZXQoInZhbHVlIiksIGJ5PSJ3ZWIiKQogICAgICAgICAgICBleGNl
-cHQgKFZhbHVlRXJyb3IsIEF0dHJpYnV0ZUVycm9yKSBhcyBleGM6CiAgICAgICAgICAgICAgICBy
-ZXR1cm4gc2VsZi5zZW5kKDQwMCwgeyJlcnJvciI6IHN0cihleGMpfSkKICAgICAgICAgICAgcmV0
-dXJuIHNlbGYuc2VuZCgyMDAsIHsib2siOiBUcnVlLCAic2VudCI6IHJlY30pCgogICAgc2VydmVy
-ID0gX1NlcnZlcigoaG9zdCwgcG9ydCksIEhhbmRsZXIpCiAgICBpZiByZWFkeToKICAgICAgICBy
-ZWFkeShzZXJ2ZXIsIHRva2VuKQogICAgZWxzZToKICAgICAgICBwcmludChmInNlcnZpbmcge29z
-LnBhdGguYWJzcGF0aChvdXQpfSBhdCBodHRwOi8ve2hvc3R9OntzZXJ2ZXIuc2VydmVyX2FkZHJl
-c3NbMV19LyN0b2tlbj17dG9rZW59ICAoQ3RybC1DIHN0b3BzKSIsIGZsdXNoPVRydWUpCiAgICB0
-cnk6CiAgICAgICAgc2VydmVyLnNlcnZlX2ZvcmV2ZXIocG9sbF9pbnRlcnZhbD0wLjIpCiAgICBm
-aW5hbGx5OgogICAgICAgIHNlcnZlci5zZXJ2ZXJfY2xvc2UoKQoKCmRlZiBzYXZlKG91dCk6CiAg
-ICBwYWdlID0gcmVuZGVyKG91dCkKICAgIHRtcCA9IG9zLnBhdGguam9pbihvdXQsICJ2aWV3Lmh0
-bWwudG1wIikKICAgIHdpdGggb3Blbih0bXAsICJ3IiwgZW5jb2Rpbmc9InV0Zi04IikgYXMgaGFu
-ZGxlOgogICAgICAgIGhhbmRsZS53cml0ZShwYWdlKQogICAgb3MucmVwbGFjZSh0bXAsIG9zLnBh
-dGguam9pbihvdXQsICJ2aWV3Lmh0bWwiKSkgICMgYSByZWFkZXIgbmV2ZXIgc2VlcyBoYWxmIGEg
-cGFnZQogICAgcmV0dXJuIG9zLnBhdGguam9pbihvdXQsICJ2aWV3Lmh0bWwiKQoKCmRlZiBtYWlu
-KGFyZ3Y9Tm9uZSk6CiAgICBpbXBvcnQgYXJncGFyc2UKICAgIGFwID0gYXJncGFyc2UuQXJndW1l
-bnRQYXJzZXIocHJvZz0icHl0aG9uMyAtbSBoZXJkcl9weS5lbmdpbmV2aWV3IiwgZGVzY3JpcHRp
-b249IkRyYXcgKG9yIHNlcnZlKSBhIHJ1bidzIHBhZ2UuIikKICAgIGFwLmFkZF9hcmd1bWVudCgi
-cnVuIiwgbWV0YXZhcj0iUlVOX0ZPTERFUiIpCiAgICBhcC5hZGRfYXJndW1lbnQoIi0tc2VydmUi
-LCBhY3Rpb249InN0b3JlX3RydWUiLCBoZWxwPSJzZXJ2ZSB0aGUgcGFnZSB3aXRoIGEgcGVyc29u
-J3MgYnV0dG9ucyBpbnN0ZWFkIG9mIHdyaXRpbmcgdmlldy5odG1sIikKICAgIGFwLmFkZF9hcmd1
-bWVudCgiLS1ob3N0IiwgZGVmYXVsdD0iMTI3LjAuMC4xIikKICAgIGFwLmFkZF9hcmd1bWVudCgi
-LS1wb3J0IiwgdHlwZT1pbnQsIGRlZmF1bHQ9ODc4MCkKICAgIGEgPSBhcC5wYXJzZV9hcmdzKGFy
-Z3YpCiAgICBpZiBub3Qgb3MucGF0aC5pc2ZpbGUob3MucGF0aC5qb2luKGEucnVuLCAiZW5naW5l
-Lmpzb25sIikpOgogICAgICAgIHByaW50KGYiaGVyZHItcHkgZW5naW5ldmlldzoge2EucnVufSBo
-b2xkcyBubyBydW4gKGVuZ2luZS5qc29ubCkiLCBmaWxlPXN5cy5zdGRlcnIpCiAgICAgICAgcmV0
-dXJuIDIKICAgIGlmIGEuc2VydmU6CiAgICAgICAgdHJ5OgogICAgICAgICAgICBzZXJ2ZShhLnJ1
-biwgaG9zdD1hLmhvc3QsIHBvcnQ9YS5wb3J0KQogICAgICAgIGV4Y2VwdCBLZXlib2FyZEludGVy
-cnVwdDoKICAgICAgICAgICAgcGFzcwogICAgICAgIHJldHVybiAwCiAgICBwcmludChzYXZlKGEu
-cnVuKSkKICAgIHJldHVybiAwCgoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIHN5cy5l
-eGl0KG1haW4oKSkK
+KGludCwgZmxvYXQpKV0KICAgIHJvd3MuYXBwZW5kKCgianVkZ2UiLCAianVkZ2UiLCAiYSBwcm9n
+cmFtIiwgIm9rIiBpZiBzY29yZXMgZWxzZSAiaWRsZSIsIGYie2xlbihzY29yZXMpfSB2YWxpZCBv
+ZiB7bGVuKGp1ZGdlZCl9IGp1ZGdlZCIsCiAgICAgICAgICAgICAgICAgZiJiZXN0IHttYXgoc2Nv
+cmVzKTouNmd9IiBpZiBzY29yZXMgZWxzZSAibm8gdmFsaWQgYW5zd2VyIHlldCIpKQogICAgaXRl
+bXMgPSAiIi5qb2luKGYnPGxpIGRhdGEtcm9sZT0ie2tpbmR9IiBkYXRhLWFnZW50PSJ7ZXNjKG4p
+fSIgZGF0YS1sZWQ9IntsaWdodH0iPjxpIGNsYXNzPSJsZWQge2xpZ2h0fSI+PC9pPjxiPntlc2Mo
+bil9PC9iPiAnCiAgICAgICAgICAgICAgICAgICAgZic8c3BhbiBjbGFzcz0icm9sZSI+e2VzYyhy
+b2xlKX08L3NwYW4+PGRpdiBjbGFzcz0ic3ViIj57ZXNjKGEpfTwvZGl2PicKICAgICAgICAgICAg
+ICAgICAgICArIChmJzxkaXYgY2xhc3M9InN1YiI+e2VzYyhiKX08L2Rpdj4nIGlmIGIgZWxzZSAi
+IikgKyAiPC9saT4iIGZvciBraW5kLCBuLCByb2xlLCBsaWdodCwgYSwgYiBpbiByb3dzKQogICAg
+cmV0dXJuIGYnPHVsIGNsYXNzPSJhZ2VudHMiIGlkPSJhZ2VudHMiPntpdGVtc308L3VsPicKCgpk
+ZWYgaGVhbHRoX3BhbmVsKHN0YXJ0LCB3YWtlcywgdHVybnMsIHN1bW1hcnkpOgogICAgIiIiVGhl
+IHJ1bidzIG51bWJlcnMgdGhhdCBzYXkgd2hldGhlciB0aGUgdGVhbSB3b3JrZWQgd2VsbCwgZWFj
+aCBmcm9tIHRoZSByZWNvcmRzIChub3RoaW5nIGVzdGltYXRlZCkuIiIiCiAgICBhZGRlZCA9IHt9
+CiAgICBmb3IgdyBpbiB3YWtlczoKICAgICAgICBhZGRlZFt3LmdldCgid2FrZSIpXSA9IGFkZGVk
+LmdldCh3LmdldCgid2FrZSIpLCAwKSArIGxlbih3LmdldCgiYWRkZWQiKSBvciBbXSkKICAgIGl0
+ZW1zID0gWygibWVtYmVyIHR1cm5zIiwgZiJ7bGVuKHR1cm5zKX0gLyB7c3RhcnQuZ2V0KCd0dXJu
+cycsICc/Jyl9IiwgIiIpLAogICAgICAgICAgICAgKCJwbGFubmVyIHdha2VzIiwgc3RyKGxlbihh
+ZGRlZCkpLCBmIntzdW0oMSBmb3IgbiBpbiBhZGRlZC52YWx1ZXMoKSBpZiBuID09IDApfSBhZGRl
+ZCBubyB0b2RvIiksCiAgICAgICAgICAgICAoInJlcGxpZXMgc2VudCBiYWNrIiwgZiJ7c3VtKDEg
+Zm9yIHcgaW4gd2FrZXMgaWYgdy5nZXQoJ3Byb2JsZW1zJykpfSBvZiB7bGVuKHdha2VzKX0iLCAi
+IildCiAgICBzcGVudCA9IFt0WyJzZWNvbmRzIl0gZm9yIHQgaW4gdHVybnMgaWYgaXNpbnN0YW5j
+ZSh0LmdldCgic2Vjb25kcyIpLCAoaW50LCBmbG9hdCkpXQogICAgaWYgc3BlbnQ6CiAgICAgICAg
+aXRlbXMuYXBwZW5kKCgibWVtYmVyIHR1cm4iLCBmInttZWRpYW4oc3BlbnQpOi4wZn0gcyIsIGYi
+bWVkaWFuOyB7bWluKHNwZW50KTouMGZ94oCTe21heChzcGVudCk6LjBmfSBzIikpCiAgICBpZiBz
+dW1tYXJ5OgogICAgICAgIGl0ZW1zLmFwcGVuZCgoInRha2VuIHR3aWNlIiwgc3RyKHN1bW1hcnku
+Z2V0KCJkb3VibGVfdGFrZXMiKSksICJtdXN0IGJlIDAiKSkKICAgICAgICBpZGxlLCBzcGFuID0g
+c3VtbWFyeS5nZXQoImlkbGVfc2Vjb25kcyIpIG9yIHt9LCBzdW1tYXJ5LmdldCgic2Vjb25kcyIp
+CiAgICAgICAgaWYgaWRsZSBhbmQgc3BhbjoKICAgICAgICAgICAgc2hhcmVzID0gW3YgLyBzcGFu
+IGZvciB2IGluIGlkbGUudmFsdWVzKCldCiAgICAgICAgICAgIGl0ZW1zLmFwcGVuZCgoImZyZWUs
+IG5vdGhpbmcgdG8gdGFrZSIsIGYie3N1bShzaGFyZXMpIC8gbGVuKHNoYXJlcyk6LjAlfSIsIGYi
+bWVhbjsge21pbihzaGFyZXMpOi4wJX3igJN7bWF4KHNoYXJlcyk6LjAlfSIpKQogICAgICAgIGlm
+IHN1bW1hcnkuZ2V0KCJ0b2tlbnMiKSBpcyBub3QgTm9uZToKICAgICAgICAgICAgc2hhcmUgPSBz
+dW1tYXJ5LmdldCgicGxhbm5lcl9zaGFyZSIpCiAgICAgICAgICAgIGl0ZW1zLmFwcGVuZCgoInRv
+a2VucyIsIGYie3N1bW1hcnlbJ3Rva2VucyddOix9IiBpZiBpc2luc3RhbmNlKHN1bW1hcnlbInRv
+a2VucyJdLCBpbnQpIGVsc2UgZXNjKHN1bW1hcnlbInRva2VucyJdKSwKICAgICAgICAgICAgICAg
+ICAgICAgICAgICBmInBsYW5uZXIge3NoYXJlOi4wJX0iIGlmIGlzaW5zdGFuY2Uoc2hhcmUsIChp
+bnQsIGZsb2F0KSkgZWxzZSAiIikpCiAgICBjZWxscyA9ICIiLmpvaW4oZic8ZGl2PjxkdD57ZXNj
+KGspfTwvZHQ+PGRkPntlc2Modil9JyArIChmJzxzbWFsbD57ZXNjKG4pfTwvc21hbGw+JyBpZiBu
+IGVsc2UgIiIpICsgIjwvZGQ+PC9kaXY+IgogICAgICAgICAgICAgICAgICAgIGZvciBrLCB2LCBu
+IGluIGl0ZW1zKQogICAgcmV0dXJuIGYnPGRsIGNsYXNzPSJoZWFsdGgiPntjZWxsc308L2RsPicK
+CgpkZWYgb3V0Y29tZSh0dXJuKToKICAgIGlmIHR1cm4uZ2V0KCJzdGF0dXMiKSA9PSAidmFsaWQi
+OgogICAgICAgIHJldHVybiAicGFzcyIKICAgIGlmIHR1cm4uZ2V0KCJzdGF0dXMiKSA9PSAiaW52
+YWxpZCIgb3IgdHVybi5nZXQoImtpbmQiKSA9PSAiZmFpbHVyZSI6CiAgICAgICAgcmV0dXJuICJm
+YWlsIgogICAgaWYgdHVybi5nZXQoInN0YXRlIikgaW4gKCJlcnJvciIsICJhYm9ydGVkIiwgInBy
+b3ZpZGVyX3N0YWxsIik6CiAgICAgICAgcmV0dXJuICJiYWQiCiAgICByZXR1cm4gIm5vbmUiICAj
+IG5vIHVzYWJsZSBhbnN3ZXIsIGEgdGltZW91dCwgb3Igc3RpbGwgcnVubmluZwoKCmRlZiBsb29w
+X3N2ZyhzdGFydCwgd2FrZXMsIHR1cm5zLCB0b2Rvcywgc3VtbWFyeSwgbWVtYmVycywgcGxhbm5l
+cik6CiAgICAiIiJUaGUgbG9vcCwgdG9wIHRvIGJvdHRvbSwgZWFjaCBhcnJvdyBsYWJlbGxlZCB3
+aXRoIHdoYXQgd2VudCBhbG9uZyBpdCBpbiB0aGlzIHJ1bi4iIiIKICAgIHNlbnRfYmFjayA9IHN1
+bSgxIGZvciB3IGluIHdha2VzIGlmIHcuZ2V0KCJwcm9ibGVtcyIpIGFuZCB3LmdldCgic3RhdGUi
+KSA9PSAiaWRsZSIpCiAgICBhZGRlZCA9IHN1bShsZW4ody5nZXQoImFkZGVkIikgb3IgW10pIGZv
+ciB3IGluIHdha2VzKQogICAgZHJvcHBlZCA9IHN1bShsZW4ody5nZXQoImRyb3BwZWQiKSBvciBb
+XSkgZm9yIHcgaW4gd2FrZXMpCiAgICBzdGF0ZXMgPSB7fQogICAgZm9yIHQgaW4gdG9kb3M6CiAg
+ICAgICAgc3RhdGVzW3RbInN0YXRlIl1dID0gc3RhdGVzLmdldCh0WyJzdGF0ZSJdLCAwKSArIDEK
+ICAgIGFuc3dlcnMgPSBzdW0oMSBmb3IgdCBpbiB0dXJucyBpZiB0LmdldCgia2luZCIpID09ICJy
+ZXN1bHQiKQogICAgb3RoZXIgPSBsZW4odHVybnMpIC0gYW5zd2VycwogICAgdmFsaWQgPSBzdW0o
+MSBmb3IgdCBpbiB0dXJucyBpZiB0LmdldCgic3RhdHVzIikgPT0gInZhbGlkIikKICAgIGludmFs
+aWQgPSBzdW0oMSBmb3IgdCBpbiB0dXJucyBpZiB0LmdldCgic3RhdHVzIikgPT0gImludmFsaWQi
+KQogICAgc2NvcmVzID0gW3RbInNjb3JlIl0gZm9yIHQgaW4gdHVybnMgaWYgdC5nZXQoInN0YXR1
+cyIpID09ICJ2YWxpZCIgYW5kIGlzaW5zdGFuY2UodC5nZXQoInNjb3JlIiksIChpbnQsIGZsb2F0
+KSldCiAgICBiZXN0ID0gZiJiZXN0IHttYXgoc2NvcmVzKTouNmd9IiBpZiBzY29yZXMgZWxzZSAi
+bm8gdmFsaWQgYW5zd2VyIHlldCIKICAgIHBsYW5uZXJfdG9rZW5zID0gW3dbInRva2VucyJdIGZv
+ciB3IGluIHdha2VzIGlmIGlzaW5zdGFuY2Uody5nZXQoInRva2VucyIpLCBpbnQpXQogICAgcmVh
+ZHMgPSAoc3VtbWFyeSBvciB7fSkuZ2V0KCJib2FyZF9yZWFkcyIpIG9yIHt9CiAgICByZWFkX25v
+dGUgPSAoZiJ7c3VtKChyZWFkcy5nZXQoJ2J5X21lbWJlcicpIG9yIHt9KS52YWx1ZXMoKSl9IGJv
+YXJkIHJlYWRzIiBpZiByZWFkcy5nZXQoIm1lYXN1cmVkIikKICAgICAgICAgICAgICAgICBlbHNl
+ICJyZWFkIFRFQU1fQk9BUkQubWQgd2hpbGUgdGhleSB3b3JrIikKICAgIG5vZGVzID0gWygiZXZl
+bnRzIiwgImp1ZGdlZCBhbnN3ZXJzLCBlbmRlZCB0b2RvcywgdGhlIHN0YXJ0IiksCiAgICAgICAg
+ICAgICAoZiJwbGFubmVyOiB7cGxhbm5lcn0iLCBmIntsZW4od2FrZXMpfSB0dXJucyIgKyAoZiIs
+IHtzdW0ocGxhbm5lcl90b2tlbnMpfSB0b2tlbnMiIGlmIHBsYW5uZXJfdG9rZW5zIGVsc2UgIiIp
+KSwKICAgICAgICAgICAgICgic2hhcmVkIHRvZG8gbGlzdCIsICIgwrcgIi5qb2luKGYie259IHtr
+fSIgZm9yIGssIG4gaW4gc29ydGVkKHN0YXRlcy5pdGVtcygpKSkgb3IgImVtcHR5IiksCiAgICAg
+ICAgICAgICAoZiJtZW1iZXJzOiB7JywgJy5qb2luKG1lbWJlcnMpfSIgaWYgdGV4dF93aWR0aChm
+Im1lbWJlcnM6IHsnLCAnLmpvaW4obWVtYmVycyl9IiwgMTMpIDw9IDIzMgogICAgICAgICAgICAg
+IGVsc2UgZiJtZW1iZXJzICh7bGVuKG1lbWJlcnMpfSkiLCByZWFkX25vdGUpLAogICAgICAgICAg
+ICAgKCJqdWRnZSAoYSBwcm9ncmFtKSIsIGYie3ZhbGlkfSB2YWxpZCwge2ludmFsaWR9IGludmFs
+aWQ7IHtiZXN0fSIpXQogICAgYXJyb3dzID0gW2Yid29rZSB0aGUgcGxhbm5lciB7dGltZXMobGVu
+KHt3LmdldCgnd2FrZScpIGZvciB3IGluIHdha2VzfSkpfSIgKyAoZiIgKHtzZW50X2JhY2t9IHNl
+bnQgYmFjaykiIGlmIHNlbnRfYmFjayBlbHNlICIiKSwKICAgICAgICAgICAgICBmInthZGRlZH0g
+dG9kb3MgYWRkZWQsIHtkcm9wcGVkfSBkcm9wcGVkIiwKICAgICAgICAgICAgICBmIntzdW0oMSBm
+b3IgdCBpbiB0b2RvcyBpZiB0LmdldCgnbWVtYmVyJykpfSB0b2RvcyB0YWtlbiIsCiAgICAgICAg
+ICAgICAgZiJ7YW5zd2Vyc30gYW5zd2VycyIgKyAoZiIsIHtvdGhlcn0gd2l0aG91dCBvbmUiIGlm
+IG90aGVyIGVsc2UgIiIpXQogICAgYm94X3gsIGJveF93LCBib3hfaCwgZ2FwID0gMTQsIDI1Niwg
+NDgsIDUyCiAgICByeCA9IGJveF94ICsgYm94X3cgKyA1MCAgIyB0aGUgbGluZSBiYWNrIHRvIHRo
+ZSB0b3AsIHJpZ2h0IG9mIHRoZSBhcnJvd3MnIGxhYmVscwogICAgcGFydHMgPSBbXQogICAga2V5
+cyA9ICgiZXZlbnRzIiwgInBsYW5uZXIiLCAidG9kb3MiLCAibWVtYmVycyIsICJqdWRnZSIpCiAg
+ICBhcnJvd19rZXlzID0gKCJ3YWtlIiwgInRvZG8iLCAidGFrZSIsICJhbnN3ZXIiKQogICAgZm9y
+IGksICh0aXRsZSwgc3ViKSBpbiBlbnVtZXJhdGUobm9kZXMpOgogICAgICAgIHkgPSA4ICsgaSAq
+IChib3hfaCArIGdhcCkKICAgICAgICBwYXJ0cy5hcHBlbmQoZic8ZyBjbGFzcz0ibm9kZSIgaWQ9
+Im4te2tleXNbaV19Ij48cmVjdCB4PSJ7Ym94X3h9IiB5PSJ7eX0iIHdpZHRoPSJ7Ym94X3d9IiBo
+ZWlnaHQ9Intib3hfaH0iIHJ4PSIxMCIvPicKICAgICAgICAgICAgICAgICAgICAgZic8dGV4dCB4
+PSJ7Ym94X3ggKyAxMn0iIHk9Int5ICsgMjB9IiBjbGFzcz0idCI+e2VzYyhmaXQodGl0bGUsIGJv
+eF93IC0gMjQsIDEzKSl9PC90ZXh0PicKICAgICAgICAgICAgICAgICAgICAgZic8dGV4dCB4PSJ7
+Ym94X3ggKyAxMn0iIHk9Int5ICsgMzh9IiBjbGFzcz0icyIgaWQ9InMte2tleXNbaV19Ij57ZXNj
+KGZpdChzdWIsIGJveF93IC0gMjQsIDExKSl9PC90ZXh0PjwvZz4nKQogICAgICAgIGlmIGkgPCBs
+ZW4oYXJyb3dzKToKICAgICAgICAgICAgeTEsIHkyID0geSArIGJveF9oLCB5ICsgYm94X2ggKyBn
+YXAKICAgICAgICAgICAgIyBhIHNtYWxsIGRvdCBydW5zIGRvd24gdGhlIGFycm93IHdoaWxlIHRo
+YXQgc3RlcCBoYXBwZW5zIGluIGEgcmVwbGF5IChub25lIGF0IHJlc3Q6IG5vdGhpbmcgbW92ZXMg
+dGhlbikKICAgICAgICAgICAgcGFydHMuYXBwZW5kKGYnPGcgY2xhc3M9ImZsb3dnIiBpZD0iZi17
+YXJyb3dfa2V5c1tpXX0iPjxsaW5lIGNsYXNzPSJmbG93IiB4MT0ie2JveF94ICsgNDB9IiB5MT0i
+e3kxICsgMn0iIHgyPSJ7Ym94X3ggKyA0MH0iIHkyPSJ7eTIgLSA4fSIvPicKICAgICAgICAgICAg
+ICAgICAgICAgICAgIGYnPHBvbHlnb24gY2xhc3M9ImhlYWQiIHBvaW50cz0ie2JveF94ICsgMzR9
+LHt5MiAtIDl9IHtib3hfeCArIDQ2fSx7eTIgLSA5fSB7Ym94X3ggKyA0MH0se3kyIC0gMX0iLz4n
+CiAgICAgICAgICAgICAgICAgICAgICAgICBmJzxjaXJjbGUgY2xhc3M9InB1bHNlIiBjeD0ie2Jv
+eF94ICsgNDB9IiBjeT0ie3kxICsgM30iIHI9IjEuNiIgc3R5bGU9Ii0tbGVuOntnYXAgLSAxM31w
+eCIvPicKICAgICAgICAgICAgICAgICAgICAgICAgIGYnPHRleHQgeD0ie2JveF94ICsgNTJ9IiB5
+PSJ7eTEgKyBnYXAgLyAyICsgNH0iIGNsYXNzPSJhIiBpZD0iYS17YXJyb3dfa2V5c1tpXX0iPicK
+ICAgICAgICAgICAgICAgICAgICAgICAgIGYne2VzYyhmaXQoYXJyb3dzW2ldLCByeCAtIGJveF94
+IC0gNjAsIDExKSl9PC90ZXh0PjwvZz4nKQogICAgdG9wLCBib3R0b20gPSA4ICsgYm94X2ggLyAy
+LCA4ICsgNCAqIChib3hfaCArIGdhcCkgKyBib3hfaCAvIDIKICAgIHBhcnRzLmFwcGVuZChmJzxw
+YXRoIGNsYXNzPSJmbG93IGJhY2siIGQ9Ik0ge2JveF94ICsgYm94X3d9IHtib3R0b219IEgge3J4
+fSBWIHt0b3B9IEgge2JveF94ICsgYm94X3cgKyA5fSIvPicKICAgICAgICAgICAgICAgICBmJzxw
+b2x5Z29uIGNsYXNzPSJoZWFkIiBwb2ludHM9Intib3hfeCArIGJveF93ICsgOX0se3RvcCAtIDZ9
+IHtib3hfeCArIGJveF93ICsgOX0se3RvcCArIDZ9IHtib3hfeCArIGJveF93ICsgMX0se3RvcH0i
+Lz4nCiAgICAgICAgICAgICAgICAgZic8dGV4dCBjbGFzcz0iYSIgdHJhbnNmb3JtPSJ0cmFuc2xh
+dGUoe3J4ICsgMTR9LHsodG9wICsgYm90dG9tKSAvIDJ9KSByb3RhdGUoLTkwKSIgdGV4dC1hbmNo
+b3I9Im1pZGRsZSI+JwogICAgICAgICAgICAgICAgIGYndmVyZGljdHMgZ28gdG8gdGhlIHRlYW0g
+a25vd2xlZGdlIGJhc2U6IHRoZSBuZXh0IGV2ZW50PC90ZXh0PicpCiAgICBoZWlnaHQgPSA4ICsg
+NSAqIGJveF9oICsgNCAqIGdhcCArIDgKICAgIHJldHVybiAoZic8c3ZnIHZpZXdCb3g9IjAgMCAz
+NTAge2hlaWdodH0iIHdpZHRoPSIzNTAiIGhlaWdodD0ie2hlaWdodH0iIHJvbGU9ImltZyIgJwog
+ICAgICAgICAgICBmJ2FyaWEtbGFiZWw9InRoZSBsb29wOiBldmVudHMgd2FrZSB0aGUgcGxhbm5l
+ciwgdGhlIHBsYW5uZXIga2VlcHMgdGhlIHRvZG8gbGlzdCwgbWVtYmVycyB0YWtlIHRvZG9zLCAn
+CiAgICAgICAgICAgIGYnYSBwcm9ncmFtIGp1ZGdlcywgdmVyZGljdHMgYXJlIHRoZSBuZXh0IGV2
+ZW50cyI+eyIiLmpvaW4ocGFydHMpfTwvc3ZnPicpCgoKZGVmIHRpbWVsaW5lX3N2Zyh0MCwgdDEs
+IHdha2VzLCB0dXJucywgbWVtYmVycywgc3RvcF93aHksIHRvb2xzPSgpKToKICAgICIiIkEgY29s
+dW1uIGZvciB0aGUgcGxhbm5lciBhbmQgZm9yIGV2ZXJ5IG1lbWJlciwgdGltZSBydW5uaW5nIGRv
+d24gdGhlIHBhZ2UgKGEgcGhvbmUgaXMgdGFsbCwgbm90IHdpZGUpOiBldmVyeQogICAgdHVybiBp
+cyBhIGJhciBmcm9tIGl0cyBzdGFydCB0byBpdHMgZW5kLCBhbmQgZXZlcnkgcmVzdWx0IHRoYXQg
+d29rZSB0aGUgcGxhbm5lciBhIGRvdHRlZCBsaW5lIHRvIGl0cyBjb2x1bW4uIiIiCiAgICBsYW5l
+cyA9IFsicGxhbm5lciJdICsgbGlzdChtZW1iZXJzKQogICAgd2lkdGgsIGF4aXNfdywgdG9wID0g
+MzQwLCA0NCwgMzAKICAgIGNvbF93ID0gKHdpZHRoIC0gYXhpc193IC0gNCkgLyBsZW4obGFuZXMp
+CiAgICBwbG90X2ggPSBtYXgoMjQwLCBtaW4oMTYwMCwgMzAgKiAobGVuKHdha2VzKSArIGxlbih0
+dXJucykpKSkKICAgIGhlaWdodCA9IHRvcCArIHBsb3RfaCArIDIyCiAgICBzcGFuID0gbWF4KHQx
+IC0gdDAsIDFlLTYpCiAgICB5ID0gbGFtYmRhIHQ6IHRvcCArICh0IC0gdDApIC8gc3BhbiAqIHBs
+b3RfaCAgIyBub3FhOiBFNzMxCiAgICBjb2xfeCA9IHtuYW1lOiBheGlzX3cgKyBpICogY29sX3cg
+Zm9yIGksIG5hbWUgaW4gZW51bWVyYXRlKGxhbmVzKX0KICAgIHBhcnRzID0gW10KICAgIGZvciBu
+YW1lLCBjeCBpbiBjb2xfeC5pdGVtcygpOgogICAgICAgIHBhcnRzLmFwcGVuZChmJzx0ZXh0IHg9
+IntjeCArIGNvbF93IC8gMjouMWZ9IiB5PSJ7dG9wIC0gMTJ9IiB0ZXh0LWFuY2hvcj0ibWlkZGxl
+IiBjbGFzcz0ibG4iPntlc2MobmFtZSl9PC90ZXh0PicKICAgICAgICAgICAgICAgICAgICAgZic8
+bGluZSBjbGFzcz0ibGFuZSIgeDE9IntjeDouMWZ9IiB5MT0ie3RvcH0iIHgyPSJ7Y3g6LjFmfSIg
+eTI9Int0b3AgKyBwbG90X2h9Ii8+JykKICAgIHBhcnRzLmFwcGVuZChmJzxsaW5lIGNsYXNzPSJs
+YW5lIiB4MT0ie3dpZHRoIC0gNH0iIHkxPSJ7dG9wfSIgeDI9Int3aWR0aCAtIDR9IiB5Mj0ie3Rv
+cCArIHBsb3RfaH0iLz4nKQoKICAgIGRlZiBiYXIoa2luZCwga2V5LCBzLCBlLCBsYW5lLCB0aXAs
+IGxhYmVsKToKICAgICAgICB4MSwgeTEgPSBjb2xfeFtsYW5lXSArIDQsIHkocykKICAgICAgICBo
+ID0gbWF4KHkoZSkgLSB5MSwgMykKICAgICAgICB0ZXh0ID0gZic8dGV4dCB4PSJ7eDEgKyA0Oi4x
+Zn0iIHk9Int5MSArIDEyOi4xZn0iPntlc2MobGFiZWwpfTwvdGV4dD4nIGlmIGggPiAxNSBhbmQg
+bGFiZWwgZWxzZSAiIgogICAgICAgIHJldHVybiAoZic8ZyBjbGFzcz0iYmFyIHtraW5kfSIgZGF0
+YS1zPSJ7c30iIGRhdGEtZT0ie2V9IiBkYXRhLWk9IntrZXl9Ij48dGl0bGU+e2VzYyh0aXApfTwv
+dGl0bGU+JwogICAgICAgICAgICAgICAgZic8cmVjdCB4PSJ7eDE6LjFmfSIgeT0ie3kxOi4xZn0i
+IHdpZHRoPSJ7Y29sX3cgLSA4Oi4xZn0iIGhlaWdodD0ie2g6LjFmfSIgcng9IjMiLz57dGV4dH08
+L2c+JykKICAgIGZvciB3aSwgdyBpbiBlbnVtZXJhdGUod2FrZXMpOgogICAgICAgIHMsIGUgPSB3
+LmdldCgic3RhcnQiKSBvciAody5nZXQoInQiLCB0MCkgLSAody5nZXQoInNlY29uZHMiKSBvciAw
+KSksIHcuZ2V0KCJlbmQiKSBvciB3LmdldCgidCIsIHQwKQogICAgICAgIGtpbmQgPSAicGxhbiIg
+aWYgdy5nZXQoInN0YXRlIikgPT0gImlkbGUiIGFuZCBub3Qgdy5nZXQoInByb2JsZW1zIikgZWxz
+ZSAicGxhbmJhY2siCiAgICAgICAgcGFydHMuYXBwZW5kKGJhcihraW5kLCBmInd7d2l9Iiwgcywg
+ZSwgInBsYW5uZXIiLCBmIndha2Uge3cuZ2V0KCd3YWtlJyl9IGF0dGVtcHQge3cuZ2V0KCdhdHRl
+bXB0Jyl9OiB7dy5nZXQoJ3JlYXNvbicsICcnKX0iLAogICAgICAgICAgICAgICAgICAgICAgICAg
+ZiJ3e3cuZ2V0KCd3YWtlJyl9IikpCiAgICBmb3IgdGksIHQgaW4gZW51bWVyYXRlKHR1cm5zKToK
+ICAgICAgICBpZiB0LmdldCgibWVtYmVyIikgbm90IGluIGNvbF94OgogICAgICAgICAgICBjb250
+aW51ZQogICAgICAgIHMsIGUgPSB0LmdldCgic3RhcnQiKSBvciB0LmdldCgidCIsIHQwKSwgdC5n
+ZXQoImVuZCIpIG9yICh0LmdldCgidCIsIHQwKSArICh0LmdldCgic2Vjb25kcyIpIG9yIDApKQog
+ICAgICAgIHNjb3JlID0gZiIgc2NvcmUge3RbJ3Njb3JlJ106LjZnfSIgaWYgaXNpbnN0YW5jZSh0
+LmdldCgic2NvcmUiKSwgKGludCwgZmxvYXQpKSBlbHNlICIiCiAgICAgICAgcGFydHMuYXBwZW5k
+KGJhcihvdXRjb21lKHQpLCBmIm17dGl9IiwgcywgZSwgdFsibWVtYmVyIl0sCiAgICAgICAgICAg
+ICAgICAgICAgICAgICBmInt0WydtZW1iZXInXX0gdHVybiB7dC5nZXQoJ3R1cm4nKX06IHRvZG8g
+e3QuZ2V0KCd0b2RvJyl9OiB7dC5nZXQoJ3N0YXR1cycpIG9yIHQuZ2V0KCdzdGF0ZScpfXtzY29y
+ZX0iLAogICAgICAgICAgICAgICAgICAgICAgICAgKHQuZ2V0KCJ0b2RvIikgb3IgIiIpWzo1XSkp
+CiAgICAgICAgaWYgdC5nZXQoImVuZCIpOiAgIyB0aGlzIHJlc3VsdCBpcyBhbiBldmVudDogaXQg
+d29rZSB0aGUgcGxhbm5lcgogICAgICAgICAgICBleSA9IHkoZSkKICAgICAgICAgICAgcGFydHMu
+YXBwZW5kKGYnPGxpbmUgY2xhc3M9ImV2ZW50IHRpbWVkIiBkYXRhLXQ9IntlfSIgeDE9Intjb2xf
+eFt0WyJtZW1iZXIiXV0gKyA0Oi4xZn0iIHkxPSJ7ZXk6LjFmfSIgJwogICAgICAgICAgICAgICAg
+ICAgICAgICAgZid4Mj0ie2NvbF94WyJwbGFubmVyIl0gKyBjb2xfdyAtIDQ6LjFmfSIgeTI9Intl
+eTouMWZ9Ii8+JykKICAgIGZvciBjIGluIHRvb2xzOiAgIyBldmVyeSB0b29sIGNhbGwgYSBkb3Qg
+aW4gaXRzIG1lbWJlcidzIGJhcjogc2VhcmNoZXMsIHBhZ2VzIGZldGNoZWQsIGZpbGVzIHJlYWQK
+ICAgICAgICBpZiBjLmdldCgiYWdlbnQiKSBub3QgaW4gY29sX3ggb3Igbm90IGlzaW5zdGFuY2Uo
+Yy5nZXQoInQiKSwgKGludCwgZmxvYXQpKToKICAgICAgICAgICAgY29udGludWUKICAgICAgICBr
+aW5kID0gdG9vbF9jbGFzcyhjWyJ0b29sIl0pCiAgICAgICAgY3ggPSBjb2xfeFtjWyJhZ2VudCJd
+XSArIGNvbF93IC0geyJ3ZWIiOiAxMiwgImZldGNoIjogMTksICJyZWFkIjogMjZ9W2tpbmRdCiAg
+ICAgICAgcGFydHMuYXBwZW5kKGYnPGNpcmNsZSBjbGFzcz0idG9vbCB7a2luZH0gdGltZWQiIGRh
+dGEtdD0ie2NbInQiXX0iIGN4PSJ7Y3g6LjFmfSIgY3k9Int5KGNbInQiXSk6LjFmfSIgcj0iMi42
+Ij4nCiAgICAgICAgICAgICAgICAgICAgIGYnPHRpdGxlPntlc2MoY1sidG9vbCJdICsgIjogIiAr
+IGNbIndoYXQiXSl9PC90aXRsZT48L2NpcmNsZT4nKQogICAgZm9yIGZyYWMgaW4gKDAsIDAuMjUs
+IDAuNSwgMC43NSwgMSk6CiAgICAgICAgdHkgPSB5KHQwICsgZnJhYyAqIHNwYW4pCiAgICAgICAg
+cGFydHMuYXBwZW5kKGYnPGxpbmUgY2xhc3M9InRpY2siIHgxPSJ7YXhpc193IC0gNH0iIHkxPSJ7
+dHk6LjFmfSIgeDI9IntheGlzX3d9IiB5Mj0ie3R5Oi4xZn0iLz4nCiAgICAgICAgICAgICAgICAg
+ICAgIGYnPHRleHQgeD0ie2F4aXNfdyAtIDZ9IiB5PSJ7dHkgKyA0Oi4xZn0iIHRleHQtYW5jaG9y
+PSJlbmQiIGNsYXNzPSJheCI+e3NlY3MoZnJhYyAqIHNwYW4sIHNwYW4pfTwvdGV4dD4nKQogICAg
+aWYgc3RvcF93aHk6CiAgICAgICAgc3kgPSB5KHQxKQogICAgICAgIHBhcnRzLmFwcGVuZChmJzxs
+aW5lIGNsYXNzPSJzdG9wIiB4MT0ie2F4aXNfd30iIHkxPSJ7c3k6LjFmfSIgeDI9Int3aWR0aCAt
+IDR9IiB5Mj0ie3N5Oi4xZn0iLz4nCiAgICAgICAgICAgICAgICAgICAgIGYnPHRleHQgeD0ie3dp
+ZHRoIC0gNn0iIHk9IntzeSArIDE0Oi4xZn0iIHRleHQtYW5jaG9yPSJlbmQiIGNsYXNzPSJheCI+
+c3RvcDwvdGV4dD4nKQogICAgcGFydHMuYXBwZW5kKGYnPGxpbmUgaWQ9Im5vdyIgY2xhc3M9Im5v
+dyIgeDE9IntheGlzX3cgLSA0fSIgeTE9Int0b3B9IiB4Mj0ie3dpZHRoIC0gNH0iIHkyPSJ7dG9w
+fSIgc3R5bGU9Im9wYWNpdHk6MCIvPicpCiAgICByZXR1cm4gKGYnPHN2ZyBpZD0idGltZWxpbmUi
+IGRhdGEtdG9wPSJ7dG9wfSIgZGF0YS1oPSJ7cGxvdF9ofSIgdmlld0JveD0iMCAwIHt3aWR0aH0g
+e2hlaWdodH0iIHdpZHRoPSJ7d2lkdGh9IiAnCiAgICAgICAgICAgIGYnaGVpZ2h0PSJ7aGVpZ2h0
+fSIgcm9sZT0iaW1nIiBhcmlhLWxhYmVsPSJ0aW1lbGluZSBmcm9tIHRoZSBmaXJzdCBldmVudCB0
+byB0aGUgZW5kLCB0aW1lIHJ1bm5pbmcgZG93biI+eyIiLmpvaW4ocGFydHMpfTwvc3ZnPicpCgoK
+ZGVmIGxpbmVhZ2Vfc3ZnKG1hZGUpOgogICAgIiIiRXZlcnkgZW50cnkgdGhlIHRlYW0gbWFkZSwg
+YSByb3cgZWFjaCBpbiB0aW1lIG9yZGVyLCBpbiBhIGNvbHVtbiBieSBpdHMga2luZDsgYSBsaW5l
+IGZyb20gZWFjaCBlbnRyeSBpdCBidWlsdCBvbi4iIiIKICAgIGlmIG5vdCBtYWRlOgogICAgICAg
+IHJldHVybiAnPGRpdiBjbGFzcz0ibXV0ZWQiPm5vdGhpbmcgbWFkZSB5ZXQ8L2Rpdj4nCiAgICBy
+b3dzID0gc29ydGVkKG1hZGUsIGtleT1sYW1iZGEgZTogZS5nZXQoInQiKSBvciAwKVs6MTUwXQog
+ICAgb3JkZXIgPSBbXQogICAgZm9yIGUgaW4gcm93czoKICAgICAgICBpZiBlWyJraW5kIl0gbm90
+IGluIG9yZGVyOgogICAgICAgICAgICBvcmRlci5hcHBlbmQoZVsia2luZCJdKQogICAgaWYgbGVu
+KG9yZGVyKSA+IDY6CiAgICAgICAgb3JkZXIgPSBvcmRlcls6NV0gKyBbIm90aGVyIl0KICAgIGNv
+bCA9IGxhbWJkYSBlOiBvcmRlci5pbmRleChlWyJraW5kIl0pIGlmIGVbImtpbmQiXSBpbiBvcmRl
+ciBlbHNlIGxlbihvcmRlcikgLSAxICAjIG5vcWE6IEU3MzEKICAgIHdpZHRoLCBsZWZ0LCB0b3As
+IHJvd19oID0gMzQwLCA2LCAzNCwgMjYKICAgIGNvbF93ID0gKHdpZHRoIC0gMiAqIGxlZnQpIC8g
+bGVuKG9yZGVyKQogICAgaGVpZ2h0ID0gdG9wICsgbGVuKHJvd3MpICogcm93X2ggKyA4CiAgICBw
+b3MsIHBhcnRzID0ge30sIFtdCiAgICBjb3VudHMgPSB7azogc3VtKDEgZm9yIGUgaW4gcm93cyBp
+ZiAoZVsia2luZCJdIGlmIGVbImtpbmQiXSBpbiBvcmRlciBlbHNlICJvdGhlciIpID09IGspIGZv
+ciBrIGluIG9yZGVyfQogICAgZm9yIGksIGsgaW4gZW51bWVyYXRlKG9yZGVyKToKICAgICAgICBw
+YXJ0cy5hcHBlbmQoZic8dGV4dCB4PSJ7bGVmdCArIGkgKiBjb2xfdyArIGNvbF93IC8gMjouMWZ9
+IiB5PSIxNiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgY2xhc3M9ImtoIj57ZXNjKGsgb3IgIj8iKX08
+L3RleHQ+JwogICAgICAgICAgICAgICAgICAgICBmJzx0ZXh0IHg9IntsZWZ0ICsgaSAqIGNvbF93
+ICsgY29sX3cgLyAyOi4xZn0iIHk9IjI4IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBjbGFzcz0iYXgi
+Pntjb3VudHNba119PC90ZXh0PicpCiAgICBmb3IgaSwgZSBpbiBlbnVtZXJhdGUocm93cyk6CiAg
+ICAgICAgcG9zW2VbImlkIl1dID0gKGxlZnQgKyBjb2woZSkgKiBjb2xfdyArIGNvbF93IC8gMiwg
+dG9wICsgaSAqIHJvd19oICsgcm93X2ggLyAyKQogICAgZm9yIGUgaW4gcm93czoKICAgICAgICBm
+b3IgcCBpbiBlWyJwYXJlbnRzIl06CiAgICAgICAgICAgIGlmIHAgaW4gcG9zOgogICAgICAgICAg
+ICAgICAgKHgxLCB5MSksICh4MiwgeTIpID0gcG9zW3BdLCBwb3NbZVsiaWQiXV0KICAgICAgICAg
+ICAgICAgIHBhcnRzLmFwcGVuZChmJzxwYXRoIGNsYXNzPSJsaW4gdGltZWQiIGRhdGEtdD0ie2Uu
+Z2V0KCJ0Iikgb3IgMH0iIGQ9Ik0ge3gxOi4xZn0ge3kxICsgOTouMWZ9IEMge3gxOi4xZn0ge3ky
+IC0gMTI6LjFmfSwgJwogICAgICAgICAgICAgICAgICAgICAgICAgICAgIGYne3gyOi4xZn0ge3kx
+ICsgMTI6LjFmfSwge3gyOi4xZn0ge3kyIC0gOTouMWZ9Ii8+JykKICAgIGZvciBlIGluIHJvd3M6
+CiAgICAgICAgeCwgeSA9IHBvc1tlWyJpZCJdXQogICAgICAgIHcgPSBtaW4oY29sX3cgLSA2LCA2
+NCkKICAgICAgICBzdGF0ZSA9ICJwYXNzIiBpZiBlWyJzdGF0dXMiXSA9PSAidmFsaWQiIGVsc2Ug
+KCJmYWlsIiBpZiBlWyJzdGF0dXMiXSBpbiAoImludmFsaWQiLCAiaW5mcmFfZXJyb3IiKSBlbHNl
+ICJ3YWl0IikKICAgICAgICBzY29yZSA9IGYie2VbJ3Njb3JlJ106LjNnfSIgaWYgaXNpbnN0YW5j
+ZShlLmdldCgic2NvcmUiKSwgKGludCwgZmxvYXQpKSBhbmQgZVsic3RhdHVzIl0gPT0gInZhbGlk
+IiBlbHNlICgKICAgICAgICAgICAgIngiIGlmIHN0YXRlID09ICJmYWlsIiBlbHNlICLigKYiKQog
+ICAgICAgIHRpcCA9IGYie2VbJ2lkJ119IGJ5IHtlWydtZW1iZXInXX0gKHtlWydraW5kJ119KTog
+e2VbJ3N0YXR1cyddfSB7c2NvcmV9OiB7ZVsnc3VtbWFyeSddfSIgKyAoCiAgICAgICAgICAgIGYi
+IHwgYnVpbGRzIG9uIHsnLCAnLmpvaW4oZVsncGFyZW50cyddKX0iIGlmIGVbInBhcmVudHMiXSBl
+bHNlICIiKSArIChmIiB8IHtlWydkZXRhaWwnXX0iIGlmIGVbImRldGFpbCJdIGVsc2UgIiIpCiAg
+ICAgICAgcGFydHMuYXBwZW5kKGYnPGcgY2xhc3M9ImtiIHtzdGF0ZX0gdGltZWQiIGRhdGEtdD0i
+e2UuZ2V0KCJ0Iikgb3IgMH0iPjx0aXRsZT57ZXNjKHRpcCl9PC90aXRsZT4nCiAgICAgICAgICAg
+ICAgICAgICAgIGYnPHJlY3QgeD0ie3ggLSB3IC8gMjouMWZ9IiB5PSJ7eSAtIDk6LjFmfSIgd2lk
+dGg9Int3Oi4xZn0iIGhlaWdodD0iMTgiIHJ4PSI1Ii8+JwogICAgICAgICAgICAgICAgICAgICBm
+Jzx0ZXh0IHg9Int4Oi4xZn0iIHk9Int5ICsgMy41Oi4xZn0iIHRleHQtYW5jaG9yPSJtaWRkbGUi
+Pntlc2MoKGVbIm1lbWJlciJdIG9yICI/IilbOjRdKX0ge2VzYyhzY29yZSl9PC90ZXh0PjwvZz4n
+KQogICAgcmV0dXJuIChmJzxzdmcgdmlld0JveD0iMCAwIHt3aWR0aH0ge2hlaWdodH0iIHdpZHRo
+PSJ7d2lkdGh9IiBoZWlnaHQ9IntoZWlnaHR9IiByb2xlPSJpbWciICcKICAgICAgICAgICAgZidh
+cmlhLWxhYmVsPSJ3aGF0IHRoZSB0ZWFtIG1hZGUsIGVudHJ5IGJ5IGVudHJ5LCBhbmQgd2hhdCBi
+dWlsdCBvbiB3aGF0Ij57IiIuam9pbihwYXJ0cyl9PC9zdmc+JykKCgpBUlQgPSByZS5jb21waWxl
+KHIiYXJ0aWZhY3RzLyhrW1x3LV0rPylcLnR4dCIpICAjIGJvYXJkL2FydGlmYWN0cy88ZW50cnkg
+aWQ+LnR4dCAob25seSBpZHMgdGhlIGtub3dsZWRnZSBiYXNlIGhhcyBjb3VudCkKCgpkZWYgYXJ0
+aWZhY3RfcmVhZHModG9vbHMpOgogICAgIiIiV2hpY2ggYWdlbnQgb3BlbmVkIHdoaWNoIGVudHJ5
+J3MgZmlsZSAoYm9hcmQvYXJ0aWZhY3RzLzxpZD4udHh0KSBhbmQgd2hlbiwgZnJvbSB0aGUgbWVt
+YmVycycgdG9vbCBsb2dzLiIiIgogICAgb3V0ID0gW10KICAgIGZvciBjIGluIHRvb2xzOgogICAg
+ICAgIG0gPSBBUlQuc2VhcmNoKGMuZ2V0KCJ3aGF0Iikgb3IgIiIpIGlmIHRvb2xfY2xhc3MoYy5n
+ZXQoInRvb2wiKSkgPT0gInJlYWQiIGVsc2UgTm9uZQogICAgICAgIGlmIG0gYW5kIGMuZ2V0KCJh
+Z2VudCIpOgogICAgICAgICAgICBvdXQuYXBwZW5kKChjWyJhZ2VudCJdLCBtLmdyb3VwKDEpLCBj
+LmdldCgidCIpKSkKICAgIHJldHVybiBvdXQKCgpkZWYgZGl2aXNpb25fc3ZnKHQwLCB0MSwgdG9k
+b3MsIG1hZGUsIG1lbWJlcnMpOgogICAgIiIiV2hvIGRpZCB3aGljaCB0b2RvOiBhIGNvbHVtbiBm
+b3IgZWFjaCBtZW1iZXIgKGFuZCBvbmUgZm9yIHRvZG9zIG5vYm9keSB0b29rKSwgZWFjaCB0b2Rv
+IGEgYm94IHdoZXJlIGFuZCB3aGVuIGl0CiAgICB3YXMgdGFrZW4sIGNvbG91cmVkIGJ5IGhvdyBp
+dCBlbmRlZCBhbmQgbmFtZWQgYnkgd2hhdCBpdCBtYWRlOyBhIHNvbGlkIGFycm93IGZyb20gYSB0
+b2RvIGl0IGhhZCB0byB3YWl0IGZvcgogICAgKCJhZnRlciIpLCBhIGRhc2hlZCBsaW5lIGZyb20g
+dGhlIHRvZG8gdGhhdCBtYWRlIGFuIGVudHJ5IGl0IHdhcyB0b2xkIHRvIGJ1aWxkIG9uLiIiIgog
+ICAgaWYgbm90IHRvZG9zOgogICAgICAgIHJldHVybiAnPGRpdiBjbGFzcz0ibXV0ZWQiPm5vIHRv
+ZG9zIHlldDwvZGl2PicKICAgIGxvb3NlID0gYW55KG5vdCB0LmdldCgibWVtYmVyIikgYW5kIHQu
+Z2V0KCJmb3IiKSBub3QgaW4gbWVtYmVycyBmb3IgdCBpbiB0b2RvcykKICAgIGxhbmVzID0gbGlz
+dChtZW1iZXJzKSArIChbImFueW9uZSJdIGlmIGxvb3NlIGVsc2UgW10pCiAgICB3aWR0aCwgdG9w
+LCBib3hfaCA9IDM0MCwgMzAsIDI4CiAgICBjb2xfdyA9ICh3aWR0aCAtIDgpIC8gbGVuKGxhbmVz
+KQogICAgc3BhbiA9IG1heCh0MSAtIHQwLCAxZS02KQogICAgcGxvdF9oID0gbWF4KDI2MCwgbWlu
+KDE0MDAsIDM0ICogbGVuKHRvZG9zKSkpCiAgICBraW5kX29mID0ge2VbImlkIl06IGVbImtpbmQi
+XSBmb3IgZSBpbiBtYWRlfQogICAgYnlfZW50cnkgPSB7dC5nZXQoImVudHJ5Iik6IHQgZm9yIHQg
+aW4gdG9kb3MgaWYgdC5nZXQoImVudHJ5Iil9CiAgICBwb3MsIHBhcnRzLCBib3R0b20gPSB7fSwg
+W10sIHt9CiAgICBmb3IgbmFtZSBpbiBsYW5lczoKICAgICAgICB4ID0gNCArIGxhbmVzLmluZGV4
+KG5hbWUpICogY29sX3cKICAgICAgICBwYXJ0cy5hcHBlbmQoZic8dGV4dCB4PSJ7eCArIGNvbF93
+IC8gMjouMWZ9IiB5PSJ7dG9wIC0gMTJ9IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBjbGFzcz0ibG4i
+Pntlc2MoZml0KG5hbWUsIGNvbF93IC0gNCwgMTIpKX08L3RleHQ+JwogICAgICAgICAgICAgICAg
+ICAgICBmJzxsaW5lIGNsYXNzPSJsYW5lIiB4MT0ie3g6LjFmfSIgeTE9Int0b3B9IiB4Mj0ie3g6
+LjFmfSIgeTI9Int0b3AgKyBwbG90X2h9Ii8+JykKICAgIGZvciB0IGluIHNvcnRlZCh0b2Rvcywg
+a2V5PWxhbWJkYSB0OiB0LmdldCgidGFrZW4iKSBvciB0LmdldCgiYWRkZWQiKSBvciAwKToKICAg
+ICAgICBsYW5lID0gdC5nZXQoIm1lbWJlciIpIGlmIHQuZ2V0KCJtZW1iZXIiKSBpbiBtZW1iZXJz
+IGVsc2UgKHQuZ2V0KCJmb3IiKSBpZiB0LmdldCgiZm9yIikgaW4gbWVtYmVycyBlbHNlICJhbnlv
+bmUiKQogICAgICAgIHggPSA0ICsgbGFuZXMuaW5kZXgobGFuZSkgKiBjb2xfdyArIDMKICAgICAg
+ICB3aGVuID0gdC5nZXQoInRha2VuIikgb3IgdC5nZXQoImFkZGVkIikgb3IgdDAKICAgICAgICB5
+ID0gbWF4KHRvcCArIDQgKyAod2hlbiAtIHQwKSAvIHNwYW4gKiAocGxvdF9oIC0gYm94X2ggLSA4
+KSwgYm90dG9tLmdldChsYW5lLCAwKSArIDQpCiAgICAgICAgYm90dG9tW2xhbmVdID0geSArIGJv
+eF9oCiAgICAgICAgcG9zW3RbImlkIl1dID0gKHgsIHkpCiAgICBoZWlnaHQgPSBtYXgoYm90dG9t
+LnZhbHVlcygpKSArIDEyCiAgICBkZWYgbGluayhjbHMsIGEsIGIsIHdoZW4pOgogICAgICAgICIi
+IkZyb20gdGhlIGJvdHRvbSBvZiBhJ3MgYm94IHRvIHRoZSB0b3Agb2YgYidzOyB3aGVuIGIgZG9l
+cyBub3Qgc3RhcnQgYmVsb3cgYSdzIGJvdHRvbSAoYm90aCB3ZXJlIGFkZGVkIGF0CiAgICAgICAg
+b25jZSksIGEgVSB1bmRlciBib3RoIGJveGVzLCBmcm9tIGJvdHRvbSB0byBib3R0b20sIHNvIHRo
+ZSBsaW5lIGlzIG5vdCBoaWRkZW4gYmVoaW5kIHRoZW0uIiIiCiAgICAgICAgKHgxLCB5MSksICh4
+MiwgeTIpID0gcG9zW2FdLCBwb3NbYl0KICAgICAgICB4MSwgeDIgPSB4MSArIGNvbF93IC8gMiAt
+IDMsIHgyICsgY29sX3cgLyAyIC0gMwogICAgICAgIGlmIHkyID49IHkxICsgYm94X2ggKyA2Ogog
+ICAgICAgICAgICBkID0gZiJNIHt4MTouMWZ9IHt5MSArIGJveF9oOi4xZn0gQyB7eDE6LjFmfSB7
+eTIgLSAxMDouMWZ9LCB7eDI6LjFmfSB7eTEgKyBib3hfaCArIDEwOi4xZn0sIHt4MjouMWZ9IHt5
+MiAtIDI6LjFmfSIKICAgICAgICBlbHNlOgogICAgICAgICAgICBsb3cgPSBtYXgoeTEsIHkyKSAr
+IGJveF9oICsgMTYKICAgICAgICAgICAgZCA9IGYiTSB7eDE6LjFmfSB7eTEgKyBib3hfaDouMWZ9
+IEMge3gxOi4xZn0ge2xvdzouMWZ9LCB7eDI6LjFmfSB7bG93Oi4xZn0sIHt4MjouMWZ9IHt5MiAr
+IGJveF9oOi4xZn0iCiAgICAgICAgcmV0dXJuIGYnPHBhdGggY2xhc3M9IntjbHN9IHRpbWVkIiBk
+YXRhLXQ9Int3aGVufSIgZD0ie2R9Ii8+JwogICAgZm9yIHQgaW4gdG9kb3M6ICAjIGxpbmVzIGZp
+cnN0LCBib3hlcyBvbiB0b3AKICAgICAgICBmb3IgYSBpbiB0LmdldCgiYWZ0ZXIiKSBvciBbXToK
+ICAgICAgICAgICAgaWYgYSBpbiBwb3MgYW5kIHRbImlkIl0gaW4gcG9zOgogICAgICAgICAgICAg
+ICAgcGFydHMuYXBwZW5kKGxpbmsoImRlcCIsIGEsIHRbImlkIl0sIHQuZ2V0KCJhZGRlZCIpIG9y
+IDApKQogICAgICAgIGZvciBwIGluIHQuZ2V0KCJwYXJlbnRzIikgb3IgW106CiAgICAgICAgICAg
+IHNyYyA9IGJ5X2VudHJ5LmdldChwKQogICAgICAgICAgICBpZiBzcmMgYW5kIHNyY1siaWQiXSBp
+biBwb3MgYW5kIHRbImlkIl0gaW4gcG9zOgogICAgICAgICAgICAgICAgcGFydHMuYXBwZW5kKGxp
+bmsoInVzZXMiLCBzcmNbImlkIl0sIHRbImlkIl0sIHQuZ2V0KCJhZGRlZCIpIG9yIDApKQogICAg
+Zm9yIHQgaW4gdG9kb3M6CiAgICAgICAgeCwgeSA9IHBvc1t0WyJpZCJdXQogICAgICAgIHN0YXRl
+ID0gdFsic3RhdGUiXQogICAgICAgIG1hZGVfa2luZCA9IGtpbmRfb2YuZ2V0KHQuZ2V0KCJlbnRy
+eSIpKQogICAgICAgIGZpcnN0ID0geyJkb25lIjogbWFkZV9raW5kIG9yICJkb25lIiwgImZhaWxl
+ZCI6ICJmYWlsZWQiLCAiZHJvcHBlZCI6ICJkcm9wcGVkIiwgIm9wZW4iOiAid2FpdGluZyIsICJ0
+YWtlbiI6ICJ3b3JraW5nIn0uZ2V0KHN0YXRlLCBzdGF0ZSkKICAgICAgICBzZWNvbmQgPSAoZiJ7
+dFsnc2NvcmUnXTouM2d9IiBpZiBpc2luc3RhbmNlKHQuZ2V0KCJzY29yZSIpLCAoaW50LCBmbG9h
+dCkpIGFuZCBzdGF0ZSA9PSAiZG9uZSIgZWxzZSB0WyJpZCJdWzE6Nl0pCiAgICAgICAgaWYgdC5n
+ZXQoInJldmlldyIpOgogICAgICAgICAgICBzZWNvbmQgPSAicmV2aWV3ICIgKyBzZWNvbmQKICAg
+ICAgICBjbHMgPSB7ImRvbmUiOiAicGFzcyIsICJmYWlsZWQiOiAiZmFpbCIsICJkcm9wcGVkIjog
+ImRyb3AiLCAib3BlbiI6ICJ3YWl0IiwgInRha2VuIjogIndvcmsifS5nZXQoc3RhdGUsICJ3YWl0
+IikKICAgICAgICB0aXAgPSAoZiJ7dFsnaWQnXX0gKHtzdGF0ZX0pIGZvciB7dC5nZXQoJ2Zvcicp
+IG9yICdhbnlvbmUnfSIgKyAoZiIsIHRha2VuIGJ5IHt0WydtZW1iZXInXX0iIGlmIHQuZ2V0KCJt
+ZW1iZXIiKSBlbHNlICIiKQogICAgICAgICAgICAgICArIGYiOiB7dFsndGV4dCddfSIgKyAoZiIg
+fCBhZnRlciB7JywgJy5qb2luKHRbJ2FmdGVyJ10pfSIgaWYgdC5nZXQoImFmdGVyIikgZWxzZSAi
+IikKICAgICAgICAgICAgICAgKyAoZiIgfCBidWlsZHMgb24geycsICcuam9pbih0WydwYXJlbnRz
+J10pfSIgaWYgdC5nZXQoInBhcmVudHMiKSBlbHNlICIiKSkKICAgICAgICB3ID0gY29sX3cgLSA2
+CiAgICAgICAgcGFydHMuYXBwZW5kKGYnPGcgY2xhc3M9InRkIHtjbHN9IHRpbWVkIiBkYXRhLXQ9
+Int0LmdldCgidGFrZW4iKSBvciB0LmdldCgiYWRkZWQiKSBvciAwfSI+PHRpdGxlPntlc2ModGlw
+KX08L3RpdGxlPicKICAgICAgICAgICAgICAgICAgICAgZic8cmVjdCBjbGFzcz0idW5kZXIiIHg9
+Int4Oi4xZn0iIHk9Int5Oi4xZn0iIHdpZHRoPSJ7dzouMWZ9IiBoZWlnaHQ9Intib3hfaH0iIHJ4
+PSI1Ii8+JwogICAgICAgICAgICAgICAgICAgICBmJzxyZWN0IHg9Int4Oi4xZn0iIHk9Int5Oi4x
+Zn0iIHdpZHRoPSJ7dzouMWZ9IiBoZWlnaHQ9Intib3hfaH0iIHJ4PSI1Ii8+JwogICAgICAgICAg
+ICAgICAgICAgICBmJzx0ZXh0IHg9Int4ICsgdyAvIDI6LjFmfSIgeT0ie3kgKyAxMjouMWZ9IiB0
+ZXh0LWFuY2hvcj0ibWlkZGxlIj57ZXNjKGZpdChmaXJzdCwgdyAtIDQsIDkuNSkpfTwvdGV4dD4n
+CiAgICAgICAgICAgICAgICAgICAgIGYnPHRleHQgeD0ie3ggKyB3IC8gMjouMWZ9IiB5PSJ7eSAr
+IDIzOi4xZn0iIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJheCI+e2VzYyhmaXQoc2Vjb25k
+LCB3IC0gNCwgOSkpfTwvdGV4dD48L2c+JykKICAgIHJldHVybiAoZic8c3ZnIHZpZXdCb3g9IjAg
+MCB7d2lkdGh9IHtoZWlnaHQ6LjBmfSIgd2lkdGg9Int3aWR0aH0iIGhlaWdodD0ie2hlaWdodDou
+MGZ9IiByb2xlPSJpbWciIGFyaWEtbGFiZWw9IndobyBkaWQgd2hpY2ggdG9kbywgJwogICAgICAg
+ICAgICBmJ3doZW4sIGFuZCB3aGljaCB0b2RvcyB3YWl0ZWQgZm9yIG9yIGJ1aWx0IG9uIG90aGVy
+cyI+eyIiLmpvaW4ocGFydHMpfTwvc3ZnPicpCgoKZGVmIGtub3dsZWRnZV9zdmcobWFkZSwgcmVh
+ZHMsIG1lbWJlcnMsIHRfc3RhcnQpOgogICAgIiIiVGhlIHRlYW0ga25vd2xlZGdlIGJhc2UgYXMg
+YSBmbG93OiB3aG8gd3JvdGUgZWFjaCBlbnRyeSAobGVmdCksIHRoZSBlbnRyaWVzIGJ5IGtpbmQg
+d2l0aCBza2lsbHMgZmlyc3QgKG1pZGRsZSksCiAgICBhbmQgd2hvIHJlYWQgdGhlIGVudHJ5J3Mg
+ZmlsZSBvciBidWlsdCBvbiBpdCAocmlnaHQpLiBFbnRyaWVzIGZyb20gYmVmb3JlIHRoaXMgcnVu
+IChhIHNlZWRlZCBrbm93bGVkZ2UgYmFzZSkgaGF2ZQogICAgYSBkYXNoZWQgZWRnZS4iIiIKICAg
+IGlmIG5vdCBtYWRlOgogICAgICAgIHJldHVybiAnPGRpdiBjbGFzcz0ibXV0ZWQiPm5vdGhpbmcg
+aW4gdGhlIGtub3dsZWRnZSBiYXNlIHlldDwvZGl2PicKICAgIGtpbmRzID0gc29ydGVkKHtlWyJr
+aW5kIl0gb3IgIj8iIGZvciBlIGluIG1hZGV9LCBrZXk9bGFtYmRhIGs6IChrICE9ICJza2lsbCIs
+IGspKQogICAgcm93cyA9IFtdCiAgICBmb3IgayBpbiBraW5kczoKICAgICAgICByb3dzLmFwcGVu
+ZCgoImtpbmQiLCBrKSkKICAgICAgICByb3dzICs9IFsoImVudHJ5IiwgZSkgZm9yIGUgaW4gc29y
+dGVkKChlIGZvciBlIGluIG1hZGUgaWYgKGVbImtpbmQiXSBvciAiPyIpID09IGspLCBrZXk9bGFt
+YmRhIGU6IGUuZ2V0KCJ0Iikgb3IgMCldCiAgICB3aWR0aCwgcm93X2gsIHRvcCA9IDM0MCwgMTks
+IDIyCiAgICBsZWZ0X3csIHJpZ2h0X3ggPSA2MiwgMjc4CiAgICBtaWRfeCwgbWlkX3cgPSA5Miwg
+MTYyCiAgICBieV9pZCA9IHtlWyJpZCJdOiBlIGZvciBlIGluIG1hZGV9CiAgICB1c2VkID0ge30K
+ICAgIGZvciBlIGluIG1hZGU6CiAgICAgICAgZm9yIHAgaW4gZVsicGFyZW50cyJdOgogICAgICAg
+ICAgICBpZiBwIGluIGJ5X2lkIGFuZCBlWyJtZW1iZXIiXToKICAgICAgICAgICAgICAgIHVzZWQu
+c2V0ZGVmYXVsdChwLCB7fSkuc2V0ZGVmYXVsdChlWyJtZW1iZXIiXSwgc2V0KCkpLmFkZCgiYnVp
+bHQgb24iKQogICAgZm9yIGFnZW50LCBlaWQsIF8gaW4gcmVhZHM6CiAgICAgICAgaWYgZWlkIGlu
+IGJ5X2lkOgogICAgICAgICAgICB1c2VkLnNldGRlZmF1bHQoZWlkLCB7fSkuc2V0ZGVmYXVsdChh
+Z2VudCwgc2V0KCkpLmFkZCgicmVhZCIpCiAgICBhZ2VudHMgPSBsaXN0KG1lbWJlcnMpICsgc29y
+dGVkKHtlWyJtZW1iZXIiXSBmb3IgZSBpbiBtYWRlIGlmIGVbIm1lbWJlciJdIGFuZCBlWyJtZW1i
+ZXIiXSBub3QgaW4gbWVtYmVyc30pCiAgICBoZWlnaHQgPSB0b3AgKyBsZW4ocm93cykgKiByb3df
+aCArIDEwCiAgICBhX2dhcCA9IG1heChyb3dfaCwgKGhlaWdodCAtIHRvcCAtIDEwKSAvIG1heCgx
+LCBsZW4oYWdlbnRzKSkpCiAgICBhX3kgPSB7YTogdG9wICsgaSAqIGFfZ2FwICsgYV9nYXAgLyAy
+IGZvciBpLCBhIGluIGVudW1lcmF0ZShhZ2VudHMpfQogICAgcGFydHMgPSBbZic8dGV4dCB4PSJ7
+bGVmdF93IC8gMjouMGZ9IiB5PSIxMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgY2xhc3M9ImF4Ij53
+cm90ZTwvdGV4dD4nCiAgICAgICAgICAgICBmJzx0ZXh0IHg9InttaWRfeCArIG1pZF93IC8gMjou
+MGZ9IiB5PSIxMiIgdGV4dC1hbmNob3I9Im1pZGRsZSIgY2xhc3M9ImF4Ij5lbnRyaWVzPC90ZXh0
+PicKICAgICAgICAgICAgIGYnPHRleHQgeD0ie3JpZ2h0X3ggKyAod2lkdGggLSByaWdodF94KSAv
+IDI6LjBmfSIgeT0iMTIiIHRleHQtYW5jaG9yPSJtaWRkbGUiIGNsYXNzPSJheCI+dXNlZCBieTwv
+dGV4dD4nXQogICAgZV95ID0ge30KICAgIGZvciBpLCAod2hhdCwgaXRlbSkgaW4gZW51bWVyYXRl
+KHJvd3MpOgogICAgICAgIHkgPSB0b3AgKyBpICogcm93X2ggKyByb3dfaCAvIDIKICAgICAgICBp
+ZiB3aGF0ID09ICJraW5kIjoKICAgICAgICAgICAgbiA9IHN1bSgxIGZvciBlIGluIG1hZGUgaWYg
+KGVbImtpbmQiXSBvciAiPyIpID09IGl0ZW0pCiAgICAgICAgICAgIHBhcnRzLmFwcGVuZChmJzx0
+ZXh0IHg9InttaWRfeH0iIHk9Int5ICsgNDouMWZ9IiBjbGFzcz0ia2giPntlc2MoaXRlbSl9IMK3
+IHtufTwvdGV4dD4nKQogICAgICAgIGVsc2U6CiAgICAgICAgICAgIGVfeVtpdGVtWyJpZCJdXSA9
+IHkKICAgIGZvciBlIGluIG1hZGU6ICAjIHdyb3RlOiB3cml0ZXIgLT4gZW50cnk7IHJlYWQgb3Ig
+YnVpbHQgb246IGVudHJ5IC0+IGFnZW50CiAgICAgICAgeSA9IGVfeVtlWyJpZCJdXQogICAgICAg
+IGlmIGVbIm1lbWJlciJdIGluIGFfeToKICAgICAgICAgICAgYXkgPSBhX3lbZVsibWVtYmVyIl1d
+CiAgICAgICAgICAgIHBhcnRzLmFwcGVuZChmJzxwYXRoIGNsYXNzPSJ3cm90ZXsiIG9sZCIgaWYg
+KGUuZ2V0KCJ0Iikgb3IgMCkgPCB0X3N0YXJ0IGVsc2UgIiJ9IHRpbWVkIiBkYXRhLXQ9IntlLmdl
+dCgidCIpIG9yIDB9IiAnCiAgICAgICAgICAgICAgICAgICAgICAgICBmJ2Q9Ik0ge2xlZnRfdzou
+MWZ9IHtheTouMWZ9IEMge2xlZnRfdyArIDIwOi4xZn0ge2F5Oi4xZn0sIHttaWRfeCAtIDIwOi4x
+Zn0ge3k6LjFmfSwge21pZF94Oi4xZn0ge3k6LjFmfSIvPicpCiAgICAgICAgZm9yIGFnZW50LCBo
+b3cgaW4gc29ydGVkKHVzZWQuZ2V0KGVbImlkIl0sIHt9KS5pdGVtcygpKToKICAgICAgICAgICAg
+aWYgYWdlbnQgaW4gYV95OgogICAgICAgICAgICAgICAgYXkgPSBhX3lbYWdlbnRdCiAgICAgICAg
+ICAgICAgICBwYXJ0cy5hcHBlbmQoZic8cGF0aCBjbGFzcz0ieyJidWlsdCIgaWYgImJ1aWx0IG9u
+IiBpbiBob3cgZWxzZSAicmVhZCJ9IiBkPSJNIHttaWRfeCArIG1pZF93Oi4xZn0ge3k6LjFmfSAn
+CiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZidDIHttaWRfeCArIG1pZF93ICsgMTg6LjFm
+fSB7eTouMWZ9LCB7cmlnaHRfeCAtIDE4Oi4xZn0ge2F5Oi4xZn0sIHtyaWdodF94Oi4xZn0ge2F5
+Oi4xZn0iPjx0aXRsZT4nCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgZid7ZXNjKGFnZW50
+ICsgIiAiICsgIiBhbmQgIi5qb2luKHNvcnRlZChob3cpKSArICIgIiArIGVbImlkIl0pfTwvdGl0
+bGU+PC9wYXRoPicpCiAgICBmb3IgZSBpbiBtYWRlOgogICAgICAgIHkgPSBlX3lbZVsiaWQiXV0K
+ICAgICAgICBvbGQgPSAoZS5nZXQoInQiKSBvciAwKSA8IHRfc3RhcnQKICAgICAgICBzdGF0ZSA9
+ICJwYXNzIiBpZiBlWyJzdGF0dXMiXSA9PSAidmFsaWQiIGVsc2UgKCJmYWlsIiBpZiBlWyJzdGF0
+dXMiXSBpbiAoImludmFsaWQiLCAiaW5mcmFfZXJyb3IiKSBlbHNlICJ3YWl0IikKICAgICAgICBz
+Y29yZSA9IGYiIHtlWydzY29yZSddOi4zZ30iIGlmIGlzaW5zdGFuY2UoZS5nZXQoInNjb3JlIiks
+IChpbnQsIGZsb2F0KSkgYW5kIGVbInN0YXR1cyJdID09ICJ2YWxpZCIgZWxzZSAiIgogICAgICAg
+IHRpcCA9IChmIntlWydpZCddfSB7ZVsna2luZCddfSBieSB7ZVsnbWVtYmVyJ119eycgKGZyb20g
+YmVmb3JlIHRoaXMgcnVuKScgaWYgb2xkIGVsc2UgJyd9OiB7ZVsnc3VtbWFyeSddfSIpCiAgICAg
+ICAgbGFiZWwgPSAoZS5nZXQoIm5hbWUiKSBvciBlWyJpZCJdWzo3XSkgaWYgKGVbImtpbmQiXSBv
+ciAiIikgPT0gInNraWxsIiBlbHNlIGYie2VbJ21lbWJlciddIG9yICc/J30iCiAgICAgICAgcGFy
+dHMuYXBwZW5kKGYnPGcgY2xhc3M9ImtiIHtzdGF0ZX17IiBvbGQiIGlmIG9sZCBlbHNlICIifSI+
+PHRpdGxlPntlc2ModGlwKX08L3RpdGxlPicKICAgICAgICAgICAgICAgICAgICAgZic8cmVjdCBj
+bGFzcz0idW5kZXIiIHg9InttaWRfeH0iIHk9Int5IC0gNy41Oi4xZn0iIHdpZHRoPSJ7bWlkX3d9
+IiBoZWlnaHQ9IjE1IiByeD0iNCIvPicKICAgICAgICAgICAgICAgICAgICAgZic8cmVjdCB4PSJ7
+bWlkX3h9IiB5PSJ7eSAtIDcuNTouMWZ9IiB3aWR0aD0ie21pZF93fSIgaGVpZ2h0PSIxNSIgcng9
+IjQiLz4nCiAgICAgICAgICAgICAgICAgICAgIGYnPHRleHQgeD0ie21pZF94ICsgNn0iIHk9Int5
+ICsgMy41Oi4xZn0iPntlc2MoZml0KGxhYmVsICsgc2NvcmUsIG1pZF93IC0gMTAsIDkuNSkpfTwv
+dGV4dD48L2c+JykKICAgIGZvciBhLCB5IGluIGFfeS5pdGVtcygpOgogICAgICAgIHBhcnRzLmFw
+cGVuZChmJzx0ZXh0IHg9IntsZWZ0X3cgLSA0fSIgeT0ie3kgKyA0Oi4xZn0iIHRleHQtYW5jaG9y
+PSJlbmQiIGNsYXNzPSJsbiI+e2VzYyhmaXQoYSwgbGVmdF93IC0gNiwgMTIpKX08L3RleHQ+Jwog
+ICAgICAgICAgICAgICAgICAgICBmJzx0ZXh0IHg9IntyaWdodF94ICsgNH0iIHk9Int5ICsgNDou
+MWZ9IiBjbGFzcz0ibG4iPntlc2MoZml0KGEsIHdpZHRoIC0gcmlnaHRfeCAtIDYsIDEyKSl9PC90
+ZXh0PicpCiAgICByZXR1cm4gKGYnPHN2ZyB2aWV3Qm94PSIwIDAge3dpZHRofSB7aGVpZ2h0Oi4w
+Zn0iIHdpZHRoPSJ7d2lkdGh9IiBoZWlnaHQ9IntoZWlnaHQ6LjBmfSIgcm9sZT0iaW1nIiBhcmlh
+LWxhYmVsPSJ0aGUga25vd2xlZGdlICcKICAgICAgICAgICAgZidiYXNlOiB3aG8gd3JvdGUgZWFj
+aCBlbnRyeSwgYW5kIHdobyByZWFkIGl0IG9yIGJ1aWx0IG9uIGl0Ij57IiIuam9pbihwYXJ0cyl9
+PC9zdmc+JykKCgpkZWYgc2tpbGxzX2xpc3QobWFkZSwgcmVhZHM9KCkpOgogICAgc2tpbGxzID0g
+W2UgZm9yIGUgaW4gbWFkZSBpZiAoZVsia2luZCJdIG9yICIiKS5sb3dlcigpID09ICJza2lsbCIg
+YW5kIGVbInN0YXR1cyJdID09ICJ2YWxpZCJdCiAgICBpZiBub3Qgc2tpbGxzOgogICAgICAgIHJl
+dHVybiAiIgogICAgdXNlcnMgPSB7c1siaWQiXTogW2UgZm9yIGUgaW4gbWFkZSBpZiBzWyJpZCJd
+IGluIGVbInBhcmVudHMiXV0gZm9yIHMgaW4gc2tpbGxzfQogICAgcmVhZGVycyA9IHt9CiAgICBm
+b3IgYWdlbnQsIGVpZCwgXyBpbiByZWFkczoKICAgICAgICByZWFkZXJzLnNldGRlZmF1bHQoZWlk
+LCBbXSkuYXBwZW5kKGFnZW50KQogICAgcm93cyA9IFtdCiAgICBmb3IgcyBpbiBzb3J0ZWQoc2tp
+bGxzLCBrZXk9bGFtYmRhIGU6IGUuZ2V0KCJ0Iikgb3IgMCk6CiAgICAgICAgdXNlZCA9IHVzZXJz
+W3NbImlkIl1dCiAgICAgICAgcmVhZCA9IHNvcnRlZChzZXQocmVhZGVycy5nZXQoc1siaWQiXSwg
+W10pKSkKICAgICAgICByb3dzLmFwcGVuZChmJzxsaT48ZGl2PjxiPntlc2Moc1siaWQiXSl9PC9i
+PiBieSB7ZXNjKHNbIm1lbWJlciJdKX08L2Rpdj48ZGl2Pntlc2Moc1sic3VtbWFyeSJdKX08L2Rp
+dj4nCiAgICAgICAgICAgICAgICAgICAgZic8ZGl2IGNsYXNzPSJtdXRlZCI+JyArIChmInJlYWQg
+Ynkge2xlbihyZWFkKX06ICIgKyBlc2MoIiwgIi5qb2luKHJlYWQpKSBpZiByZWFkIGVsc2UgIm5v
+Ym9keSBvcGVuZWQgaXRzIGZpbGUiKQogICAgICAgICAgICAgICAgICAgICsgJzwvZGl2PjxkaXYg
+Y2xhc3M9Im11dGVkIj4nICsgKGYiYnVpbHQgb24gYnkge2xlbih1c2VkKX06ICIgKyBlc2MoIiwg
+Ii5qb2luKGYie3VbJ2lkJ119ICh7dVsnbWVtYmVyJ119LCB7dVsna2luZCddfSkiIGZvciB1IGlu
+IHVzZWQpKQogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg
+ICAgIGlmIHVzZWQgZWxzZSAibm90IGJ1aWx0IG9uIHlldCIpICsgJzwvZGl2PjwvbGk+JykKICAg
+IHJldHVybiAnPGgyPlRvb2xzIHRoZSB0ZWFtIHdyb3RlIGZvciBpdHNlbGY8L2gyPjx1bCBjbGFz
+cz0iY2FyZHMiPicgKyAiIi5qb2luKHJvd3MpICsgIjwvdWw+IgoKCmRlZiBjYWxsc19pbih0dXJu
+LCB0b29scywgdDApOgogICAgcyA9IHR1cm4uZ2V0KCJzdGFydCIpIG9yIHR1cm4uZ2V0KCJ0Iiwg
+dDApCiAgICBlID0gdHVybi5nZXQoImVuZCIpIG9yIChzICsgKHR1cm4uZ2V0KCJzZWNvbmRzIikg
+b3IgMCkpCiAgICByZXR1cm4gW2MgZm9yIGMgaW4gdG9vbHMgaWYgYy5nZXQoImFnZW50IikgPT0g
+dHVybi5nZXQoIm1lbWJlciIpIGFuZCBpc2luc3RhbmNlKGMuZ2V0KCJ0IiksIChpbnQsIGZsb2F0
+KSkgYW5kIHMgLSAxIDw9IGNbInQiXSA8PSBlICsgMV0KCgpkZWYgZ2F0aGVyX2xpc3QodHVybnMs
+IHRvb2xzLCB0MCk6CiAgICByb3dzID0gW10KICAgIGZvciB0IGluIHNvcnRlZCh0dXJucywga2V5
+PWxhbWJkYSB0OiB0LmdldCgic3RhcnQiKSBvciB0LmdldCgidCIpIG9yIDApOgogICAgICAgIGNh
+bGxzID0gY2FsbHNfaW4odCwgdG9vbHMsIHQwKQogICAgICAgIGlmIG5vdCBjYWxsczoKICAgICAg
+ICAgICAgY29udGludWUKICAgICAgICB3ZWIgPSBbY1sid2hhdCJdIGZvciBjIGluIGNhbGxzIGlm
+IHRvb2xfY2xhc3MoY1sidG9vbCJdKSA9PSAid2ViIl0KICAgICAgICBwYWdlcyA9IGxpc3QoZGlj
+dC5mcm9ta2V5cyhyZS5zdWIociJeaHR0cHM/Oi8vKFteL10rKS4qJCIsIHIiXDEiLCBjWyJ3aGF0
+Il0pIGZvciBjIGluIGNhbGxzIGlmIHRvb2xfY2xhc3MoY1sidG9vbCJdKSA9PSAiZmV0Y2giKSkK
+ICAgICAgICBmaWxlcyA9IGxpc3QoZGljdC5mcm9ta2V5cyhvcy5wYXRoLmJhc2VuYW1lKGNbIndo
+YXQiXSkgb3IgY1sid2hhdCJdIGZvciBjIGluIGNhbGxzIGlmIHRvb2xfY2xhc3MoY1sidG9vbCJd
+KSA9PSAicmVhZCIpKQogICAgICAgIGxpbmVzID0gW10KICAgICAgICBpZiB3ZWI6CiAgICAgICAg
+ICAgIGxpbmVzLmFwcGVuZChmInNlYXJjaGVkIHt0aW1lcyhsZW4od2ViKSl9OiAiICsgIjsgIi5q
+b2luKHdlYls6OF0pICsgKGYiIChhbmQge2xlbih3ZWIpIC0gOH0gbW9yZSkiIGlmIGxlbih3ZWIp
+ID4gOCBlbHNlICIiKSkKICAgICAgICBpZiBwYWdlczoKICAgICAgICAgICAgbGluZXMuYXBwZW5k
+KGYiZmV0Y2hlZCB7bGVuKHBhZ2VzKX0gc2l0ZXM6ICIgKyAiLCAiLmpvaW4ocGFnZXNbOjhdKSkK
+ICAgICAgICBpZiBmaWxlczoKICAgICAgICAgICAgbGluZXMuYXBwZW5kKGYicmVhZCB7bGVuKGZp
+bGVzKX0gZmlsZXM6ICIgKyAiLCAiLmpvaW4oZmlsZXNbOjhdKSkKICAgICAgICB2ZXJkaWN0ID0g
+ZiIgwrcge3RbJ3N0YXR1cyddfSIgKyAoZiIge3RbJ3Njb3JlJ106LjZnfSIgaWYgaXNpbnN0YW5j
+ZSh0LmdldCgic2NvcmUiKSwgKGludCwgZmxvYXQpKSBlbHNlICIiKSBpZiB0LmdldCgic3RhdHVz
+IikgZWxzZSAiIgogICAgICAgIHJvd3MuYXBwZW5kKGYnPGxpIGRhdGEtYWRkZWQ9Int0LmdldCgi
+c3RhcnQiKSBvciB0LmdldCgidCIpIG9yIDB9Ij48ZGl2PjxiPntlc2ModFsibWVtYmVyIl0pfTwv
+Yj4gwrcgdHVybiB7ZXNjKHQuZ2V0KCJ0dXJuIikpfSDCtyAnCiAgICAgICAgICAgICAgICAgICAg
+Zid0b2RvIHtlc2ModC5nZXQoInRvZG8iKSl9e2VzYyh2ZXJkaWN0KX08L2Rpdj4nICsgIiIuam9p
+bihmJzxkaXYgY2xhc3M9Im11dGVkIj57ZXNjKHgpfTwvZGl2PicgZm9yIHggaW4gbGluZXMpICsg
+IjwvbGk+IikKICAgIHJldHVybiBmJzx1bCBjbGFzcz0iY2FyZHMiIGlkPSJnYXRoZXIiPnsiIi5q
+b2luKHJvd3MpIG9yICI8bGk+bm8gdG9vbCBjYWxscyByZWNvcmRlZDwvbGk+In08L3VsPicKCgpk
+ZWYgYmVzdF9zdmcodDAsIHQxLCB0dXJucyk6CiAgICBwb2ludHMsIGJlc3QgPSBbXSwgTm9uZQog
+ICAgZm9yIHQgaW4gc29ydGVkKCh0IGZvciB0IGluIHR1cm5zIGlmIHQuZ2V0KCJzdGF0dXMiKSA9
+PSAidmFsaWQiIGFuZCBpc2luc3RhbmNlKHQuZ2V0KCJzY29yZSIpLCAoaW50LCBmbG9hdCkpKSwK
+ICAgICAgICAgICAgICAgICAgICBrZXk9bGFtYmRhIHQ6IHQuZ2V0KCJlbmQiKSBvciB0LmdldCgi
+dCIsIDApKToKICAgICAgICBpZiBiZXN0IGlzIE5vbmUgb3IgdFsic2NvcmUiXSA+IGJlc3Q6CiAg
+ICAgICAgICAgIGJlc3QgPSB0WyJzY29yZSJdCiAgICAgICAgICAgIHBvaW50cy5hcHBlbmQoKHQu
+Z2V0KCJlbmQiKSBvciB0LmdldCgidCIsIHQwKSwgYmVzdCkpCiAgICBpZiBub3QgcG9pbnRzOgog
+ICAgICAgIHJldHVybiAnPGRpdiBjbGFzcz0ibXV0ZWQiPm5vIHZhbGlkIGFuc3dlciB5ZXQ8L2Rp
+dj4nCiAgICB3aWR0aCwgaGVpZ2h0LCBsZWZ0LCBwYWQgPSAzNDAsIDE1MCwgNDgsIDE0CiAgICBs
+bywgaGkgPSBtaW4ocFsxXSBmb3IgcCBpbiBwb2ludHMpLCBtYXgocFsxXSBmb3IgcCBpbiBwb2lu
+dHMpCiAgICBpZiBoaSA9PSBsbzoKICAgICAgICBsbywgaGkgPSBsbyAtIDEsIGhpICsgMQogICAg
+c3BhbiA9IG1heCh0MSAtIHQwLCAxZS02KQogICAgeCA9IGxhbWJkYSB0OiBsZWZ0ICsgKHQgLSB0
+MCkgLyBzcGFuICogKHdpZHRoIC0gbGVmdCAtIHBhZCkgICMgbm9xYTogRTczMQogICAgeSA9IGxh
+bWJkYSB2OiBwYWQgKyAxNCArIChoaSAtIHYpIC8gKGhpIC0gbG8pICogKGhlaWdodCAtIDIgKiBw
+YWQgLSAyOCkgICMgbm9xYTogRTczMSAgKHJvb20gYWJvdmUgZm9yIGxhYmVscykKICAgIHBhdGgs
+IGxhc3QgPSBbXSwgTm9uZQogICAgZm9yIHQsIHYgaW4gcG9pbnRzOgogICAgICAgIGlmIGxhc3Qg
+aXMgTm9uZToKICAgICAgICAgICAgcGF0aC5hcHBlbmQoZiJNIHt4KHQpOi4xZn0ge3kodik6LjFm
+fSIpCiAgICAgICAgZWxzZToKICAgICAgICAgICAgcGF0aC5hcHBlbmQoZiJIIHt4KHQpOi4xZn0g
+ViB7eSh2KTouMWZ9IikKICAgICAgICBsYXN0ID0gKHQsIHYpCiAgICBwYXRoLmFwcGVuZChmIkgg
+e3godDEpOi4xZn0iKQogICAgbGFiZWxzID0gW10KICAgIGZvciBpLCAodCwgdikgaW4gZW51bWVy
+YXRlKHBvaW50cyk6ICAjIGEgbGFiZWwgbmV2ZXIgcnVucyBpbnRvIHRoZSBuZXh0IHN0ZXA7IHRo
+ZSBsYXN0IG9uZSBzaXRzIGF0IHRoZSByaWdodCBlbmQKICAgICAgICB0ZXh0ID0gZiJ7djouNmd9
+IgogICAgICAgIGlmIGkgPT0gbGVuKHBvaW50cykgLSAxOgogICAgICAgICAgICBsYWJlbHMuYXBw
+ZW5kKGYnPHRleHQgeD0ie3dpZHRoIC0gcGFkfSIgeT0ie3kodikgLSA4Oi4xZn0iIHRleHQtYW5j
+aG9yPSJlbmQiIGNsYXNzPSJheCI+e3RleHR9PC90ZXh0PicpCiAgICAgICAgZWxpZiB4KHBvaW50
+c1tpICsgMV1bMF0pIC0geCh0KSA+PSA2LjYgKiBsZW4odGV4dCkgKyAxMDoKICAgICAgICAgICAg
+bGFiZWxzLmFwcGVuZChmJzx0ZXh0IHg9Int4KHQpICsgNTouMWZ9IiB5PSJ7eSh2KSAtIDg6LjFm
+fSIgY2xhc3M9ImF4Ij57dGV4dH08L3RleHQ+JykKICAgIGRvdHMgPSAiIi5qb2luKGYnPGNpcmNs
+ZSBjeD0ie3godCk6LjFmfSIgY3k9Int5KHYpOi4xZn0iIHI9IjMuNSIvPicgZm9yIHQsIHYgaW4g
+cG9pbnRzKSArICIiLmpvaW4obGFiZWxzKQogICAgYXhpcyA9IChmJzx0ZXh0IHg9IntsZWZ0IC0g
+NH0iIHk9Int5KGhpKSArIDQ6LjFmfSIgdGV4dC1hbmNob3I9ImVuZCIgY2xhc3M9ImF4Ij57aGk6
+LjRnfTwvdGV4dD4nCiAgICAgICAgICAgIGYnPHRleHQgeD0ie2xlZnQgLSA0fSIgeT0ie3kobG8p
+ICsgNDouMWZ9IiB0ZXh0LWFuY2hvcj0iZW5kIiBjbGFzcz0iYXgiPntsbzouNGd9PC90ZXh0PicK
+ICAgICAgICAgICAgZic8dGV4dCB4PSJ7bGVmdH0iIHk9IntoZWlnaHQgLSAyfSIgY2xhc3M9ImF4
+Ij4wIHM8L3RleHQ+JwogICAgICAgICAgICBmJzx0ZXh0IHg9Int3aWR0aCAtIHBhZH0iIHk9Into
+ZWlnaHQgLSAyfSIgdGV4dC1hbmNob3I9ImVuZCIgY2xhc3M9ImF4Ij57c2VjcyhzcGFuLCBzcGFu
+KX08L3RleHQ+JykKICAgIHJldHVybiAoZic8c3ZnIHZpZXdCb3g9IjAgMCB7d2lkdGh9IHtoZWln
+aHR9IiB3aWR0aD0ie3dpZHRofSIgaGVpZ2h0PSJ7aGVpZ2h0fSIgcm9sZT0iaW1nIiAnCiAgICAg
+ICAgICAgIGYnYXJpYS1sYWJlbD0iYmVzdCB2ZXJpZmllZCBzY29yZSBvdmVyIHRpbWUiPjxwYXRo
+IGNsYXNzPSJiZXN0IiBkPSJ7IiAiLmpvaW4ocGF0aCl9Ii8+JwogICAgICAgICAgICBmJzxnIGNs
+YXNzPSJkb3RzIj57ZG90c308L2c+e2F4aXN9PC9zdmc+JykKCgpkZWYgcmVsKHQsIHQwKToKICAg
+IHJldHVybiBmIit7dCAtIHQwOi4xZn0gcyIgaWYgaXNpbnN0YW5jZSh0LCAoaW50LCBmbG9hdCkp
+IGVsc2UgIj8iCgoKZGVmIHRvbGRfbGluZShyZWMpOgogICAgIiIiV2hpY2ggY29ycmVjdGlvbnMg
+ZnJvbSBlYXJsaWVyIHdvcmsgYSB0dXJuIG9yIHdha2Ugd2FzIHRvbGQsIGFuZCB3aGljaCBvZiB0
+aG9zZSBtaXN0YWtlcyBpdCBtYWRlIGFnYWluIGFueXdheS4iIiIKICAgIHRvbGQsIGFnYWluID0g
+cmVjLmdldCgibGVzc29ucyIpIG9yIFtdLCByZWMuZ2V0KCJsZXNzb25zX3JlcGVhdGVkIikgb3Ig
+W10KICAgIGlmIG5vdCB0b2xkOgogICAgICAgIHJldHVybiAiIgogICAgcmV0dXJuIChmJzxkaXYg
+Y2xhc3M9Im11dGVkIj50b2xkIGNvcnJlY3Rpb25zIHtlc2MoIiwgIi5qb2luKHRvbGQpKX08L2Rp
+dj4nCiAgICAgICAgICAgICsgKGYnPGRpdiBjbGFzcz0ic2FpZCI+bWFkZSBhIGNvcnJlY3RlZCBt
+aXN0YWtlIGFnYWluOiB7ZXNjKCIsICIuam9pbihhZ2FpbikpfTwvZGl2PicgaWYgYWdhaW4gZWxz
+ZSAiIikpCgoKZGVmIGxlc3NvbnNfcGFuZWwob3V0LCB3YWtlcywgdHVybnMpOgogICAgIiIiVGhl
+IGNvcnJlY3Rpb25zIGZyb20gZWFybGllciB3b3JrIHRoaXMgcnVuIHdhcyBnaXZlbiAobGVzc29u
+cy5qc29uLCB3aGljaCB0aGUgZW5naW5lIHdyaXRlcyksIHdpdGggdGhlIHR1cm5zCiAgICBlYWNo
+IHdhcyB0b2xkIGluIGFuZCB0aGUgdHVybnMgdGhhdCBtYWRlIHRoZSBtaXN0YWtlIGFnYWluIGFu
+eXdheS4iIiIKICAgIHRyeToKICAgICAgICB3aXRoIG9wZW4ob3MucGF0aC5qb2luKG91dCwgImxl
+c3NvbnMuanNvbiIpLCBlbmNvZGluZz0idXRmLTgiKSBhcyBoYW5kbGU6CiAgICAgICAgICAgIGdp
+dmVuID0ganNvbi5sb2FkKGhhbmRsZSkKICAgIGV4Y2VwdCAoT1NFcnJvciwgVmFsdWVFcnJvcik6
+CiAgICAgICAgcmV0dXJuICIiCiAgICBpZiBub3QgaXNpbnN0YW5jZShnaXZlbiwgbGlzdCkgb3Ig
+bm90IGdpdmVuOgogICAgICAgIHJldHVybiAiIgogICAgdG9sZCA9IGNvbGxlY3Rpb25zLkNvdW50
+ZXIoaSBmb3IgciBpbiBsaXN0KHdha2VzKSArIGxpc3QodHVybnMpIGZvciBpIGluIHIuZ2V0KCJs
+ZXNzb25zIikgb3IgW10pCiAgICBhZ2FpbiA9IGNvbGxlY3Rpb25zLkNvdW50ZXIoaSBmb3IgciBp
+biBsaXN0KHdha2VzKSArIGxpc3QodHVybnMpIGZvciBpIGluIHIuZ2V0KCJsZXNzb25zX3JlcGVh
+dGVkIikgb3IgW10pCiAgICByb3dzID0gW10KICAgIGZvciBsIGluIGdpdmVuOgogICAgICAgIGlm
+IG5vdCBpc2luc3RhbmNlKGwsIGRpY3QpIG9yICJpZCIgbm90IGluIGw6CiAgICAgICAgICAgIGNv
+bnRpbnVlCiAgICAgICAgbiwgbSA9IHRvbGRbbFsiaWQiXV0sIGFnYWluW2xbImlkIl1dCiAgICAg
+ICAgaG93ID0gKGYnPHNwYW4gY2xhc3M9ImNoaXAgYmFkIj50aGUgbWlzdGFrZSBjYW1lIGJhY2sg
+aW4ge219PC9zcGFuPicgaWYgbSBlbHNlCiAgICAgICAgICAgICAgICc8c3BhbiBjbGFzcz0iY2hp
+cCI+bm90IHRvbGQ6IG5vIHRhc2sgb3IgdG9kbyBtYXRjaGVkPC9zcGFuPicgaWYgbm90IG4gZWxz
+ZQogICAgICAgICAgICAgICAnPHNwYW4gY2xhc3M9ImNoaXAiPm5vdCBtZWFzdXJlZDogbm8gZGV0
+ZWN0PC9zcGFuPicgaWYgbm90IGwuZ2V0KCJkZXRlY3QiKSBlbHNlCiAgICAgICAgICAgICAgICc8
+c3BhbiBjbGFzcz0iY2hpcCBnb29kIj50aGUgbWlzdGFrZSBkaWQgbm90IGNvbWUgYmFjazwvc3Bh
+bj4nKQogICAgICAgIHJvd3MuYXBwZW5kKGYnPGxpPjxkaXY+PGI+e2VzYyhsWyJpZCJdKX08L2I+
+ICh7ZXNjKGwuZ2V0KCJzdGF0dXMiKSl9KSDCtyB0b2xkIGluIHt0aW1lcyhuLCAidHVybiIpfSB7
+aG93fTwvZGl2PicKICAgICAgICAgICAgICAgICAgICBmJzxkaXYgY2xhc3M9InNhaWQiPndyb25n
+OiB7ZXNjKGwuZ2V0KCJ3cm9uZyIpKX08L2Rpdj48ZGl2PnJpZ2h0OiB7ZXNjKGwuZ2V0KCJyaWdo
+dCIpKX08L2Rpdj4nCiAgICAgICAgICAgICAgICAgICAgZic8ZGl2IGNsYXNzPSJtdXRlZCI+dG9s
+ZCB3aGVyZSAve2VzYyhsLmdldCgid2hlbiIpKX0vIGlzIGZvdW5kJwogICAgICAgICAgICAgICAg
+ICAgICsgKGYnOyB0aGUgbWlzdGFrZSBpcyByZWNvZ25pemVkIGJ5IC97ZXNjKGxbImRldGVjdCJd
+KX0vJyBpZiBsLmdldCgiZGV0ZWN0IikgZWxzZSAiIikgKyAiPC9kaXY+PC9saT4iKQogICAgcmV0
+dXJuICgnPHNlY3Rpb24gY2xhc3M9InBhbmVsIj48aDI+Q29ycmVjdGlvbnMgZnJvbSBlYXJsaWVy
+IHdvcms8L2gyPjx1bCBjbGFzcz0iY2FyZHMiIGlkPSJsZXNzb25zIj4nICsgIiIuam9pbihyb3dz
+KQogICAgICAgICAgICArICI8L3VsPjwvc2VjdGlvbj4iKQoKCmRlZiB0b2RvX2xpc3QodG9kb3Ms
+IHQwLCB0dXJucz0oKSk6CiAgICBieV90b2RvID0ge3JbInRvZG8iXTogciBmb3IgciBpbiB0dXJu
+cyBpZiByLmdldCgidG9kbyIpfQogICAgcm93cyA9IFtdCiAgICBmb3IgdCBpbiBzb3J0ZWQodG9k
+b3MsIGtleT1sYW1iZGEgdDogdC5nZXQoImFkZGVkIikgb3IgMCk6CiAgICAgICAgc3RhdGUgPSB0
+WyJzdGF0ZSJdCiAgICAgICAgaGVhZCA9IGYnPGI+e2VzYyh0WyJpZCJdKX08L2I+IDxzcGFuIGNs
+YXNzPSJzdCB7ZXNjKHN0YXRlKX0iPntlc2Moc3RhdGUpfTwvc3Bhbj4nCiAgICAgICAgaWYgaXNp
+bnN0YW5jZSh0LmdldCgic2NvcmUiKSwgKGludCwgZmxvYXQpKToKICAgICAgICAgICAgaGVhZCAr
+PSBmIiDCtyBzY29yZSB7dFsnc2NvcmUnXTouNmd9IgogICAgICAgIHdoZW4gPSBbZiJhZGRlZCB7
+cmVsKHQuZ2V0KCdhZGRlZCcpLCB0MCl9ICh3YWtlIHtlc2ModC5nZXQoJ3dha2UnKSl9LCBmb3Ig
+e2VzYyh0LmdldCgnZm9yJykgb3IgJ2FueW9uZScpfSkiXQogICAgICAgIGlmIHQuZ2V0KCJtZW1i
+ZXIiKToKICAgICAgICAgICAgd2hlbi5hcHBlbmQoZiJ0YWtlbiB7cmVsKHQuZ2V0KCd0YWtlbicp
+LCB0MCl9IGJ5IHtlc2ModFsnbWVtYmVyJ10pfSIpCiAgICAgICAgaWYgdC5nZXQoImVuZGVkIik6
+CiAgICAgICAgICAgIHRvb2sgPSBmIiwge3RbJ2VuZGVkJ10gLSB0Wyd0YWtlbiddOi4xZn0gcyIg
+aWYgaXNpbnN0YW5jZSh0LmdldCgidGFrZW4iKSwgKGludCwgZmxvYXQpKSBlbHNlICIiCiAgICAg
+ICAgICAgIHdoZW4uYXBwZW5kKGYiZW5kZWQge3JlbCh0LmdldCgnZW5kZWQnKSwgdDApfXt0b29r
+fSIpCiAgICAgICAgYnVpbGRzID0gZic8ZGl2IGNsYXNzPSJtdXRlZCI+YnVpbGRzIG9uIHtlc2Mo
+IiwgIi5qb2luKHRbInBhcmVudHMiXSkpfTwvZGl2PicgaWYgdC5nZXQoInBhcmVudHMiKSBlbHNl
+ICIiCiAgICAgICAgc2FpZCA9IGYnPGRpdiBjbGFzcz0ic2FpZCI+e2VzYyh0WyJkZXRhaWwiXSl9
+PC9kaXY+JyBpZiB0LmdldCgiZGV0YWlsIikgYW5kIHN0YXRlID09ICJmYWlsZWQiIGVsc2UgIiIK
+ICAgICAgICByb3dzLmFwcGVuZChmJzxsaSBkYXRhLWFkZGVkPSJ7dC5nZXQoImFkZGVkIikgb3Ig
+MH0iPjxkaXY+e2hlYWR9PC9kaXY+PGRpdj57ZXNjKHRbInRleHQiXSl9PC9kaXY+e2J1aWxkc30n
+CiAgICAgICAgICAgICAgICAgICAgZic8ZGl2IGNsYXNzPSJtdXRlZCI+eyIgwrcgIi5qb2luKHdo
+ZW4pfTwvZGl2PntzYWlkfXt0b2xkX2xpbmUoYnlfdG9kby5nZXQodFsiaWQiXSwge30pKX08L2xp
+PicpCiAgICByZXR1cm4gZic8dWwgY2xhc3M9ImNhcmRzIiBpZD0idG9kb3MiPnsiIi5qb2luKHJv
+d3MpIG9yICI8bGk+bm8gdG9kb3MgeWV0PC9saT4ifTwvdWw+JwoKCmRlZiBjb250cm9sX2xpc3Qo
+Y29udHJvbHMsIHQwKToKICAgIGlmIG5vdCBjb250cm9sczoKICAgICAgICByZXR1cm4gIiIKICAg
+IHJvd3MgPSBbXQogICAgZm9yIGMgaW4gY29udHJvbHM6CiAgICAgICAgd2hhdCA9IChjLmdldCgi
+Y29tbWFuZCIpIG9yICI/IikgKyAoZiIge2NbJ3ZhbHVlJ119IiBpZiBjLmdldCgidmFsdWUiKSBp
+cyBub3QgTm9uZSBlbHNlICIiKQogICAgICAgIHJvd3MuYXBwZW5kKGYnPGxpIGRhdGEtcz0ie2Mu
+Z2V0KCJ0Iikgb3IgMH0iPjxkaXY+PGI+e2VzYyh3aGF0KX08L2I+IMK3IHtyZWwoYy5nZXQoInQi
+KSwgdDApfSDCtyBieSB7ZXNjKGMuZ2V0KCJieSIpIG9yICI/Iil9PC9kaXY+JwogICAgICAgICAg
+ICAgICAgICAgICsgKGYnPGRpdiBjbGFzcz0ic2FpZCI+cmVmdXNlZDoge2VzYyhjWyJyZWZ1c2Vk
+Il0pfTwvZGl2PicgaWYgYy5nZXQoInJlZnVzZWQiKSBlbHNlICIiKQogICAgICAgICAgICAgICAg
+ICAgICsgKGYnPGRpdiBjbGFzcz0ibXV0ZWQiPnRoZSBtZW1iZXIgdHVybnMgYXJlIG5vdyB7ZXNj
+KGNbImFwcGxpZWQiXSl9PC9kaXY+JyBpZiBjLmdldCgiYXBwbGllZCIpIGVsc2UgIiIpICsgIjwv
+bGk+IikKICAgIHJldHVybiAnPHNlY3Rpb24gY2xhc3M9InBhbmVsIj48aDI+Q29tbWFuZHMgZnJv
+bSBwZW9wbGU8L2gyPjx1bCBjbGFzcz0iY2FyZHMiIGlkPSJjb250cm9scy1zZW50Ij4nICsgIiIu
+am9pbihyb3dzKSArICI8L3VsPjwvc2VjdGlvbj4iCgoKZGVmIHdha2VfbGlzdCh3YWtlcywgdDAp
+OgogICAgcm93cyA9IFtdCiAgICBmb3IgdyBpbiB3YWtlczoKICAgICAgICBoZWFkID0gZic8Yj53
+YWtlIHtlc2Mody5nZXQoIndha2UiKSl9PC9iPiDCtyBhdHRlbXB0IHtlc2Mody5nZXQoImF0dGVt
+cHQiKSl9IMK3IHtyZWwody5nZXQoInN0YXJ0IiksIHQwKX0gwrcge2VzYyh3LmdldCgic2Vjb25k
+cyIpKX0gcycKICAgICAgICB3aGF0ID0gW10KICAgICAgICBpZiB3LmdldCgiYWRkZWQiKToKICAg
+ICAgICAgICAgd2hhdC5hcHBlbmQoImFkZGVkICIgKyAiLCAiLmpvaW4od1siYWRkZWQiXSkpCiAg
+ICAgICAgaWYgdy5nZXQoImRyb3BwZWQiKToKICAgICAgICAgICAgd2hhdC5hcHBlbmQoImRyb3Bw
+ZWQgIiArICIsICIuam9pbih3WyJkcm9wcGVkIl0pKQogICAgICAgIGlmIHcuZ2V0KCJkb25lIik6
+CiAgICAgICAgICAgIHdoYXQuYXBwZW5kKCJzYWlkIHRoZSB0YXNrIGlzIGRvbmUiKQogICAgICAg
+IGlmIHcuZ2V0KCJwcm9ibGVtcyIpOgogICAgICAgICAgICB3aGF0LmFwcGVuZCgic2VudCBiYWNr
+OiAiICsgIjsgIi5qb2luKHdbInByb2JsZW1zIl0pKQogICAgICAgIHJvd3MuYXBwZW5kKGYnPGxp
+IGRhdGEtcz0ie3cuZ2V0KCJzdGFydCIpIG9yIHcuZ2V0KCJ0Iikgb3IgMH0iPjxkaXY+e2hlYWR9
+PC9kaXY+PGRpdiBjbGFzcz0ibXV0ZWQiPndva2VuIGJlY2F1c2U6IHtlc2Mody5nZXQoInJlYXNv
+biIsICIiKSl9PC9kaXY+JwogICAgICAgICAgICAgICAgICAgICsgKGYnPGRpdj57ZXNjKCIgwrcg
+Ii5qb2luKHdoYXQpKX08L2Rpdj4nIGlmIHdoYXQgZWxzZSAiIikKICAgICAgICAgICAgICAgICAg
+ICArIChmJzxkaXYgY2xhc3M9InNhaWQiPntlc2Mod1sid2h5Il0pfTwvZGl2PicgaWYgdy5nZXQo
+IndoeSIpIGVsc2UgIiIpICsgdG9sZF9saW5lKHcpICsgIjwvbGk+IikKICAgIHJldHVybiBmJzx1
+bCBjbGFzcz0iY2FyZHMiIGlkPSJ3YWtlcyI+eyIiLmpvaW4ocm93cykgb3IgIjxsaT50aGUgcGxh
+bm5lciBoYXMgbm90IGJlZW4gd29rZW4geWV0PC9saT4ifTwvdWw+JwoKClNDUklQVCA9ICcoZnVu
+Y3Rpb24gKCkge1xuICAidXNlIHN0cmljdCI7XG4gIHZhciBlbCA9IGRvY3VtZW50LmdldEVsZW1l
+bnRCeUlkKCJydW4tZGF0YSIpLCBzdmcgPSBkb2N1bWVudC5nZXRFbGVtZW50QnlJZCgidGltZWxp
+bmUiKTtcbiAgaWYgKCFlbCB8fCAhc3ZnKSB7IHJldHVybjsgfVxuICB2YXIgRDtcbiAgdHJ5IHsg
+RCA9IEpTT04ucGFyc2UoZWwudGV4dENvbnRlbnQpOyB9IGNhdGNoIChlcnIpIHsgcmV0dXJuOyB9
+XG4gIHZhciBzcGFuID0gTWF0aC5tYXgoRC50MSAtIEQudDAsIDFlLTYpLCBUT1AgPSArc3ZnLmdl
+dEF0dHJpYnV0ZSgiZGF0YS10b3AiKSwgUEggPSArc3ZnLmdldEF0dHJpYnV0ZSgiZGF0YS1oIik7
+XG4gIGZ1bmN0aW9uIFkodCkgeyByZXR1cm4gVE9QICsgKHQgLSBELnQwKSAvIHNwYW4gKiBQSDsg
+fVxuICBmdW5jdGlvbiAkKGlkKSB7IHJldHVybiBkb2N1bWVudC5nZXRFbGVtZW50QnlJZChpZCk7
+IH1cbiAgZnVuY3Rpb24gZm10KHYpIHsgcmV0dXJuIFN0cmluZyhNYXRoLnJvdW5kKHYgKiAxZTYp
+IC8gMWU2KTsgfVxuICBmdW5jdGlvbiBhbGwoc2VsLCByb290KSB7IHJldHVybiBBcnJheS5wcm90
+b3R5cGUuc2xpY2UuY2FsbCgocm9vdCB8fCBkb2N1bWVudCkucXVlcnlTZWxlY3RvckFsbChzZWwp
+KTsgfVxuICB2YXIgdGV4dHMgPSBbInMtZXZlbnRzIiwgInMtcGxhbm5lciIsICJzLXRvZG9zIiwg
+InMtbWVtYmVycyIsICJzLWp1ZGdlIiwgImEtd2FrZSIsICJhLXRvZG8iLCAiYS10YWtlIiwgImEt
+YW5zd2VyIl07XG4gIHZhciBvcmlnaW5hbCA9IHt9O1xuICB0ZXh0cy5mb3JFYWNoKGZ1bmN0aW9u
+IChpZCkgeyBpZiAoJChpZCkpIHsgb3JpZ2luYWxbaWRdID0gJChpZCkudGV4dENvbnRlbnQ7IH0g
+fSk7XG4gIHZhciBiYXJzID0gYWxsKCIuYmFyIiwgc3ZnKSwgbGluZXMgPSBhbGwoIi50aW1lZCIp
+LCBub3cgPSAkKCJub3ciKTtcbiAgdmFyIHRvZG9DYXJkcyA9IGFsbCgiI3RvZG9zIGxpW2RhdGEt
+YWRkZWRdLCAjZ2F0aGVyIGxpW2RhdGEtYWRkZWRdIiksIHdha2VDYXJkcyA9IGFsbCgiI3dha2Vz
+IGxpW2RhdGEtc10iKTtcbiAgdmFyIGFnZW50Um93cyA9IGFsbCgiI2FnZW50cyBsaVtkYXRhLXJv
+bGVdIiksIGZsb3dzID0gWyJmLXdha2UiLCAiZi10b2RvIiwgImYtdGFrZSIsICJmLWFuc3dlciJd
+O1xuICBiYXJzLmZvckVhY2goZnVuY3Rpb24gKGcpIHtcbiAgICB2YXIgciA9IGcucXVlcnlTZWxl
+Y3RvcigicmVjdCIpO1xuICAgIGcuX3kgPSArci5nZXRBdHRyaWJ1dGUoInkiKTsgZy5faCA9ICty
+LmdldEF0dHJpYnV0ZSgiaGVpZ2h0Iik7XG4gICAgZy5fcyA9ICtnLmdldEF0dHJpYnV0ZSgiZGF0
+YS1zIik7IGcuX2UgPSArZy5nZXRBdHRyaWJ1dGUoImRhdGEtZSIpO1xuICAgIGcuc3R5bGUuY3Vy
+c29yID0gInBvaW50ZXIiO1xuICAgIGcuYWRkRXZlbnRMaXN0ZW5lcigiY2xpY2siLCBmdW5jdGlv
+biAoKSB7IHNob3coZy5nZXRBdHRyaWJ1dGUoImRhdGEtaSIpKTsgfSk7XG4gIH0pO1xuICB2YXIg
+c2xvdCA9ICQoInBsYXllciIpO1xuICBzbG90LmlubmVySFRNTCA9IFwnPGJ1dHRvbiB0eXBlPSJi
+dXR0b24iIGlkPSJwbGF5Ij7ilrYgUmVwbGF5PC9idXR0b24+XCcgK1xuICAgIFwnPGlucHV0IHR5
+cGU9InJhbmdlIiBpZD0ic2NydWIiIG1pbj0iMCIgbWF4PSIxMDAwIiBzdGVwPSIxIiB2YWx1ZT0i
+MTAwMCIgYXJpYS1sYWJlbD0idGltZSBpbiB0aGUgcnVuIj5cJyArXG4gICAgXCc8c3BhbiBpZD0i
+Y2xvY2siIGNsYXNzPSJtdXRlZCI+PC9zcGFuPlwnO1xuICB2YXIgcGxheSA9ICQoInBsYXkiKSwg
+c2NydWIgPSAkKCJzY3J1YiIpLCBjbG9jayA9ICQoImNsb2NrIiksIGRldGFpbCA9ICQoImRldGFp
+bCIpO1xuICB2YXIgcGxheWluZyA9IGZhbHNlLCB0ID0gRC50MSwgbGFzdCA9IDAsIHJhdGUgPSBN
+YXRoLm1heCgxLCBzcGFuIC8gMjQpO1xuICBmdW5jdGlvbiBzZXRUZXh0KGlkLCB0ZXh0KSB7IHZh
+ciBuID0gJChpZCk7IGlmIChuKSB7IG4udGV4dENvbnRlbnQgPSB0ZXh0Lmxlbmd0aCA+IDQwID8g
+dGV4dC5zbGljZSgwLCAzOSkgKyAi4oCmIiA6IHRleHQ7IH0gfVxuICBmdW5jdGlvbiBzZXRPbihp
+ZCwgb24pIHsgdmFyIG4gPSAkKGlkKTsgaWYgKG4pIHsgbi5jbGFzc0xpc3QudG9nZ2xlKCJvbiIs
+ICEhb24pOyB9IH1cbiAgZnVuY3Rpb24gY291bnQobGlzdCwgdGVzdCkgeyB2YXIgbiA9IDA7IGxp
+c3QuZm9yRWFjaChmdW5jdGlvbiAoeCkgeyBpZiAodGVzdCh4KSkgeyBuICs9IDE7IH0gfSk7IHJl
+dHVybiBuOyB9XG4gIGZ1bmN0aW9uIGF0KHRpbWUpIHtcbiAgICB0ID0gdGltZTtcbiAgICBiYXJz
+LmZvckVhY2goZnVuY3Rpb24gKGcpIHtcbiAgICAgIHZhciByID0gZy5xdWVyeVNlbGVjdG9yKCJy
+ZWN0Iik7XG4gICAgICBpZiAodGltZSA8IGcuX3MpIHsgZy5zdHlsZS5vcGFjaXR5ID0gIjAiOyBy
+ZXR1cm47IH1cbiAgICAgIGcuc3R5bGUub3BhY2l0eSA9ICIxIjtcbiAgICAgIHIuc2V0QXR0cmli
+dXRlKCJoZWlnaHQiLCAodGltZSA+PSBnLl9lID8gZy5faCA6IE1hdGgubWF4KDMsIFkodGltZSkg
+LSBnLl95KSkudG9GaXhlZCgxKSk7XG4gICAgICBnLmNsYXNzTGlzdC50b2dnbGUoImxpdmUiLCB0
+aW1lIDwgZy5fZSk7XG4gICAgfSk7XG4gICAgbGluZXMuZm9yRWFjaChmdW5jdGlvbiAobCkgeyBs
+LnN0eWxlLm9wYWNpdHkgPSArbC5nZXRBdHRyaWJ1dGUoImRhdGEtdCIpIDw9IHRpbWUgPyAiMSIg
+OiAiMCI7IH0pO1xuICAgIG5vdy5zZXRBdHRyaWJ1dGUoInkxIiwgWSh0aW1lKS50b0ZpeGVkKDEp
+KTsgbm93LnNldEF0dHJpYnV0ZSgieTIiLCBZKHRpbWUpLnRvRml4ZWQoMSkpO1xuICAgIG5vdy5z
+dHlsZS5vcGFjaXR5ID0gIjEiO1xuICAgIHZhciBmbGFzaCA9IE1hdGgubWF4KDAuNiwgc3BhbiAv
+IDYwKTtcbiAgICB2YXIgcGxhbm5pbmcgPSBELndha2VzLnNvbWUoZnVuY3Rpb24gKHcpIHsgcmV0
+dXJuIHcucyA8PSB0aW1lICYmIHRpbWUgPCB3LmU7IH0pO1xuICAgIHZhciB3b3JraW5nID0gRC50
+dXJucy5maWx0ZXIoZnVuY3Rpb24gKG0pIHsgcmV0dXJuIG0ucyA8PSB0aW1lICYmIHRpbWUgPCBt
+LmU7IH0pO1xuICAgIHZhciBlbmRlZCA9IEQudHVybnMuZmlsdGVyKGZ1bmN0aW9uIChtKSB7IHJl
+dHVybiBtLmUgPD0gdGltZTsgfSk7XG4gICAgdmFyIGp1ZGdlZCA9IGVuZGVkLnNvbWUoZnVuY3Rp
+b24gKG0pIHsgcmV0dXJuIHRpbWUgLSBtLmUgPCBmbGFzaDsgfSk7XG4gICAgc2V0T24oIm4tcGxh
+bm5lciIsIHBsYW5uaW5nKTsgc2V0T24oIm4tbWVtYmVycyIsIHdvcmtpbmcubGVuZ3RoID4gMCk7
+IHNldE9uKCJuLWp1ZGdlIiwganVkZ2VkKTtcbiAgICBzZXRPbigibi1ldmVudHMiLCBqdWRnZWQg
+fHwgRC53YWtlcy5zb21lKGZ1bmN0aW9uICh3KSB7IHJldHVybiB3LnMgPD0gdGltZSAmJiB0aW1l
+IC0gdy5zIDwgZmxhc2g7IH0pKTtcbiAgICB2YXIgd29rZSA9IHt9O1xuICAgIEQud2FrZXMuZm9y
+RWFjaChmdW5jdGlvbiAodykgeyBpZiAody5zIDw9IHRpbWUpIHsgd29rZVt3Lndha2VdID0gMTsg
+fSB9KTtcbiAgICB2YXIgYmFjayA9IGNvdW50KEQud2FrZXMsIGZ1bmN0aW9uICh3KSB7IHJldHVy
+biB3LmUgPD0gdGltZSAmJiB3LmtpbmQgPT09ICJwbGFuYmFjayI7IH0pO1xuICAgIHZhciBhZGRl
+ZCA9IGNvdW50KEQudG9kb3MsIGZ1bmN0aW9uICh4KSB7IHJldHVybiB4LmFkZGVkIDw9IHRpbWU7
+IH0pO1xuICAgIHZhciBkcm9wcGVkID0gY291bnQoRC50b2RvcywgZnVuY3Rpb24gKHgpIHsgcmV0
+dXJuIHguc3RhdGUgPT09ICJkcm9wcGVkIiAmJiB4LmVuZGVkIDw9IHRpbWU7IH0pO1xuICAgIHZh
+ciB0YWtlbiA9IGNvdW50KEQudG9kb3MsIGZ1bmN0aW9uICh4KSB7IHJldHVybiB4LnRha2VuICYm
+IHgudGFrZW4gPD0gdGltZTsgfSk7XG4gICAgdmFyIGRvbmUgPSBjb3VudChELnRvZG9zLCBmdW5j
+dGlvbiAoeCkgeyByZXR1cm4geC5zdGF0ZSA9PT0gImRvbmUiICYmIHguZW5kZWQgPD0gdGltZTsg
+fSk7XG4gICAgdmFyIGZhaWxlZCA9IGNvdW50KEQudG9kb3MsIGZ1bmN0aW9uICh4KSB7IHJldHVy
+biB4LnN0YXRlID09PSAiZmFpbGVkIiAmJiB4LmVuZGVkIDw9IHRpbWU7IH0pO1xuICAgIHZhciBh
+bnN3ZXJzID0gY291bnQoZW5kZWQsIGZ1bmN0aW9uIChtKSB7IHJldHVybiBtLmtpbmQgPT09ICJy
+ZXN1bHQiOyB9KTtcbiAgICB2YXIgdmFsaWQgPSBlbmRlZC5maWx0ZXIoZnVuY3Rpb24gKG0pIHsg
+cmV0dXJuIG0uc3RhdHVzID09PSAidmFsaWQiOyB9KTtcbiAgICB2YXIgaW52YWxpZCA9IGNvdW50
+KGVuZGVkLCBmdW5jdGlvbiAobSkgeyByZXR1cm4gbS5zdGF0dXMgPT09ICJpbnZhbGlkIjsgfSk7
+XG4gICAgdmFyIGJlc3QgPSBudWxsO1xuICAgIHZhbGlkLmZvckVhY2goZnVuY3Rpb24gKG0pIHsg
+aWYgKGJlc3QgPT09IG51bGwgfHwgbS5zY29yZSA+IGJlc3QpIHsgYmVzdCA9IG0uc2NvcmU7IH0g
+fSk7XG4gICAgc2V0T24oImYtd2FrZSIsIHBsYW5uaW5nKTsgc2V0T24oImYtdG9kbyIsIEQud2Fr
+ZXMuc29tZShmdW5jdGlvbiAodykgeyByZXR1cm4gdy5lIDw9IHRpbWUgJiYgdGltZSAtIHcuZSA8
+IGZsYXNoOyB9KSk7XG4gICAgc2V0T24oImYtdGFrZSIsIEQudHVybnMuc29tZShmdW5jdGlvbiAo
+bSkgeyByZXR1cm4gbS5zIDw9IHRpbWUgJiYgdGltZSAtIG0ucyA8IGZsYXNoOyB9KSk7IHNldE9u
+KCJmLWFuc3dlciIsIGp1ZGdlZCk7XG4gICAgYWdlbnRSb3dzLmZvckVhY2goZnVuY3Rpb24gKGxp
+KSB7XG4gICAgICB2YXIgcm9sZSA9IGxpLmdldEF0dHJpYnV0ZSgiZGF0YS1yb2xlIiksIG5hbWUg
+PSBsaS5nZXRBdHRyaWJ1dGUoImRhdGEtYWdlbnQiKSwgayA9ICJpZGxlIjtcbiAgICAgIGlmIChy
+b2xlID09PSAicGxhbm5lciIpIHsgayA9IHBsYW5uaW5nID8gInJ1biIgOiAiaWRsZSI7IH1cbiAg
+ICAgIGVsc2UgaWYgKHJvbGUgPT09ICJqdWRnZSIpIHsgayA9IHZhbGlkLmxlbmd0aCA/ICJvayIg
+OiAiaWRsZSI7IH1cbiAgICAgIGVsc2UgaWYgKHdvcmtpbmcuc29tZShmdW5jdGlvbiAobSkgeyBy
+ZXR1cm4gbS5tZW1iZXIgPT09IG5hbWU7IH0pKSB7IGsgPSAicnVuIjsgfVxuICAgICAgZWxzZSB7
+XG4gICAgICAgIHZhciBtaW5lID0gZW5kZWQuZmlsdGVyKGZ1bmN0aW9uIChtKSB7IHJldHVybiBt
+Lm1lbWJlciA9PT0gbmFtZTsgfSksIG8gPSBtaW5lW21pbmUubGVuZ3RoIC0gMV07XG4gICAgICAg
+IGlmIChvKSB7IGsgPSBvLnN0YXR1cyA9PT0gInZhbGlkIiA/ICJvayIgOiAoby5zdGF0dXMgPT09
+ICJpbnZhbGlkIiB8fCBvLmtpbmQgPT09ICJmYWlsdXJlIiB8fCBbImVycm9yIiwgImFib3J0ZWQi
+LCAicHJvdmlkZXJfc3RhbGwiXS5pbmRleE9mKG8uc3RhdGUpID49IDAgPyAiYmFkIiA6ICJpZGxl
+Iik7IH1cbiAgICAgIH1cbiAgICAgIGxpLnF1ZXJ5U2VsZWN0b3IoIi5sZWQiKS5jbGFzc05hbWUg
+PSAibGVkICIgKyBrO1xuICAgIH0pO1xuICAgIHZhciBudyA9IE9iamVjdC5rZXlzKHdva2UpLmxl
+bmd0aDtcbiAgICBzZXRUZXh0KCJhLXdha2UiLCAid29rZSB0aGUgcGxhbm5lciAiICsgbncgKyAo
+bncgPT09IDEgPyAiIHRpbWUiIDogIiB0aW1lcyIpICsgKGJhY2sgPyAiICgiICsgYmFjayArICIg
+c2VudCBiYWNrKSIgOiAiIikpO1xuICAgIHNldFRleHQoImEtdG9kbyIsIGFkZGVkICsgIiB0b2Rv
+cyBhZGRlZCwgIiArIGRyb3BwZWQgKyAiIGRyb3BwZWQiKTtcbiAgICBzZXRUZXh0KCJhLXRha2Ui
+LCB0YWtlbiArICIgdG9kb3MgdGFrZW4iKTtcbiAgICBzZXRUZXh0KCJhLWFuc3dlciIsIGFuc3dl
+cnMgKyAiIGFuc3dlcnMiICsgKGVuZGVkLmxlbmd0aCA+IGFuc3dlcnMgPyAiLCAiICsgKGVuZGVk
+Lmxlbmd0aCAtIGFuc3dlcnMpICsgIiB3aXRob3V0IG9uZSIgOiAiIikpO1xuICAgIHNldFRleHQo
+InMtdG9kb3MiLCAoYWRkZWQgLSB0YWtlbiAtIGRyb3BwZWQpICsgIiBvcGVuIMK3ICIgKyAodGFr
+ZW4gLSBkb25lIC0gZmFpbGVkKSArICIgdGFrZW4gwrcgIiArIGRvbmUgKyAiIGRvbmUgwrcgIiAr
+IGZhaWxlZCArICIgZmFpbGVkIik7XG4gICAgc2V0VGV4dCgicy1tZW1iZXJzIiwgd29ya2luZy5s
+ZW5ndGggPyAid29ya2luZyBub3c6ICIgKyB3b3JraW5nLm1hcChmdW5jdGlvbiAobSkgeyByZXR1
+cm4gbS5tZW1iZXI7IH0pLmpvaW4oIiwgIikgOiAid2FpdGluZyBmb3IgYSB0b2RvIik7XG4gICAg
+c2V0VGV4dCgicy1wbGFubmVyIiwgcGxhbm5pbmcgPyAicGxhbm5pbmcgbm93IiA6IG9yaWdpbmFs
+WyJzLXBsYW5uZXIiXSk7XG4gICAgc2V0VGV4dCgicy1qdWRnZSIsIHZhbGlkLmxlbmd0aCArICIg
+dmFsaWQsICIgKyBpbnZhbGlkICsgIiBpbnZhbGlkOyAiICsgKGJlc3QgPT09IG51bGwgPyAibm8g
+dmFsaWQgYW5zd2VyIHlldCIgOiAiYmVzdCAiICsgZm10KGJlc3QpKSk7XG4gICAgdG9kb0NhcmRz
+LmZvckVhY2goZnVuY3Rpb24gKGxpKSB7IGxpLmNsYXNzTGlzdC50b2dnbGUoImZ1dHVyZSIsICts
+aS5nZXRBdHRyaWJ1dGUoImRhdGEtYWRkZWQiKSA+IHRpbWUpOyB9KTtcbiAgICB3YWtlQ2FyZHMu
+Zm9yRWFjaChmdW5jdGlvbiAobGkpIHsgbGkuY2xhc3NMaXN0LnRvZ2dsZSgiZnV0dXJlIiwgK2xp
+LmdldEF0dHJpYnV0ZSgiZGF0YS1zIikgPiB0aW1lKTsgfSk7XG4gICAgY2xvY2sudGV4dENvbnRl
+bnQgPSAodGltZSAtIEQudDApLnRvRml4ZWQoMSkgKyAiIHMgb2YgIiArIHNwYW4udG9GaXhlZCgw
+KSArICIgcyI7XG4gICAgc2NydWIudmFsdWUgPSBTdHJpbmcoTWF0aC5yb3VuZCgodGltZSAtIEQu
+dDApIC8gc3BhbiAqIDEwMDApKTtcbiAgfVxuICBmdW5jdGlvbiByZXN0KCkge1xuICAgIGJhcnMu
+Zm9yRWFjaChmdW5jdGlvbiAoZykgeyBnLnN0eWxlLm9wYWNpdHkgPSAiMSI7IGcuY2xhc3NMaXN0
+LnJlbW92ZSgibGl2ZSIpOyBnLnF1ZXJ5U2VsZWN0b3IoInJlY3QiKS5zZXRBdHRyaWJ1dGUoImhl
+aWdodCIsIGcuX2gudG9GaXhlZCgxKSk7IH0pO1xuICAgIGxpbmVzLmZvckVhY2goZnVuY3Rpb24g
+KGwpIHsgbC5zdHlsZS5vcGFjaXR5ID0gIjEiOyB9KTtcbiAgICBub3cuc3R5bGUub3BhY2l0eSA9
+ICIwIjtcbiAgICBbIm4tZXZlbnRzIiwgIm4tcGxhbm5lciIsICJuLXRvZG9zIiwgIm4tbWVtYmVy
+cyIsICJuLWp1ZGdlIl0uY29uY2F0KGZsb3dzKS5mb3JFYWNoKGZ1bmN0aW9uIChpZCkgeyBzZXRP
+bihpZCwgZmFsc2UpOyB9KTtcbiAgICBhZ2VudFJvd3MuZm9yRWFjaChmdW5jdGlvbiAobGkpIHsg
+bGkucXVlcnlTZWxlY3RvcigiLmxlZCIpLmNsYXNzTmFtZSA9ICJsZWQgIiArIGxpLmdldEF0dHJp
+YnV0ZSgiZGF0YS1sZWQiKTsgfSk7XG4gICAgT2JqZWN0LmtleXMob3JpZ2luYWwpLmZvckVhY2go
+ZnVuY3Rpb24gKGlkKSB7IHNldFRleHQoaWQsIG9yaWdpbmFsW2lkXSk7IH0pO1xuICAgIHRvZG9D
+YXJkcy5jb25jYXQod2FrZUNhcmRzKS5mb3JFYWNoKGZ1bmN0aW9uIChsaSkgeyBsaS5jbGFzc0xp
+c3QucmVtb3ZlKCJmdXR1cmUiKTsgfSk7XG4gICAgY2xvY2sudGV4dENvbnRlbnQgPSBzcGFuLnRv
+Rml4ZWQoMCkgKyAiIHMgaW4gYWxsIiArIChELmZpbmlzaGVkID8gIiIgOiAiIHNvIGZhciIpO1xu
+ICAgIHNjcnViLnZhbHVlID0gIjEwMDAiO1xuICAgIHQgPSBELnQxO1xuICB9XG4gIGZ1bmN0aW9u
+IHN0b3AoKSB7IHBsYXlpbmcgPSBmYWxzZTsgcGxheS50ZXh0Q29udGVudCA9ICLilrYgUmVwbGF5
+IjsgfVxuICBmdW5jdGlvbiBmcmFtZSh0cykge1xuICAgIGlmICghcGxheWluZykgeyByZXR1cm47
+IH1cbiAgICB2YXIgbmV4dCA9IHQgKyAobGFzdCA/ICh0cyAtIGxhc3QpIC8gMTAwMCA6IDApICog
+cmF0ZTtcbiAgICBsYXN0ID0gdHM7XG4gICAgaWYgKG5leHQgPj0gRC50MSkgeyBzdG9wKCk7IHJl
+c3QoKTsgcmV0dXJuOyB9XG4gICAgYXQobmV4dCk7XG4gICAgd2luZG93LnJlcXVlc3RBbmltYXRp
+b25GcmFtZShmcmFtZSk7XG4gIH1cbiAgcGxheS5hZGRFdmVudExpc3RlbmVyKCJjbGljayIsIGZ1
+bmN0aW9uICgpIHtcbiAgICBpZiAocGxheWluZykgeyBzdG9wKCk7IHJldHVybjsgfVxuICAgIHBs
+YXlpbmcgPSB0cnVlOyBsYXN0ID0gMDsgcGxheS50ZXh0Q29udGVudCA9ICLinZrinZogUGF1c2Ui
+O1xuICAgIGlmICh0ID49IEQudDEpIHsgYXQoRC50MCk7IH1cbiAgICB3aW5kb3cucmVxdWVzdEFu
+aW1hdGlvbkZyYW1lKGZyYW1lKTtcbiAgfSk7XG4gIHNjcnViLmFkZEV2ZW50TGlzdGVuZXIoImlu
+cHV0IiwgZnVuY3Rpb24gKCkge1xuICAgIHN0b3AoKTtcbiAgICB2YXIgdiA9ICtzY3J1Yi52YWx1
+ZTtcbiAgICBpZiAodiA+PSAxMDAwKSB7IHJlc3QoKTsgfSBlbHNlIHsgYXQoRC50MCArIHYgLyAx
+MDAwICogc3Bhbik7IH1cbiAgfSk7XG4gIGZ1bmN0aW9uIHNob3coa2V5KSB7XG4gICAgdmFyIGl0
+ZW0gPSBrZXkuY2hhckF0KDApID09PSAidyIgPyBELndha2VzWytrZXkuc2xpY2UoMSldIDogRC50
+dXJuc1sra2V5LnNsaWNlKDEpXTtcbiAgICBpZiAoIWl0ZW0pIHsgcmV0dXJuOyB9XG4gICAgdmFy
+IG91dCA9IFtdO1xuICAgIGlmIChrZXkuY2hhckF0KDApID09PSAidyIpIHtcbiAgICAgIG91dC5w
+dXNoKCJwbGFubmVyIHdha2UgIiArIGl0ZW0ud2FrZSArICIsIGF0dGVtcHQgIiArIGl0ZW0uYXR0
+ZW1wdCArICIgwrcgIiArIChpdGVtLmUgLSBpdGVtLnMpLnRvRml4ZWQoMSkgKyAiIHMiKTtcbiAg
+ICAgIG91dC5wdXNoKCJ3b2tlbiBiZWNhdXNlOiAiICsgaXRlbS5yZWFzb24pO1xuICAgICAgaWYg
+KGl0ZW0uYWRkZWQgJiYgaXRlbS5hZGRlZC5sZW5ndGgpIHsgb3V0LnB1c2goImFkZGVkICIgKyBp
+dGVtLmFkZGVkLmpvaW4oIiwgIikpOyB9XG4gICAgICBpZiAoaXRlbS5kcm9wcGVkICYmIGl0ZW0u
+ZHJvcHBlZC5sZW5ndGgpIHsgb3V0LnB1c2goImRyb3BwZWQgIiArIGl0ZW0uZHJvcHBlZC5qb2lu
+KCIsICIpKTsgfVxuICAgICAgaWYgKGl0ZW0ucHJvYmxlbXMgJiYgaXRlbS5wcm9ibGVtcy5sZW5n
+dGgpIHsgb3V0LnB1c2goInNlbnQgYmFjazogIiArIGl0ZW0ucHJvYmxlbXMuam9pbigiOyAiKSk7
+IH1cbiAgICAgIGlmIChpdGVtLmRvbmUpIHsgb3V0LnB1c2goInNhaWQgdGhlIHRhc2sgaXMgZG9u
+ZSIpOyB9XG4gICAgICBpZiAoaXRlbS53aHkpIHsgb3V0LnB1c2goaXRlbS53aHkpOyB9XG4gICAg
+fSBlbHNlIHtcbiAgICAgIHZhciB0b2RvID0gRC50b2Rvcy5maWx0ZXIoZnVuY3Rpb24gKHgpIHsg
+cmV0dXJuIHguaWQgPT09IGl0ZW0udG9kbzsgfSlbMF0gfHwge307XG4gICAgICBvdXQucHVzaChp
+dGVtLm1lbWJlciArICIsIHR1cm4gIiArIGl0ZW0udHVybiArICIgwrcgIiArIChpdGVtLmUgLSBp
+dGVtLnMpLnRvRml4ZWQoMSkgKyAiIHMiKTtcbiAgICAgIG91dC5wdXNoKCJ0b2RvICIgKyBpdGVt
+LnRvZG8gKyAiOiAiICsgKHRvZG8udGV4dCB8fCAiIikpO1xuICAgICAgb3V0LnB1c2goKGl0ZW0u
+c3RhdHVzIHx8IGl0ZW0uc3RhdGUgfHwgIiIpICsgKHR5cGVvZiBpdGVtLnNjb3JlID09PSAibnVt
+YmVyIiA/ICIgwrcgc2NvcmUgIiArIGZtdChpdGVtLnNjb3JlKSA6ICIiKSArIChpdGVtLmVudHJ5
+ID8gIiDCtyBlbnRyeSAiICsgaXRlbS5lbnRyeSA6ICIiKSk7XG4gICAgICBpZiAoaXRlbS5wcm9i
+bGVtKSB7IG91dC5wdXNoKGl0ZW0ucHJvYmxlbSk7IH1cbiAgICAgIHZhciB3ZWIgPSBbXSwgZ290
+ID0gW10sIHJlYWQgPSBbXTtcbiAgICAgIChpdGVtLnRvb2xzIHx8IFtdKS5mb3JFYWNoKGZ1bmN0
+aW9uIChjKSB7IHZhciBuID0gKGNbMF0gfHwgIiIpLnRvTG93ZXJDYXNlKCk7IGlmIChuID09PSAi
+d2Vic2VhcmNoIikgeyB3ZWIucHVzaChjWzFdKTsgfSBlbHNlIGlmIChuID09PSAid2ViZmV0Y2gi
+KSB7IGdvdC5wdXNoKGNbMV0pOyB9IGVsc2UgeyByZWFkLnB1c2goY1sxXSk7IH0gfSk7XG4gICAg
+ICBpZiAod2ViLmxlbmd0aCkgeyBvdXQucHVzaCgic2VhcmNoZWQ6ICIgKyB3ZWIuam9pbigiOyAi
+KSk7IH1cbiAgICAgIGlmIChnb3QubGVuZ3RoKSB7IG91dC5wdXNoKCJmZXRjaGVkOiAiICsgZ290
+LmpvaW4oIiwgIikpOyB9XG4gICAgICBpZiAocmVhZC5sZW5ndGgpIHsgb3V0LnB1c2goInJlYWQ6
+ICIgKyByZWFkLmpvaW4oIiwgIikpOyB9XG4gICAgfVxuICAgIGRldGFpbC50ZXh0Q29udGVudCA9
+ICIiO1xuICAgIG91dC5mb3JFYWNoKGZ1bmN0aW9uIChsaW5lKSB7IHZhciBkID0gZG9jdW1lbnQu
+Y3JlYXRlRWxlbWVudCgiZGl2Iik7IGQudGV4dENvbnRlbnQgPSBsaW5lOyBkZXRhaWwuYXBwZW5k
+Q2hpbGQoZCk7IH0pO1xuICAgIGRldGFpbC5oaWRkZW4gPSBmYWxzZTtcbiAgfVxuICByZXN0KCk7
+XG4gIHZhciBjdGwgPSAkKCJjb250cm9scyIpLCB0b2tlbiA9ICh3aW5kb3cubG9jYXRpb24uaGFz
+aC5tYXRjaCgvdG9rZW49KFtBLVphLXowLTlfLV0rKS8pIHx8IFtdKVsxXTtcbiAgaWYgKGN0bCAm
+JiBELmxpdmUgJiYgdG9rZW4gJiYgIUQuZmluaXNoZWQpIHtcbiAgICBjdGwuaW5uZXJIVE1MID0g
+XCc8YnV0dG9uIHR5cGU9ImJ1dHRvbiIgZGF0YS1jPSJcJyArIChELnBhdXNlZCA/ICJyZXN1bWUi
+IDogInBhdXNlIikgKyBcJyI+XCcgKyAoRC5wYXVzZWQgPyAiXFx1MjVCNiBSZXN1bWUiIDogIlxc
+dTI3NUFcXHUyNzVBIFBhdXNlIikgKyAiPC9idXR0b24+IiArXG4gICAgICBcJzxidXR0b24gdHlw
+ZT0iYnV0dG9uIiBjbGFzcz0id2FybiIgZGF0YS1jPSJzdG9wIj5cXHUyNUEwIFN0b3A8L2J1dHRv
+bj5cJyArXG4gICAgICBcJzxsYWJlbD50dXJucyA8aW5wdXQgaWQ9ImMtdHVybnMiIHR5cGU9Im51
+bWJlciIgbWluPSIxIiBzdGVwPSIxIj48L2xhYmVsPjxidXR0b24gdHlwZT0iYnV0dG9uIiBkYXRh
+LWM9InR1cm5zIj5TZXQ8L2J1dHRvbj5cJyArXG4gICAgICBcJzxsYWJlbD50aW1lIGxpbWl0IChz
+KSA8aW5wdXQgaWQ9ImMtdGltZSIgdHlwZT0ibnVtYmVyIiBtaW49IjEiIHN0ZXA9IjEiPjwvbGFi
+ZWw+PGJ1dHRvbiB0eXBlPSJidXR0b24iIGRhdGEtYz0idGltZV9saW1pdCI+U2V0PC9idXR0b24+
+XCcgK1xuICAgICAgXCc8c3BhbiBpZD0iYy1zYWlkIiBjbGFzcz0ibXV0ZWQiPjwvc3Bhbj5cJztc
+biAgICAkKCJjLXR1cm5zIikudmFsdWUgPSBELnR1cm5zIHx8ICIiOyAkKCJjLXRpbWUiKS52YWx1
+ZSA9IEQudGltZV9saW1pdCB8fCAiIjtcbiAgICBjdGwuaGlkZGVuID0gZmFsc2U7XG4gICAgY3Rs
+LmFkZEV2ZW50TGlzdGVuZXIoImNsaWNrIiwgZnVuY3Rpb24gKGV2KSB7XG4gICAgICB2YXIgYiA9
+IGV2LnRhcmdldCwgYyA9IGIgJiYgYi5nZXRBdHRyaWJ1dGUgPyBiLmdldEF0dHJpYnV0ZSgiZGF0
+YS1jIikgOiBudWxsO1xuICAgICAgaWYgKCFjKSB7IHJldHVybjsgfVxuICAgICAgaWYgKGMgPT09
+ICJzdG9wIiAmJiAhYi5nZXRBdHRyaWJ1dGUoImRhdGEtc3VyZSIpKSB7IGIuc2V0QXR0cmlidXRl
+KCJkYXRhLXN1cmUiLCAiMSIpOyBiLnRleHRDb250ZW50ID0gIlN0b3AgdGhlIHJ1bj8gVGFwIGFn
+YWluIjsgcmV0dXJuOyB9XG4gICAgICB2YXIgdmFsdWUgPSBjID09PSAidHVybnMiID8gKyQoImMt
+dHVybnMiKS52YWx1ZSA6IChjID09PSAidGltZV9saW1pdCIgPyArJCgiYy10aW1lIikudmFsdWUg
+OiBudWxsKTtcbiAgICAgICQoImMtc2FpZCIpLnRleHRDb250ZW50ID0gInNlbmRpbmcgIiArIGMg
+KyAiXFx1MjAyNiI7XG4gICAgICBmZXRjaCgiY29udHJvbCIsIHsgbWV0aG9kOiAiUE9TVCIsIGhl
+YWRlcnM6IHsgIkNvbnRlbnQtVHlwZSI6ICJhcHBsaWNhdGlvbi9qc29uIiwgIkF1dGhvcml6YXRp
+b24iOiAiQmVhcmVyICIgKyB0b2tlbiB9LFxuICAgICAgICAgICAgICAgICAgICAgICAgIGJvZHk6
+IEpTT04uc3RyaW5naWZ5KHsgY29tbWFuZDogYywgdmFsdWU6IHZhbHVlIH0pIH0pXG4gICAgICAg
+IC50aGVuKGZ1bmN0aW9uIChyKSB7IHJldHVybiByLmpzb24oKS50aGVuKGZ1bmN0aW9uIChqKSB7
+XG4gICAgICAgICAgJCgiYy1zYWlkIikudGV4dENvbnRlbnQgPSByLm9rID8gInNlbnQgIiArIGMg
+KyAiOyB0aGUgcnVuIHJlYWRzIGl0IHdpdGhpbiBhIHF1YXJ0ZXIgc2Vjb25kIiA6ICJyZWZ1c2Vk
+OiAiICsgKGouZXJyb3IgfHwgci5zdGF0dXMpOyB9KTsgfSlcbiAgICAgICAgLmNhdGNoKGZ1bmN0
+aW9uICgpIHsgJCgiYy1zYWlkIikudGV4dENvbnRlbnQgPSAidGhlIHJ1blwncyBzZXJ2ZXIgZGlk
+IG5vdCBhbnN3ZXIiOyB9KTtcbiAgICB9KTtcbiAgfVxuICBpZiAoIUQuZmluaXNoZWQpIHtcbiAg
+ICB3aW5kb3cuc2V0VGltZW91dChmdW5jdGlvbiBhZ2FpbigpIHtcbiAgICAgIHZhciB0eXBpbmcg
+PSBkb2N1bWVudC5hY3RpdmVFbGVtZW50ICYmIGN0bCAmJiBjdGwuY29udGFpbnMoZG9jdW1lbnQu
+YWN0aXZlRWxlbWVudCk7XG4gICAgICBpZiAoIXBsYXlpbmcgJiYgK3NjcnViLnZhbHVlID49IDEw
+MDAgJiYgIXR5cGluZykgeyB3aW5kb3cubG9jYXRpb24ucmVsb2FkKCk7IH0gZWxzZSB7IHdpbmRv
+dy5zZXRUaW1lb3V0KGFnYWluLCA0MDAwKTsgfVxuICAgIH0sIDUwMDApO1xuICB9XG59KSgpOycK
+CgpQQUdFID0gIiIiPCFkb2N0eXBlIGh0bWw+CjxodG1sIGxhbmc9ImVuIj48aGVhZD48bWV0YSBj
+aGFyc2V0PSJ1dGYtOCI+PG1ldGEgbmFtZT0idmlld3BvcnQiIGNvbnRlbnQ9IndpZHRoPWRldmlj
+ZS13aWR0aCxpbml0aWFsLXNjYWxlPTEiPgo8dGl0bGU+e3RpdGxlfTwvdGl0bGU+CjxzdHlsZT4K
+e3Rva2Vuc30qIHt7IGJveC1zaXppbmc6Ym9yZGVyLWJveDsgfX0KYm9keSB7eyBtYXJnaW46MDsg
+YmFja2dyb3VuZDp2YXIoLS1iZyk7IGNvbG9yOnZhcigtLWluayk7IGZvbnQ6MTVweC8xLjUgLWFw
+cGxlLXN5c3RlbSwiU0YgUHJvIFRleHQiLCJQaW5nRmFuZyBUQyIsIk5vdG8gU2FucyBUQyIsc2Fu
+cy1zZXJpZjsKICBwYWRkaW5nLWlubGluZToxNnB4OyBwYWRkaW5nLWJsb2NrOjE2cHggNDBweDsg
+LXdlYmtpdC1mb250LXNtb290aGluZzphbnRpYWxpYXNlZDsgfX0KbWFpbiB7eyBtYXgtd2lkdGg6
+MTE4MHB4OyBtYXJnaW46MCBhdXRvOyBkaXNwbGF5OmZsZXg7IGZsZXgtZGlyZWN0aW9uOmNvbHVt
+bjsgZ2FwOjE0cHg7IH19Ci5wYW5lbCB7eyBiYWNrZ3JvdW5kOnZhcigtLXBhbmVsKTsgYm9yZGVy
+OjFweCBzb2xpZCB2YXIoLS1saW5lKTsgYm9yZGVyLXJhZGl1czoxMnB4OyBwYWRkaW5nOjE0cHg7
+IG1pbi13aWR0aDowOwogIGJveC1zaGFkb3c6aW5zZXQgMCAxcHggMCB2YXIoLS1oaSksIDAgMTBw
+eCAzMHB4IHJnYmEoMCwwLDAsLjYpOyB9fQoudG9wIHt7IGRpc3BsYXk6ZmxleDsgZmxleC1kaXJl
+Y3Rpb246Y29sdW1uOyBnYXA6NnB4OyB9fQouYnJhbmQge3sgZm9udC1zaXplOi43MnJlbTsgbGV0
+dGVyLXNwYWNpbmc6LjA4ZW07IHRleHQtdHJhbnNmb3JtOnVwcGVyY2FzZTsgY29sb3I6dmFyKC0t
+ZmFpbnQpOyB9fQpoMSB7eyBmb250LXNpemU6MS4zcmVtOyBtYXJnaW46MDsgb3ZlcmZsb3ctd3Jh
+cDphbnl3aGVyZTsgZm9udC13ZWlnaHQ6NjUwOyB0ZXh0LXdyYXA6YmFsYW5jZTsgfX0KaDIge3sg
+Zm9udC1zaXplOi43NnJlbTsgbWFyZ2luOjAgMCAxMHB4OyBsZXR0ZXItc3BhY2luZzouMDZlbTsg
+dGV4dC10cmFuc2Zvcm06dXBwZXJjYXNlOyBjb2xvcjp2YXIoLS1tdXRlZCk7IGZvbnQtd2VpZ2h0
+OjYwMDsgfX0KLnN0YXRlLCAubXV0ZWQge3sgY29sb3I6dmFyKC0tbXV0ZWQpOyBmb250LXNpemU6
+Ljg1cmVtOyBvdmVyZmxvdy13cmFwOmFueXdoZXJlOyB9fQouY2hpcHMge3sgZGlzcGxheTpmbGV4
+OyBmbGV4LXdyYXA6d3JhcDsgZ2FwOjZweDsgfX0KLmNoaXAge3sgZm9udC1zaXplOi43NnJlbTsg
+Y29sb3I6dmFyKC0tbXV0ZWQpOyBiYWNrZ3JvdW5kOnZhcigtLWluc2V0KTsgYm9yZGVyOjFweCBz
+b2xpZCB2YXIoLS1saW5lKTsgYm9yZGVyLXJhZGl1czo5OTlweDsKICBwYWRkaW5nOjFweCA5cHg7
+IG92ZXJmbG93LXdyYXA6YW55d2hlcmU7IGZvbnQtdmFyaWFudC1udW1lcmljOnRhYnVsYXItbnVt
+czsgfX0gIC8qIGEgbG9uZyBzdG9wIHJlYXNvbiB3cmFwcyBpbnNpZGUgaXRzIGNoaXAgKi8KLmNo
+aXAuYmFkIHt7IGNvbG9yOiNGM0E2QTY7IGJvcmRlci1jb2xvcjpyZ2JhKDIzOSw2OCw2OCwuMzUp
+OyB9fSAuY2hpcC5nb29kIHt7IGNvbG9yOiM3RkQ4QjY7IGJvcmRlci1jb2xvcjpyZ2JhKDE2LDE4
+NSwxMjksLjM1KTsgfX0KLmxlZCB7eyBkaXNwbGF5OmlubGluZS1ibG9jazsgd2lkdGg6NnB4OyBo
+ZWlnaHQ6NnB4OyBib3JkZXItcmFkaXVzOjUwJTsgYmFja2dyb3VuZDp2YXIoLS1mYWludCk7IG1h
+cmdpbi1yaWdodDo3cHg7IHZlcnRpY2FsLWFsaWduOjJweDsgfX0KLmxlZC5vayB7eyBiYWNrZ3Jv
+dW5kOnZhcigtLW9rKTsgfX0gLmxlZC5iYWQge3sgYmFja2dyb3VuZDp2YXIoLS1iYWQpOyB9fQou
+bGVkLnJ1biB7eyBiYWNrZ3JvdW5kOnZhcigtLWluayk7IGFuaW1hdGlvbjpicmVhdGhlIDEuNnMg
+ZWFzZS1pbi1vdXQgaW5maW5pdGU7IH19CkBrZXlmcmFtZXMgYnJlYXRoZSB7eyA1MCUge3sgb3Bh
+Y2l0eTouMzsgfX0gfX0KLmdyaWQyIHt7IGRpc3BsYXk6Z3JpZDsgZ2FwOjE0cHg7IH19CkBtZWRp
+YSAobWluLXdpZHRoOjkwMHB4KSB7eyAuZ3JpZDIge3sgZ3JpZC10ZW1wbGF0ZS1jb2x1bW5zOm1p
+bm1heCgwLDFmcikgbWlubWF4KDAsMWZyKTsgYWxpZ24taXRlbXM6c3RhcnQ7IH19IH19Ci5zaWRl
+IHt7IGRpc3BsYXk6ZmxleDsgZmxleC1kaXJlY3Rpb246Y29sdW1uOyBnYXA6MTRweDsgbWluLXdp
+ZHRoOjA7IH19Ci5maWcge3sgb3ZlcmZsb3cteDphdXRvOyB9fSAuZmlnIHN2ZyB7eyBkaXNwbGF5
+OmJsb2NrOyBtYXJnaW46MCBhdXRvOyB9fQouZmlnLmZpdCBzdmcge3sgd2lkdGg6MTAwJTsgbWF4
+LXdpZHRoOjQyMHB4OyBoZWlnaHQ6YXV0bzsgfX0gLmZpZy53aWRlIHN2ZyB7eyB3aWR0aDoxMDAl
+OyBtYXgtd2lkdGg6NDcwcHg7IGhlaWdodDphdXRvOyB9fQoubm9kZSByZWN0IHt7IGZpbGw6dmFy
+KC0taW5zZXQpOyBzdHJva2U6dmFyKC0td2lyZSk7IHN0cm9rZS13aWR0aDoxOyB9fSAubm9kZS5v
+biByZWN0IHt7IHN0cm9rZTp2YXIoLS1pY2UpOyBmaWxsOnZhcigtLWljZS1iZyk7IH19Ci5ub2Rl
+IC50IHt7IGZpbGw6dmFyKC0taW5rKTsgZm9udC1zaXplOjEzcHg7IGZvbnQtd2VpZ2h0OjYwMDsg
+fX0gLm5vZGUgLnMsIC5hLCAuYXgge3sgZmlsbDp2YXIoLS1tdXRlZCk7IGZvbnQtc2l6ZToxMXB4
+OyB9fQoubG4ge3sgZmlsbDp2YXIoLS1pbmspOyBmb250LXNpemU6MTJweDsgfX0KLmZsb3cge3sg
+ZmlsbDpub25lOyBzdHJva2U6dmFyKC0td2lyZSk7IHN0cm9rZS13aWR0aDoxLjI7IH19IC5mbG93
+LmJhY2sge3sgc3Ryb2tlLWRhc2hhcnJheTo1IDQ7IH19IC5oZWFkIHt7IGZpbGw6dmFyKC0td2ly
+ZSk7IH19Ci5wdWxzZSB7eyBmaWxsOnZhcigtLWljZSk7IG9wYWNpdHk6MDsgfX0gLmZsb3dnLm9u
+IC5wdWxzZSB7eyBvcGFjaXR5OjE7IGFuaW1hdGlvbjpkb3duIDEuMXMgbGluZWFyIGluZmluaXRl
+OyB9fQpAa2V5ZnJhbWVzIGRvd24ge3sgZnJvbSB7eyB0cmFuc2Zvcm06dHJhbnNsYXRlWSgwKTsg
+fX0gdG8ge3sgdHJhbnNmb3JtOnRyYW5zbGF0ZVkodmFyKC0tbGVuKSk7IH19IH19Ci5sYW5lLCAu
+dGljayB7eyBzdHJva2U6dmFyKC0tZ3JpZCk7IHN0cm9rZS13aWR0aDoxOyB9fQouYmFyIHJlY3Qg
+e3sgc3Ryb2tlLXdpZHRoOjE7IH19IC5iYXIgdGV4dCB7eyBmb250LXNpemU6MTBweDsgZmlsbDp2
+YXIoLS1pbmspOyB9fSAuYmFyLmxpdmUgcmVjdCB7eyBzdHJva2Utd2lkdGg6MS44OyB9fQouYmFy
+LnBsYW4gcmVjdCB7eyBmaWxsOnZhcigtLWljZS1iZyk7IHN0cm9rZTp2YXIoLS1pY2UpOyB9fSAu
+YmFyLnBsYW5iYWNrIHJlY3Qge3sgZmlsbDp2YXIoLS1hbWJlci1iZyk7IHN0cm9rZTp2YXIoLS1h
+bWJlcik7IH19Ci5iYXIucGFzcyByZWN0IHt7IGZpbGw6dmFyKC0tb2stYmcpOyBzdHJva2U6dmFy
+KC0tb2spOyB9fSAuYmFyLmZhaWwgcmVjdCB7eyBmaWxsOnZhcigtLWJhZC1iZyk7IHN0cm9rZTp2
+YXIoLS1iYWQpOyB9fQouYmFyLmJhZCByZWN0IHt7IGZpbGw6dmFyKC0tYmFkKTsgc3Ryb2tlOnZh
+cigtLWJhZCk7IH19IC5iYXIubm9uZSByZWN0IHt7IGZpbGw6bm9uZTsgc3Ryb2tlOnZhcigtLWZh
+aW50KTsgc3Ryb2tlLWRhc2hhcnJheTozIDI7IH19Ci5ldmVudCB7eyBzdHJva2U6dmFyKC0tZmFp
+bnQpOyBzdHJva2Utd2lkdGg6MTsgc3Ryb2tlLWRhc2hhcnJheToyIDM7IH19IC5zdG9wIHt7IHN0
+cm9rZTp2YXIoLS1iYWQpOyBzdHJva2Utd2lkdGg6MS4yOyB9fQouYmVzdCB7eyBmaWxsOm5vbmU7
+IHN0cm9rZTp2YXIoLS1vayk7IHN0cm9rZS13aWR0aDoxLjY7IH19IC5kb3RzIGNpcmNsZSB7eyBm
+aWxsOnZhcigtLW9rKTsgfX0KLm5vdyB7eyBzdHJva2U6dmFyKC0taWNlKTsgc3Ryb2tlLXdpZHRo
+OjE7IH19IC5mdXR1cmUge3sgb3BhY2l0eTouMzsgfX0KLnRvb2wud2ViIHt7IGZpbGw6dmFyKC0t
+aWNlKTsgfX0gLnRvb2wuZmV0Y2gge3sgZmlsbDp2YXIoLS1hbWJlcik7IH19IC50b29sLnJlYWQg
+e3sgZmlsbDp2YXIoLS1mYWludCk7IH19Ci5saW4ge3sgZmlsbDpub25lOyBzdHJva2U6dmFyKC0t
+d2lyZSk7IHN0cm9rZS13aWR0aDoxOyB9fSAua2gge3sgZmlsbDp2YXIoLS1pbmspOyBmb250LXNp
+emU6MTFweDsgZm9udC13ZWlnaHQ6NjAwOyB9fQoua2IgcmVjdCB7eyBzdHJva2Utd2lkdGg6MTsg
+fX0gLmtiIHRleHQge3sgZm9udC1zaXplOjkuNXB4OyBmaWxsOnZhcigtLWluayk7IH19Ci5rYi5w
+YXNzIHJlY3Qge3sgZmlsbDp2YXIoLS1vay1iZyk7IHN0cm9rZTp2YXIoLS1vayk7IH19IC5rYi5m
+YWlsIHJlY3Qge3sgZmlsbDp2YXIoLS1iYWQtYmcpOyBzdHJva2U6dmFyKC0tYmFkKTsgfX0KLmti
+LndhaXQgcmVjdCB7eyBmaWxsOm5vbmU7IHN0cm9rZTp2YXIoLS1mYWludCk7IHN0cm9rZS1kYXNo
+YXJyYXk6MyAyOyB9fSAua2Iub2xkIHJlY3Qge3sgc3Ryb2tlLWRhc2hhcnJheTo0IDM7IH19Ci50
+ZCByZWN0IHt7IHN0cm9rZS13aWR0aDoxOyB9fSByZWN0LnVuZGVyIHt7IGZpbGw6dmFyKC0tcGFu
+ZWwpICFpbXBvcnRhbnQ7IHN0cm9rZTpub25lICFpbXBvcnRhbnQ7IH19IC50ZCB0ZXh0IHt7IGZv
+bnQtc2l6ZTo5LjVweDsgZmlsbDp2YXIoLS1pbmspOyB9fSAudGQgdGV4dC5heCB7eyBmb250LXNp
+emU6OXB4OyBmaWxsOnZhcigtLW11dGVkKTsgfX0KLnRkLnBhc3MgcmVjdCB7eyBmaWxsOnZhcigt
+LW9rLWJnKTsgc3Ryb2tlOnZhcigtLW9rKTsgfX0gLnRkLmZhaWwgcmVjdCB7eyBmaWxsOnZhcigt
+LWJhZC1iZyk7IHN0cm9rZTp2YXIoLS1iYWQpOyB9fQoudGQuZHJvcCByZWN0IHt7IGZpbGw6bm9u
+ZTsgc3Ryb2tlOnZhcigtLWZhaW50KTsgc3Ryb2tlLWRhc2hhcnJheTozIDI7IH19IC50ZC5kcm9w
+IHRleHQge3sgZmlsbDp2YXIoLS1mYWludCk7IH19Ci50ZC53YWl0IHJlY3Qge3sgZmlsbDpub25l
+OyBzdHJva2U6dmFyKC0tYW1iZXIpOyBzdHJva2UtZGFzaGFycmF5OjMgMjsgfX0gLnRkLndvcmsg
+cmVjdCB7eyBmaWxsOnZhcigtLWljZS1iZyk7IHN0cm9rZTp2YXIoLS1pY2UpOyB9fQouZGVwIHt7
+IGZpbGw6bm9uZTsgc3Ryb2tlOnZhcigtLWFtYmVyKTsgc3Ryb2tlLXdpZHRoOjEuMjsgfX0gLnVz
+ZXMge3sgZmlsbDpub25lOyBzdHJva2U6dmFyKC0tbXV0ZWQpOyBzdHJva2Utd2lkdGg6MTsgc3Ry
+b2tlLWRhc2hhcnJheTozIDM7IH19Ci53cm90ZSB7eyBmaWxsOm5vbmU7IHN0cm9rZTp2YXIoLS1p
+Y2UpOyBzdHJva2Utd2lkdGg6MTsgb3BhY2l0eTouNzsgfX0gLndyb3RlLm9sZCB7eyBzdHJva2Ut
+ZGFzaGFycmF5OjMgMzsgb3BhY2l0eTouNTsgfX0KLmJ1aWx0IHt7IGZpbGw6bm9uZTsgc3Ryb2tl
+OnZhcigtLW9rKTsgc3Ryb2tlLXdpZHRoOjE7IG9wYWNpdHk6Ljg7IH19IC5yZWFkIHt7IGZpbGw6
+bm9uZTsgc3Ryb2tlOnZhcigtLWZhaW50KTsgc3Ryb2tlLXdpZHRoOjE7IHN0cm9rZS1kYXNoYXJy
+YXk6MiAzOyB9fQoubGVnZW5kIGkuZGVwIHt7IGJvcmRlcjowOyBib3JkZXItdG9wOjJweCBzb2xp
+ZCB2YXIoLS1hbWJlcik7IGhlaWdodDowOyBib3JkZXItcmFkaXVzOjA7IHZlcnRpY2FsLWFsaWdu
+OjNweDsgfX0KLmxlZ2VuZCBpLnVzZXMge3sgYm9yZGVyOjA7IGJvcmRlci10b3A6MnB4IGRhc2hl
+ZCB2YXIoLS1tdXRlZCk7IGhlaWdodDowOyBib3JkZXItcmFkaXVzOjA7IHZlcnRpY2FsLWFsaWdu
+OjNweDsgfX0KLmxlZ2VuZCBpLndyb3RlIHt7IGJvcmRlcjowOyBib3JkZXItdG9wOjJweCBzb2xp
+ZCB2YXIoLS1pY2UpOyBoZWlnaHQ6MDsgYm9yZGVyLXJhZGl1czowOyB2ZXJ0aWNhbC1hbGlnbjoz
+cHg7IH19Ci5sZWdlbmQgaS5idWlsdCB7eyBib3JkZXI6MDsgYm9yZGVyLXRvcDoycHggc29saWQg
+dmFyKC0tb2spOyBoZWlnaHQ6MDsgYm9yZGVyLXJhZGl1czowOyB2ZXJ0aWNhbC1hbGlnbjozcHg7
+IH19Ci5sZWdlbmQgaS5yZWFkIHt7IGJvcmRlcjowOyBib3JkZXItdG9wOjJweCBkb3R0ZWQgdmFy
+KC0tZmFpbnQpOyBoZWlnaHQ6MDsgYm9yZGVyLXJhZGl1czowOyB2ZXJ0aWNhbC1hbGlnbjozcHg7
+IH19Ci5sZWdlbmQgaS5kcm9wLCAubGVnZW5kIGkub2xkIHt7IGJvcmRlci1zdHlsZTpkYXNoZWQ7
+IH19IC5sZWdlbmQgaS5vbGQge3sgYm9yZGVyLWNvbG9yOnZhcigtLW9rKTsgfX0gLmxlZ2VuZCBp
+LndhaXQge3sgYm9yZGVyLWNvbG9yOnZhcigtLWFtYmVyKTsgYm9yZGVyLXN0eWxlOmRhc2hlZDsg
+fX0KLmxlZ2VuZCB7eyBkaXNwbGF5OmZsZXg7IGZsZXgtd3JhcDp3cmFwOyBnYXA6NHB4IDE0cHg7
+IGZvbnQtc2l6ZTouNzZyZW07IGNvbG9yOnZhcigtLW11dGVkKTsgbWFyZ2luLXRvcDoxMHB4OyB9
+fQoubGVnZW5kIGkge3sgZGlzcGxheTppbmxpbmUtYmxvY2s7IHdpZHRoOjEycHg7IGhlaWdodDo5
+cHg7IGJvcmRlci1yYWRpdXM6M3B4OyBib3JkZXI6MXB4IHNvbGlkIHZhcigtLWZhaW50KTsgbWFy
+Z2luLXJpZ2h0OjVweDsgdmVydGljYWwtYWxpZ246LTFweDsgfX0KLmxlZ2VuZCBpLnBsYW4ge3sg
+YmFja2dyb3VuZDp2YXIoLS1pY2UtYmcpOyBib3JkZXItY29sb3I6dmFyKC0taWNlKTsgfX0gLmxl
+Z2VuZCBpLnBsYW5iYWNrIHt7IGJhY2tncm91bmQ6dmFyKC0tYW1iZXItYmcpOyBib3JkZXItY29s
+b3I6dmFyKC0tYW1iZXIpOyB9fQoubGVnZW5kIGkucGFzcyB7eyBiYWNrZ3JvdW5kOnZhcigtLW9r
+LWJnKTsgYm9yZGVyLWNvbG9yOnZhcigtLW9rKTsgfX0gLmxlZ2VuZCBpLmZhaWwge3sgYmFja2dy
+b3VuZDp2YXIoLS1iYWQtYmcpOyBib3JkZXItY29sb3I6dmFyKC0tYmFkKTsgfX0KLmxlZ2VuZCBp
+LmJhZCB7eyBiYWNrZ3JvdW5kOnZhcigtLWJhZCk7IGJvcmRlci1jb2xvcjp2YXIoLS1iYWQpOyB9
+fSAubGVnZW5kIGkubm9uZSB7eyBib3JkZXItc3R5bGU6ZGFzaGVkOyB9fQouZG90IHt7IGRpc3Bs
+YXk6aW5saW5lLWJsb2NrOyB3aWR0aDo2cHg7IGhlaWdodDo2cHg7IGJvcmRlci1yYWRpdXM6NTAl
+OyBtYXJnaW4tcmlnaHQ6NnB4OyB2ZXJ0aWNhbC1hbGlnbjoxcHg7IH19Ci5kb3Qud2ViIHt7IGJh
+Y2tncm91bmQ6dmFyKC0taWNlKTsgfX0gLmRvdC5mZXRjaCB7eyBiYWNrZ3JvdW5kOnZhcigtLWFt
+YmVyKTsgfX0gLmRvdC5yZWFkIHt7IGJhY2tncm91bmQ6dmFyKC0tZmFpbnQpOyB9fQouYWdlbnRz
+IHt7IGxpc3Qtc3R5bGU6bm9uZTsgbWFyZ2luOjA7IHBhZGRpbmc6MDsgfX0KLmFnZW50cyBsaSB7
+eyBwYWRkaW5nOjlweCAwOyBib3JkZXItdG9wOjFweCBzb2xpZCB2YXIoLS1saW5lKTsgb3ZlcmZs
+b3ctd3JhcDphbnl3aGVyZTsgfX0gLmFnZW50cyBsaTpmaXJzdC1jaGlsZCB7eyBib3JkZXItdG9w
+OjA7IHBhZGRpbmctdG9wOjA7IH19Ci5hZ2VudHMgYiB7eyBmb250LXdlaWdodDo2MDA7IH19IC5h
+Z2VudHMgLnJvbGUge3sgY29sb3I6dmFyKC0tZmFpbnQpOyBmb250LXNpemU6LjhyZW07IH19Ci5h
+Z2VudHMgLnN1YiB7eyBjb2xvcjp2YXIoLS1tdXRlZCk7IGZvbnQtc2l6ZTouOHJlbTsgcGFkZGlu
+Zy1sZWZ0OjEzcHg7IGZvbnQtdmFyaWFudC1udW1lcmljOnRhYnVsYXItbnVtczsgfX0KLmhlYWx0
+aCB7eyBkaXNwbGF5OmdyaWQ7IGdyaWQtdGVtcGxhdGUtY29sdW1uczpyZXBlYXQoMixtaW5tYXgo
+MCwxZnIpKTsgZ2FwOjhweDsgbWFyZ2luOjA7IH19Ci5oZWFsdGggZGl2IHt7IGJhY2tncm91bmQ6
+dmFyKC0taW5zZXQpOyBib3JkZXI6MXB4IHNvbGlkIHZhcigtLWxpbmUpOyBib3JkZXItcmFkaXVz
+OjhweDsgcGFkZGluZzo4cHggMTBweDsgbWluLXdpZHRoOjA7IH19Ci5oZWFsdGggZHQge3sgZm9u
+dC1zaXplOi43MnJlbTsgY29sb3I6dmFyKC0tZmFpbnQpOyB9fSAuaGVhbHRoIGRkIHt7IG1hcmdp
+bjoycHggMCAwOyBmb250LXNpemU6MS4wNXJlbTsgZm9udC12YXJpYW50LW51bWVyaWM6dGFidWxh
+ci1udW1zOyB9fQouaGVhbHRoIHNtYWxsIHt7IGRpc3BsYXk6YmxvY2s7IGZvbnQtc2l6ZTouNzJy
+ZW07IGNvbG9yOnZhcigtLW11dGVkKTsgb3ZlcmZsb3ctd3JhcDphbnl3aGVyZTsgfX0KLmhlYWx0
+aCBkaXY6bGFzdC1jaGlsZDpudGgtY2hpbGQob2RkKSB7eyBncmlkLWNvbHVtbjoxIC8gLTE7IH19
+Ci5jYXJkcyB7eyBsaXN0LXN0eWxlOm5vbmU7IG1hcmdpbjowOyBwYWRkaW5nOjA7IGRpc3BsYXk6
+ZmxleDsgZmxleC1kaXJlY3Rpb246Y29sdW1uOyBnYXA6OHB4OyBmb250LXNpemU6Ljg2cmVtOyB9
+fQouY2FyZHMgbGkge3sgYmFja2dyb3VuZDp2YXIoLS1pbnNldCk7IGJvcmRlcjoxcHggc29saWQg
+dmFyKC0tbGluZSk7IGJvcmRlci1yYWRpdXM6OHB4OyBwYWRkaW5nOjhweCAxMHB4OyBvdmVyZmxv
+dy13cmFwOmFueXdoZXJlOyB9fQouc3Qge3sgZm9udC1zaXplOi43MnJlbTsgYm9yZGVyLXJhZGl1
+czo5OTlweDsgcGFkZGluZzowIDdweDsgYm9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5lKTsgY29s
+b3I6dmFyKC0tbXV0ZWQpOyB9fQouc3QuZG9uZSB7eyBjb2xvcjojN0ZEOEI2OyBib3JkZXItY29s
+b3I6cmdiYSgxNiwxODUsMTI5LC4zNSk7IH19IC5zdC5mYWlsZWQge3sgY29sb3I6I0YzQTZBNjsg
+Ym9yZGVyLWNvbG9yOnJnYmEoMjM5LDY4LDY4LC4zNSk7IH19Ci5zdC50YWtlbiB7eyBjb2xvcjp2
+YXIoLS1pY2UpOyBib3JkZXItY29sb3I6cmdiYSgxNDcsMTk3LDI1MywuMzUpOyB9fQouc2FpZCB7
+eyBmb250LXNpemU6LjhyZW07IGNvbG9yOnZhcigtLW11dGVkKTsgfX0KLnBsYXllciB7eyBwb3Np
+dGlvbjpzdGlja3k7IHRvcDplbnYoc2FmZS1hcmVhLWluc2V0LXRvcCwgMHB4KTsgei1pbmRleDoy
+OyBkaXNwbGF5OmZsZXg7IGZsZXgtd3JhcDp3cmFwOyBhbGlnbi1pdGVtczpjZW50ZXI7IGdhcDox
+MHB4OwogIGJhY2tncm91bmQ6cmdiYSg5LDEwLDE1LC45NCk7IHBhZGRpbmctYmxvY2s6OHB4OyBi
+b3JkZXItYm90dG9tOjFweCBzb2xpZCB2YXIoLS1saW5lKTsgfX0KLnBsYXllcjplbXB0eSB7eyBk
+aXNwbGF5Om5vbmU7IH19Ci5wbGF5ZXIgYnV0dG9uIHt7IGZvbnQ6aW5oZXJpdDsgZm9udC1zaXpl
+Oi44NXJlbTsgcGFkZGluZzo1cHggMTRweDsgYm9yZGVyLXJhZGl1czo5OTlweDsgYm9yZGVyOjFw
+eCBzb2xpZCB2YXIoLS1saW5lKTsKICBiYWNrZ3JvdW5kOnZhcigtLXBhbmVsKTsgY29sb3I6dmFy
+KC0taW5rKTsgYm94LXNoYWRvdzppbnNldCAwIDFweCAwIHZhcigtLWhpKTsgfX0KLnBsYXllciBp
+bnB1dCB7eyBmbGV4OjEgMSAxNTBweDsgbWluLXdpZHRoOjA7IGFjY2VudC1jb2xvcjp2YXIoLS1p
+Y2UpOyB9fQouZGV0YWlsIHt7IGJhY2tncm91bmQ6dmFyKC0taW5zZXQpOyBib3JkZXI6MXB4IHNv
+bGlkIHZhcigtLWxpbmUpOyBib3JkZXItcmFkaXVzOjhweDsgcGFkZGluZzo4cHggMTBweDsgZm9u
+dC1zaXplOi44NnJlbTsKICBvdmVyZmxvdy13cmFwOmFueXdoZXJlOyBtYXJnaW4tdG9wOjEwcHg7
+IH19Ci5jb250cm9scyB7eyBkaXNwbGF5OmZsZXg7IGZsZXgtd3JhcDp3cmFwOyBhbGlnbi1pdGVt
+czpjZW50ZXI7IGdhcDo4cHg7IHBhZGRpbmc6MTBweDsgYmFja2dyb3VuZDp2YXIoLS1pbnNldCk7
+CiAgYm9yZGVyOjFweCBzb2xpZCB2YXIoLS1saW5lKTsgYm9yZGVyLXJhZGl1czoxMHB4OyBmb250
+LXNpemU6Ljg1cmVtOyB9fQouY29udHJvbHNbaGlkZGVuXSB7eyBkaXNwbGF5Om5vbmU7IH19Ci5j
+b250cm9scyBidXR0b24ge3sgZm9udDppbmhlcml0OyBwYWRkaW5nOjVweCAxMnB4OyBib3JkZXIt
+cmFkaXVzOjk5OXB4OyBib3JkZXI6MXB4IHNvbGlkIHZhcigtLWxpbmUpOyBiYWNrZ3JvdW5kOnZh
+cigtLXBhbmVsKTsKICBjb2xvcjp2YXIoLS1pbmspOyBib3gtc2hhZG93Omluc2V0IDAgMXB4IDAg
+dmFyKC0taGkpOyB9fSAuY29udHJvbHMgYnV0dG9uLndhcm4ge3sgYm9yZGVyLWNvbG9yOnJnYmEo
+MjM5LDY4LDY4LC41KTsgY29sb3I6I0YzQTZBNjsgfX0KLmNvbnRyb2xzIGlucHV0IHt7IHdpZHRo
+OjUuNWVtOyBmb250OmluaGVyaXQ7IGJhY2tncm91bmQ6dmFyKC0tYmcpOyBjb2xvcjp2YXIoLS1p
+bmspOyBib3JkZXI6MXB4IHNvbGlkIHZhcigtLWxpbmUpOyBib3JkZXItcmFkaXVzOjZweDsgcGFk
+ZGluZzozcHggNnB4OyB9fQpAbWVkaWEgKHByZWZlcnMtcmVkdWNlZC1tb3Rpb246cmVkdWNlKSB7
+eyAubGVkLnJ1biwgLmZsb3dnLm9uIC5wdWxzZSB7eyBhbmltYXRpb246bm9uZTsgfX0gfX0KPC9z
+dHlsZT48L2hlYWQ+Cjxib2R5PjxtYWluPgo8aGVhZGVyIGNsYXNzPSJ0b3AiPgo8ZGl2IGNsYXNz
+PSJicmFuZCI+aGVyZHItcHkgwrcgZXZlbnQtZHJpdmVuIHRlYW08L2Rpdj4KPGgxPntuYW1lfTwv
+aDE+CjxkaXYgY2xhc3M9InN0YXRlIj48aSBjbGFzcz0ibGVkIHtzdGF0ZX0iPjwvaT57d2hlbn08
+L2Rpdj4KPGRpdiBjbGFzcz0iY2hpcHMiPntjaGlwc308L2Rpdj4Ke2NvbnRyb2xzfQo8L2hlYWRl
+cj4KPGRpdiBjbGFzcz0icGxheWVyIiBpZD0icGxheWVyIj48L2Rpdj4KPGRpdiBjbGFzcz0iZ3Jp
+ZDIiPgo8c2VjdGlvbiBjbGFzcz0icGFuZWwiPjxoMj5UaGUgbG9vcCwgd2l0aCB0aGlzIHJ1bidz
+IG51bWJlcnM8L2gyPjxkaXYgY2xhc3M9ImZpZyBmaXQiPntsb29wfTwvZGl2Pjwvc2VjdGlvbj4K
+PGRpdiBjbGFzcz0ic2lkZSI+CjxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+PGgyPkFnZW50czwvaDI+
+e2FnZW50c308L3NlY3Rpb24+CjxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+PGgyPkhvdyB0aGUgcnVu
+IHdlbnQ8L2gyPntoZWFsdGh9PC9zZWN0aW9uPgo8L2Rpdj4KPC9kaXY+CjxkaXYgY2xhc3M9Imdy
+aWQyIj4KPHNlY3Rpb24gY2xhc3M9InBhbmVsIj48aDI+RnJvbSB0aGUgZmlyc3QgZXZlbnQgdG8g
+dGhlIGVuZDwvaDI+CjxkaXYgY2xhc3M9ImZpZyI+e3RpbWVsaW5lfTwvZGl2Pgo8ZGl2IGNsYXNz
+PSJsZWdlbmQiPjxzcGFuPjxpIGNsYXNzPSJwbGFuIj48L2k+cGxhbm5lciB0dXJuPC9zcGFuPjxz
+cGFuPjxpIGNsYXNzPSJwbGFuYmFjayI+PC9pPnBsYW5uZXIgcmVwbHkgc2VudCBiYWNrPC9zcGFu
+Pgo8c3Bhbj48aSBjbGFzcz0icGFzcyI+PC9pPnZhbGlkIGFuc3dlcjwvc3Bhbj48c3Bhbj48aSBj
+bGFzcz0iZmFpbCI+PC9pPmludmFsaWQgYW5zd2VyIG9yIGZhaWx1cmU8L3NwYW4+PHNwYW4+PGkg
+Y2xhc3M9ImJhZCI+PC9pPmJhY2tlbmQgYnJva2U8L3NwYW4+CjxzcGFuPjxpIGNsYXNzPSJub25l
+Ij48L2k+bm8gYW5zd2VyIG9yIHN0aWxsIHJ1bm5pbmc8L3NwYW4+PHNwYW4+ZG90dGVkIGxpbmU6
+IGEgcmVzdWx0IHRoYXQgd29rZSB0aGUgcGxhbm5lcjwvc3Bhbj4KPHNwYW4+PGIgY2xhc3M9ImRv
+dCB3ZWIiPjwvYj53ZWIgc2VhcmNoPC9zcGFuPjxzcGFuPjxiIGNsYXNzPSJkb3QgZmV0Y2giPjwv
+Yj5wYWdlIGZldGNoZWQ8L3NwYW4+PHNwYW4+PGIgY2xhc3M9ImRvdCByZWFkIj48L2I+ZmlsZSBy
+ZWFkPC9zcGFuPjwvZGl2Pgo8ZGl2IGNsYXNzPSJkZXRhaWwiIGlkPSJkZXRhaWwiIGhpZGRlbj48
+L2Rpdj48L3NlY3Rpb24+CjxkaXYgY2xhc3M9InNpZGUiPgo8c2VjdGlvbiBjbGFzcz0icGFuZWwi
+PjxoMj5CZXN0IHZlcmlmaWVkIHNjb3JlIG92ZXIgdGltZTwvaDI+PGRpdiBjbGFzcz0iZmlnIj57
+YmVzdH08L2Rpdj48L3NlY3Rpb24+CjxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+PGgyPldoYXQgdGhl
+IHRlYW0gbWFkZSwgYW5kIHdoYXQgYnVpbHQgb24gd2hhdDwvaDI+PGRpdiBjbGFzcz0iZmlnIj57
+bGluZWFnZX08L2Rpdj4KPGRpdiBjbGFzcz0ibGVnZW5kIj48c3Bhbj48aSBjbGFzcz0icGFzcyI+
+PC9pPnZlcmlmaWVkIChtZW1iZXIsIHNjb3JlKTwvc3Bhbj48c3Bhbj48aSBjbGFzcz0iZmFpbCI+
+PC9pPmRpZCBub3QgcGFzczwvc3Bhbj4KPHNwYW4+YSBsaW5lIHJ1bnMgZnJvbSBhbiBlbnRyeSB0
+byBlYWNoIG9uZSB0aGF0IGJ1aWx0IG9uIGl0PC9zcGFuPjwvZGl2Pjwvc2VjdGlvbj4Ke3NraWxs
+c30Ke2xlc3NvbnN9CjwvZGl2Pgo8L2Rpdj4KPGRpdiBjbGFzcz0iZ3JpZDIiPgo8c2VjdGlvbiBj
+bGFzcz0icGFuZWwiPjxoMj5XaG8gZGlkIHdoaWNoIHRvZG88L2gyPjxkaXYgY2xhc3M9ImZpZyB3
+aWRlIj57ZGl2aXNpb259PC9kaXY+CjxkaXYgY2xhc3M9ImxlZ2VuZCI+PHNwYW4+PGkgY2xhc3M9
+InBhc3MiPjwvaT5kb25lICh3aGF0IGl0IG1hZGUsIHNjb3JlKTwvc3Bhbj48c3Bhbj48aSBjbGFz
+cz0iZmFpbCI+PC9pPmZhaWxlZDwvc3Bhbj4KPHNwYW4+PGkgY2xhc3M9ImRyb3AiPjwvaT5kcm9w
+cGVkPC9zcGFuPjxzcGFuPjxpIGNsYXNzPSJ3YWl0Ij48L2k+bm90IHRha2VuIHlldDwvc3Bhbj48
+c3Bhbj48aSBjbGFzcz0iZGVwIj48L2k+aGFkIHRvIHdhaXQgZm9yIChhZnRlcik8L3NwYW4+Cjxz
+cGFuPjxpIGNsYXNzPSJ1c2VzIj48L2k+dG9sZCB0byBidWlsZCBvbiBpdHMgcmVzdWx0PC9zcGFu
+PjwvZGl2Pjwvc2VjdGlvbj4KPHNlY3Rpb24gY2xhc3M9InBhbmVsIj48aDI+S25vd2xlZGdlOiB3
+aG8gd3JvdGUgYW5kIHdobyByZWFkIGVhY2ggZW50cnk8L2gyPjxkaXYgY2xhc3M9ImZpZyB3aWRl
+Ij57a25vd2xlZGdlfTwvZGl2Pgo8ZGl2IGNsYXNzPSJsZWdlbmQiPjxzcGFuPjxpIGNsYXNzPSJ3
+cm90ZSI+PC9pPndyb3RlIChkYXNoZWQ6IGluIGFuIGVhcmxpZXIgcnVuKTwvc3Bhbj48c3Bhbj48
+aSBjbGFzcz0iYnVpbHQiPjwvaT5idWlsdCBvbiBpdDwvc3Bhbj4KPHNwYW4+PGkgY2xhc3M9InJl
+YWQiPjwvaT5vcGVuZWQgaXRzIGZpbGU8L3NwYW4+PHNwYW4+PGkgY2xhc3M9Im9sZCI+PC9pPmFu
+IGVudHJ5IGZyb20gYW4gZWFybGllciBydW48L3NwYW4+PHNwYW4+c2tpbGxzIGZpcnN0LCBieSBu
+YW1lPC9zcGFuPjwvZGl2Pjwvc2VjdGlvbj4KPC9kaXY+CjxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+
+PGgyPkhvdyB0aGUgdGVhbSBnYXRoZXJlZCBpbmZvcm1hdGlvbjwvaDI+CntnYXRoZXJ9PC9zZWN0
+aW9uPgo8c2VjdGlvbiBjbGFzcz0icGFuZWwiPjxoMj5FdmVyeSB0b2RvPC9oMj4Ke3RvZG9zfTwv
+c2VjdGlvbj4KPHNlY3Rpb24gY2xhc3M9InBhbmVsIj48aDI+RXZlcnkgcGxhbm5lciB0dXJuPC9o
+Mj4Ke3dha2VzfTwvc2VjdGlvbj4Ke3NlbnR9CjwvbWFpbj4KPHNjcmlwdCB0eXBlPSJhcHBsaWNh
+dGlvbi9qc29uIiBpZD0icnVuLWRhdGEiPntkYXRhfTwvc2NyaXB0Pgo8c2NyaXB0PntzY3JpcHR9
+PC9zY3JpcHQ+CjwvYm9keT48L2h0bWw+CiIiIgoKCmRlZiByZW5kZXIob3V0LCBsaXZlPUZhbHNl
+KToKICAgICIiIlRoZSBwYWdlOyBsaXZlPVRydWUgKHNlcnZlZCBieSBzZXJ2ZSgpKSBhZGRzIHRo
+ZSByb29tIGZvciBhIHBlcnNvbidzIGJ1dHRvbnMsIHdoaWNoIG9ubHkgaXRzIHNjcmlwdCBmaWxs
+cy4iIiIKICAgIGVuZ2luZSwgdHVybnMsIHRvZG9zLCBzdW1tYXJ5LCBtYWRlLCB0b29scyA9IGxv
+YWQob3V0KQogICAgc3RhcnQgPSBuZXh0KChlIGZvciBlIGluIGVuZ2luZSBpZiBlLmdldCgia2lu
+ZCIpID09ICJzdGFydCIpLCB7fSkKICAgIGNvbnRyb2xzID0gW2UgZm9yIGUgaW4gZW5naW5lIGlm
+IGUuZ2V0KCJraW5kIikgPT0gImNvbnRyb2wiXQogICAgcGF1c2VkID0gbmV4dCgoY1siY29tbWFu
+ZCJdID09ICJwYXVzZSIgZm9yIGMgaW4gcmV2ZXJzZWQoY29udHJvbHMpIGlmIGMuZ2V0KCJjb21t
+YW5kIikgaW4gKCJwYXVzZSIsICJyZXN1bWUiKSksIEZhbHNlKQogICAgYnVkZ2V0ID0gbmV4dCgo
+Y1siYXBwbGllZCJdIGZvciBjIGluIHJldmVyc2VkKGNvbnRyb2xzKSBpZiBjLmdldCgiYXBwbGll
+ZCIpKSwgc3RhcnQuZ2V0KCJ0dXJucyIpKQogICAgbGltaXQgPSBuZXh0KChjWyJ2YWx1ZSJdIGZv
+ciBjIGluIHJldmVyc2VkKGNvbnRyb2xzKSBpZiBjLmdldCgiY29tbWFuZCIpID09ICJ0aW1lX2xp
+bWl0IiBhbmQgbm90IGMuZ2V0KCJyZWZ1c2VkIikpLAogICAgICAgICAgICAgICAgIHN0YXJ0Lmdl
+dCgidGltZV9saW1pdCIpKQogICAgc3RvcCA9IG5leHQoKGUgZm9yIGUgaW4gZW5naW5lIGlmIGUu
+Z2V0KCJraW5kIikgPT0gInN0b3AiKSwgTm9uZSkKICAgIHdha2VzID0gW2UgZm9yIGUgaW4gZW5n
+aW5lIGlmIGUuZ2V0KCJraW5kIikgPT0gIndha2UiXQogICAgbWVtYmVycyA9IHN0YXJ0LmdldCgi
+bWVtYmVycyIpIG9yIHNvcnRlZCh7dC5nZXQoIm1lbWJlciIpIGZvciB0IGluIHR1cm5zIGlmIHQu
+Z2V0KCJtZW1iZXIiKX0pCiAgICBwbGFubmVyID0gc3RhcnQuZ2V0KCJwbGFubmVyIikgb3IgInBs
+YW5uZXIiCiAgICB0MCA9IHN0YXJ0LmdldCgidCIpIG9yIG1pbihbZS5nZXQoInQiLCB0aW1lLnRp
+bWUoKSkgZm9yIGUgaW4gZW5naW5lICsgdHVybnNdIG9yIFt0aW1lLnRpbWUoKV0pCiAgICBlbmRz
+ID0gW2UuZ2V0KCJlbmQiKSBvciBlLmdldCgidCIpIGZvciBlIGluIHdha2VzICsgdHVybnNdICsg
+W3N0b3AuZ2V0KCJ0IikgaWYgc3RvcCBlbHNlIE5vbmVdCiAgICB0MSA9IG1heChbdCBmb3IgdCBp
+biBlbmRzIGlmIGlzaW5zdGFuY2UodCwgKGludCwgZmxvYXQpKV0gKyBbdDAgKyAxXSkKICAgIGNo
+aXBzID0gW10KICAgIHNjb3JlcyA9IFt0WyJzY29yZSJdIGZvciB0IGluIHR1cm5zIGlmIHQuZ2V0
+KCJzdGF0dXMiKSA9PSAidmFsaWQiIGFuZCBpc2luc3RhbmNlKHQuZ2V0KCJzY29yZSIpLCAoaW50
+LCBmbG9hdCkpXQogICAgY2hpcHMuYXBwZW5kKGYnPHNwYW4gY2xhc3M9ImNoaXAgZ29vZCI+YmVz
+dCB7bWF4KHNjb3Jlcyk6LjZnfTwvc3Bhbj4nIGlmIHNjb3JlcyBlbHNlICc8c3BhbiBjbGFzcz0i
+Y2hpcCI+bm8gdmFsaWQgYW5zd2VyIHlldDwvc3Bhbj4nKQogICAgY2hpcHMuYXBwZW5kKGYnPHNw
+YW4gY2xhc3M9ImNoaXAiPntsZW4odHVybnMpfSBvZiB7ZXNjKHN0YXJ0LmdldCgidHVybnMiLCAi
+PyIpKX0gbWVtYmVyIHR1cm5zPC9zcGFuPicpCiAgICBjaGlwcy5hcHBlbmQoZic8c3BhbiBjbGFz
+cz0iY2hpcCI+e3RpbWVzKGxlbih7dy5nZXQoIndha2UiKSBmb3IgdyBpbiB3YWtlc30pLCAicGxh
+bm5lciB3YWtlIil9PC9zcGFuPicpCiAgICBpZiBzdW1tYXJ5OgogICAgICAgIGNoaXBzLmFwcGVu
+ZChmJzxzcGFuIGNsYXNzPSJjaGlweyIgYmFkIiBpZiBzdW1tYXJ5LmdldCgiZG91YmxlX3Rha2Vz
+IikgZWxzZSAiIn0iPnRha2VuIHR3aWNlIHtlc2Moc3VtbWFyeS5nZXQoImRvdWJsZV90YWtlcyIp
+KX08L3NwYW4+JykKICAgICAgICBjaGlwcy5hcHBlbmQoZic8c3BhbiBjbGFzcz0iY2hpcCI+dHJh
+Y2VhYmxlIHtlc2Moc3VtbWFyeS5nZXQoInRyYWNlYWJsZSIpKX08L3NwYW4+JykKICAgICAgICBp
+ZiBzdW1tYXJ5LmdldCgidG9rZW5zIikgaXMgbm90IE5vbmU6CiAgICAgICAgICAgIHNoYXJlID0g
+c3VtbWFyeS5nZXQoInBsYW5uZXJfc2hhcmUiKQogICAgICAgICAgICBjaGlwcy5hcHBlbmQoZic8
+c3BhbiBjbGFzcz0iY2hpcCI+e3N1bW1hcnlbInRva2VucyJdOix9IHRva2VucycgaWYgaXNpbnN0
+YW5jZShzdW1tYXJ5WyJ0b2tlbnMiXSwgaW50KQogICAgICAgICAgICAgICAgICAgICAgICAgZWxz
+ZSBmJzxzcGFuIGNsYXNzPSJjaGlwIj57ZXNjKHN1bW1hcnlbInRva2VucyJdKX0gdG9rZW5zJwog
+ICAgICAgICAgICAgICAgICAgICAgICAgKyAoZiIsIHBsYW5uZXIge3NoYXJlOi4wJX0iIGlmIGlz
+aW5zdGFuY2Uoc2hhcmUsIChpbnQsIGZsb2F0KSkgZWxzZSAiIikgKyAiPC9zcGFuPiIpCiAgICBp
+ZiBwYXVzZWQgYW5kIG5vdCBzdG9wOgogICAgICAgIGNoaXBzLmFwcGVuZCgnPHNwYW4gY2xhc3M9
+ImNoaXAgYmFkIj5wYXVzZWQgYnkgYSBwZXJzb248L3NwYW4+JykKICAgIGlmIHN1bW1hcnkgYW5k
+IHN1bW1hcnkuZ2V0KCJwYXVzZWRfc2Vjb25kcyIpOgogICAgICAgIGNoaXBzLmFwcGVuZChmJzxz
+cGFuIGNsYXNzPSJjaGlwIj5wYXVzZWQge3N1bW1hcnlbInBhdXNlZF9zZWNvbmRzIl06Z30gczwv
+c3Bhbj4nKQogICAgaWYgc3RvcDoKICAgICAgICBjaGlwcy5hcHBlbmQoZic8c3BhbiBjbGFzcz0i
+Y2hpcCBiYWQiPnN0b3BwZWQ6IHtlc2Moc3RvcC5nZXQoIndoeSIpKX08L3NwYW4+JykKICAgIHdo
+ZW4gPSAoKCJmaW5pc2hlZCIgaWYgc3RvcCBlbHNlICJzdGlsbCBydW5uaW5nICh3cml0dGVuIGFm
+dGVyIGV2ZXJ5IGV2ZW50KSIpICsgZiIgwrcge2Nsb2NrKHQxIC0gdDApfSIKICAgICAgICAgICAg
+KyBmIiAoe3QxIC0gdDA6LjBmfSBzKSDCtyBzdGFydGVkICIgKyBlc2ModGltZS5zdHJmdGltZSgi
+JVktJW0tJWQgJUg6JU06JVMiLCB0aW1lLmxvY2FsdGltZSh0MCkpKSkKICAgIG5hbWUgPSBvcy5w
+YXRoLmJhc2VuYW1lKG9zLnBhdGguYWJzcGF0aChvdXQpKQogICAgdGl0bGUgPSBlc2MoZiJFdmVu
+dC1kcml2ZW4gdGVhbSB7bmFtZX0iKQogICAgc3RhdGUgPSAicnVuIiBpZiBub3Qgc3RvcCBlbHNl
+ICgib2siIGlmIHNjb3JlcyBlbHNlICJiYWQiKQogICAgZGF0YSA9IHsidDAiOiB0MCwgInQxIjog
+dDEsICJmaW5pc2hlZCI6IGJvb2woc3RvcCksICJwbGFubmVyIjogcGxhbm5lciwgIm1lbWJlcnMi
+OiBtZW1iZXJzLCAibGl2ZSI6IGJvb2wobGl2ZSksCiAgICAgICAgICAgICJwYXVzZWQiOiBwYXVz
+ZWQsICJ0dXJucyI6IGJ1ZGdldCwgInRpbWVfbGltaXQiOiBsaW1pdCwKICAgICAgICAgICAgIndh
+a2VzIjogW3sid2FrZSI6IHcuZ2V0KCJ3YWtlIiksICJhdHRlbXB0Ijogdy5nZXQoImF0dGVtcHQi
+KSwgInJlYXNvbiI6IHcuZ2V0KCJyZWFzb24iKSwKICAgICAgICAgICAgICAgICAgICAgICAicyI6
+IHcuZ2V0KCJzdGFydCIpIG9yICh3LmdldCgidCIsIHQwKSAtICh3LmdldCgic2Vjb25kcyIpIG9y
+IDApKSwgImUiOiB3LmdldCgiZW5kIikgb3Igdy5nZXQoInQiLCB0MCksCiAgICAgICAgICAgICAg
+ICAgICAgICAgImtpbmQiOiAicGxhbiIgaWYgdy5nZXQoInN0YXRlIikgPT0gImlkbGUiIGFuZCBu
+b3Qgdy5nZXQoInByb2JsZW1zIikgZWxzZSAicGxhbmJhY2siLAogICAgICAgICAgICAgICAgICAg
+ICAgICJhZGRlZCI6IHcuZ2V0KCJhZGRlZCIpIG9yIFtdLCAiZHJvcHBlZCI6IHcuZ2V0KCJkcm9w
+cGVkIikgb3IgW10sICJkb25lIjogYm9vbCh3LmdldCgiZG9uZSIpKSwKICAgICAgICAgICAgICAg
+ICAgICAgICAicHJvYmxlbXMiOiB3LmdldCgicHJvYmxlbXMiKSBvciBbXSwgIndoeSI6IHcuZ2V0
+KCJ3aHkiKX0gZm9yIHcgaW4gd2FrZXNdLAogICAgICAgICAgICAidHVybnMiOiBbeyJtZW1iZXIi
+OiB0LmdldCgibWVtYmVyIiksICJ0dXJuIjogdC5nZXQoInR1cm4iKSwgInRvZG8iOiB0LmdldCgi
+dG9kbyIpLCAicyI6IHQuZ2V0KCJzdGFydCIpIG9yIHQuZ2V0KCJ0IiwgdDApLAogICAgICAgICAg
+ICAgICAgICAgICAgICJlIjogdC5nZXQoImVuZCIpIG9yICh0LmdldCgidCIsIHQwKSArICh0Lmdl
+dCgic2Vjb25kcyIpIG9yIDApKSwgImtpbmQiOiB0LmdldCgia2luZCIpLAogICAgICAgICAgICAg
+ICAgICAgICAgICJzdGF0dXMiOiB0LmdldCgic3RhdHVzIiksICJzY29yZSI6IHQuZ2V0KCJzY29y
+ZSIpLCAic3RhdGUiOiB0LmdldCgic3RhdGUiKSwgImVudHJ5IjogdC5nZXQoImVudHJ5IiksCiAg
+ICAgICAgICAgICAgICAgICAgICAgInByb2JsZW0iOiB0LmdldCgicHJvYmxlbSIpLAogICAgICAg
+ICAgICAgICAgICAgICAgICJ0b29scyI6IFtbY1sidG9vbCJdLCBjWyJ3aGF0Il1dIGZvciBjIGlu
+IGNhbGxzX2luKHQsIHRvb2xzLCB0MCldWzo0MF19IGZvciB0IGluIHR1cm5zXSwKICAgICAgICAg
+ICAgInRvZG9zIjogW3siaWQiOiB0WyJpZCJdLCAidGV4dCI6IHQuZ2V0KCJ0ZXh0IiksICJhZGRl
+ZCI6IHQuZ2V0KCJhZGRlZCIpIG9yIDAsICJ0YWtlbiI6IHQuZ2V0KCJ0YWtlbiIpLAogICAgICAg
+ICAgICAgICAgICAgICAgICJlbmRlZCI6IHQuZ2V0KCJlbmRlZCIpLCAic3RhdGUiOiB0WyJzdGF0
+ZSJdfSBmb3IgdCBpbiB0b2Rvc119CiAgICBibG9iID0ganNvbi5kdW1wcyhkYXRhLCBlbnN1cmVf
+YXNjaWk9VHJ1ZSkucmVwbGFjZSgiPC8iLCAiPFxcLyIpCiAgICByZWFkcyA9IGFydGlmYWN0X3Jl
+YWRzKHRvb2xzKQogICAgc2tpbGxzID0gc2tpbGxzX2xpc3QobWFkZSwgcmVhZHMpCiAgICByZXR1
+cm4gUEFHRS5mb3JtYXQodGl0bGU9dGl0bGUsIG5hbWU9ZXNjKG5hbWUpLCBzdGF0ZT1zdGF0ZSwg
+d2hlbj13aGVuLCBjaGlwcz0iIi5qb2luKGNoaXBzKSwgZGF0YT1ibG9iLCBzY3JpcHQ9U0NSSVBU
+LCB0b2tlbnM9VE9LRU5TLAogICAgICAgICAgICAgICAgICAgICAgIGNvbnRyb2xzPSc8ZGl2IGNs
+YXNzPSJjb250cm9scyIgaWQ9ImNvbnRyb2xzIiBoaWRkZW4+PC9kaXY+JyBpZiBsaXZlIGVsc2Ug
+IiIsCiAgICAgICAgICAgICAgICAgICAgICAgc2VudD1jb250cm9sX2xpc3QoY29udHJvbHMsIHQw
+KSwKICAgICAgICAgICAgICAgICAgICAgICBhZ2VudHM9YWdlbnRzX3BhbmVsKHdha2VzLCB0dXJu
+cywgdG9kb3MsIHN1bW1hcnksIG1lbWJlcnMsIHBsYW5uZXIsIGJvb2woc3RvcCksIG1hZGUsIHJl
+YWRzKSwKICAgICAgICAgICAgICAgICAgICAgICBkaXZpc2lvbj1kaXZpc2lvbl9zdmcodDAsIHQx
+LCB0b2RvcywgbWFkZSwgbWVtYmVycyksIGtub3dsZWRnZT1rbm93bGVkZ2Vfc3ZnKG1hZGUsIHJl
+YWRzLCBtZW1iZXJzLCB0MCksCiAgICAgICAgICAgICAgICAgICAgICAgaGVhbHRoPWhlYWx0aF9w
+YW5lbChzdGFydCwgd2FrZXMsIHR1cm5zLCBzdW1tYXJ5KSwKICAgICAgICAgICAgICAgICAgICAg
+ICBsb29wPWxvb3Bfc3ZnKHN0YXJ0LCB3YWtlcywgdHVybnMsIHRvZG9zLCBzdW1tYXJ5LCBtZW1i
+ZXJzLCBwbGFubmVyKSwKICAgICAgICAgICAgICAgICAgICAgICB0aW1lbGluZT10aW1lbGluZV9z
+dmcodDAsIHQxLCB3YWtlcywgdHVybnMsIG1lbWJlcnMsIHN0b3AuZ2V0KCJ3aHkiKSBpZiBzdG9w
+IGVsc2UgTm9uZSwgdG9vbHMpLAogICAgICAgICAgICAgICAgICAgICAgIGxpbmVhZ2U9bGluZWFn
+ZV9zdmcobWFkZSksIHNraWxscz1mJzxzZWN0aW9uIGNsYXNzPSJwYW5lbCI+e3NraWxsc308L3Nl
+Y3Rpb24+JyBpZiBza2lsbHMgZWxzZSAiIiwKICAgICAgICAgICAgICAgICAgICAgICBnYXRoZXI9
+Z2F0aGVyX2xpc3QodHVybnMsIHRvb2xzLCB0MCksCiAgICAgICAgICAgICAgICAgICAgICAgYmVz
+dD1iZXN0X3N2Zyh0MCwgdDEsIHR1cm5zKSwgdG9kb3M9dG9kb19saXN0KHRvZG9zLCB0MCwgdHVy
+bnMpLCB3YWtlcz13YWtlX2xpc3Qod2FrZXMsIHQwKSwKICAgICAgICAgICAgICAgICAgICAgICBs
+ZXNzb25zPWxlc3NvbnNfcGFuZWwob3V0LCB3YWtlcywgdHVybnMpKQoKCmNsYXNzIF9TZXJ2ZXIo
+c29ja2V0c2VydmVyLlRocmVhZGluZ01peEluLCBodHRwLnNlcnZlci5IVFRQU2VydmVyKTogICMg
+VGhyZWFkaW5nSFRUUFNlcnZlciBpcyBQeXRob24gMy43KwogICAgZGFlbW9uX3RocmVhZHMgPSBU
+cnVlCgoKZGVmIHNlcnZlKG91dCwgaG9zdD0iMTI3LjAuMC4xIiwgcG9ydD04NzgwLCB0b2tlbj1O
+b25lLCByZWFkeT1Ob25lLCBhbGxvd19ob3N0cz0oKSk6CiAgICAiIiJTZXJ2ZSB0aGUgcnVuJ3Mg
+cGFnZSAoZHJhd24gYWdhaW4gZm9yIGV2ZXJ5IHJlcXVlc3QpIGFuZCB0YWtlIGEgcGVyc29uJ3Mg
+Y29tbWFuZHMgZm9yIGl0IChQT1NUIC9jb250cm9sIHdpdGgKICAgICJBdXRob3JpemF0aW9uOiBC
+ZWFyZXIgPHRva2VuPiIpLiByZWFkeShzZXJ2ZXIsIHRva2VuKSBpcyBjYWxsZWQgb25jZSBpdCBs
+aXN0ZW5zICh0ZXN0cyBzdG9wIGl0IHdpdGggc2h1dGRvd24oKSkuCiAgICBPbiB0aGlzIG1hY2hp
+bmUgb25seSwgaXQgYW5zd2VycyByZXF1ZXN0cyBmb3IgbG9jYWxob3N0IGFuZCB0aGUgbmFtZXMg
+aW4gYWxsb3dfaG9zdHMgKHdlYmd1YXJkKS4iIiIKICAgIGZyb20gLmVuZ2luZSBpbXBvcnQgc2Vu
+ZF9jb250cm9sICAjIGVuZ2luZSBpbXBvcnRzIHRoaXMgbW9kdWxlOyB0aGlzIG9uZSBuZWVkcyBl
+bmdpbmUgb25seSBoZXJlCiAgICB0b2tlbiA9IHRva2VuIG9yIHNlY3JldHMudG9rZW5fdXJsc2Fm
+ZSgxOCkKCiAgICBjbGFzcyBIYW5kbGVyKGh0dHAuc2VydmVyLkJhc2VIVFRQUmVxdWVzdEhhbmRs
+ZXIpOgogICAgICAgIGRlZiBsb2dfbWVzc2FnZShzZWxmLCAqYXJncyk6CiAgICAgICAgICAgIHBh
+c3MKCiAgICAgICAgZGVmIHNlbmQoc2VsZiwgY29kZSwgYm9keSwga2luZD0iYXBwbGljYXRpb24v
+anNvbiIpOgogICAgICAgICAgICBkYXRhID0gYm9keSBpZiBpc2luc3RhbmNlKGJvZHksIGJ5dGVz
+KSBlbHNlIGpzb24uZHVtcHMoYm9keSkuZW5jb2RlKCJ1dGYtOCIpCiAgICAgICAgICAgIHNlbGYu
+c2VuZF9yZXNwb25zZShjb2RlKQogICAgICAgICAgICBzZWxmLnNlbmRfaGVhZGVyKCJDb250ZW50
+LVR5cGUiLCBraW5kKQogICAgICAgICAgICBzZWxmLnNlbmRfaGVhZGVyKCJDb250ZW50LUxlbmd0
+aCIsIHN0cihsZW4oZGF0YSkpKQogICAgICAgICAgICBzZWxmLnNlbmRfaGVhZGVyKCJDYWNoZS1D
+b250cm9sIiwgIm5vLXN0b3JlIikKICAgICAgICAgICAgc2VsZi5lbmRfaGVhZGVycygpCiAgICAg
+ICAgICAgIHNlbGYud2ZpbGUud3JpdGUoZGF0YSkKCiAgICAgICAgZGVmIGRvX0dFVChzZWxmKToK
+ICAgICAgICAgICAgaWYgd2ViZ3VhcmQucmVmdXNlZChzZWxmLCBob3N0LCBhbGxvd19ob3N0cyk6
+CiAgICAgICAgICAgICAgICByZXR1cm4KICAgICAgICAgICAgaWYgdXJsbGliLnBhcnNlLnVybHBh
+cnNlKHNlbGYucGF0aCkucGF0aCBub3QgaW4gKCIvIiwgIi9pbmRleC5odG1sIik6CiAgICAgICAg
+ICAgICAgICByZXR1cm4gc2VsZi5zZW5kKDQwNCwgeyJlcnJvciI6ICJub3QgZm91bmQifSkKICAg
+ICAgICAgICAgcmV0dXJuIHNlbGYuc2VuZCgyMDAsIHJlbmRlcihvdXQsIGxpdmU9VHJ1ZSkuZW5j
+b2RlKCJ1dGYtOCIpLCAidGV4dC9odG1sOyBjaGFyc2V0PXV0Zi04IikKCiAgICAgICAgZGVmIGRv
+X1BPU1Qoc2VsZik6CiAgICAgICAgICAgIGlmIHdlYmd1YXJkLnJlZnVzZWQoc2VsZiwgaG9zdCwg
+YWxsb3dfaG9zdHMpOgogICAgICAgICAgICAgICAgcmV0dXJuCiAgICAgICAgICAgIGlmIHVybGxp
+Yi5wYXJzZS51cmxwYXJzZShzZWxmLnBhdGgpLnBhdGggIT0gIi9jb250cm9sIjoKICAgICAgICAg
+ICAgICAgIHJldHVybiBzZWxmLnNlbmQoNDA0LCB7ImVycm9yIjogIm5vdCBmb3VuZCJ9KQogICAg
+ICAgICAgICBpZiBub3Qgd2ViZ3VhcmQudG9rZW5fb2sod2ViZ3VhcmQuYmVhcmVyKHNlbGYuaGVh
+ZGVycyksIHRva2VuKToKICAgICAgICAgICAgICAgIHJldHVybiBzZWxmLnNlbmQoNDAzLCB7ImVy
+cm9yIjogInRoaXMgbmVlZHMgdGhlIHRva2VuIGZyb20gdGhlIGxpbmsgdGhlIHNlcnZlciBwcmlu
+dGVkIn0pCiAgICAgICAgICAgIGxlbmd0aCwgcHJvYmxlbSA9IHdlYmd1YXJkLmJvZHlfbGVuZ3Ro
+KHNlbGYuaGVhZGVycywgNDA5NikKICAgICAgICAgICAgaWYgcHJvYmxlbToKICAgICAgICAgICAg
+ICAgIHJldHVybiBzZWxmLnNlbmQocHJvYmxlbVswXSwgeyJlcnJvciI6IHByb2JsZW1bMV19KQog
+ICAgICAgICAgICB0cnk6CiAgICAgICAgICAgICAgICBib2R5ID0ganNvbi5sb2FkcyhzZWxmLnJm
+aWxlLnJlYWQobGVuZ3RoKSBvciBiInt9IikKICAgICAgICAgICAgICAgIHJlYyA9IHNlbmRfY29u
+dHJvbChvdXQsIGJvZHkuZ2V0KCJjb21tYW5kIiksIGJvZHkuZ2V0KCJ2YWx1ZSIpLCBieT0id2Vi
+IikKICAgICAgICAgICAgZXhjZXB0IChWYWx1ZUVycm9yLCBBdHRyaWJ1dGVFcnJvcikgYXMgZXhj
+OgogICAgICAgICAgICAgICAgcmV0dXJuIHNlbGYuc2VuZCg0MDAsIHsiZXJyb3IiOiBzdHIoZXhj
+KX0pCiAgICAgICAgICAgIHJldHVybiBzZWxmLnNlbmQoMjAwLCB7Im9rIjogVHJ1ZSwgInNlbnQi
+OiByZWN9KQoKICAgIHNlcnZlciA9IF9TZXJ2ZXIoKGhvc3QsIHBvcnQpLCBIYW5kbGVyKQogICAg
+aWYgcmVhZHk6CiAgICAgICAgcmVhZHkoc2VydmVyLCB0b2tlbikKICAgIGVsc2U6CiAgICAgICAg
+cHJpbnQoZiJzZXJ2aW5nIHtvcy5wYXRoLmFic3BhdGgob3V0KX0gYXQgaHR0cDovL3tob3N0fTp7
+c2VydmVyLnNlcnZlcl9hZGRyZXNzWzFdfS8jdG9rZW49e3Rva2VufSAgKEN0cmwtQyBzdG9wcyki
+LCBmbHVzaD1UcnVlKQogICAgdHJ5OgogICAgICAgIHNlcnZlci5zZXJ2ZV9mb3JldmVyKHBvbGxf
+aW50ZXJ2YWw9MC4yKQogICAgZmluYWxseToKICAgICAgICBzZXJ2ZXIuc2VydmVyX2Nsb3NlKCkK
+CgpkZWYgc2F2ZShvdXQpOgogICAgcGFnZSA9IHJlbmRlcihvdXQpCiAgICB0bXAgPSBvcy5wYXRo
+LmpvaW4ob3V0LCAidmlldy5odG1sLnRtcCIpCiAgICB3aXRoIG9wZW4odG1wLCAidyIsIGVuY29k
+aW5nPSJ1dGYtOCIpIGFzIGhhbmRsZToKICAgICAgICBoYW5kbGUud3JpdGUocGFnZSkKICAgIG9z
+LnJlcGxhY2UodG1wLCBvcy5wYXRoLmpvaW4ob3V0LCAidmlldy5odG1sIikpICAjIGEgcmVhZGVy
+IG5ldmVyIHNlZXMgaGFsZiBhIHBhZ2UKICAgIHJldHVybiBvcy5wYXRoLmpvaW4ob3V0LCAidmll
+dy5odG1sIikKCgpkZWYgbWFpbihhcmd2PU5vbmUpOgogICAgaW1wb3J0IGFyZ3BhcnNlCiAgICBh
+cCA9IGFyZ3BhcnNlLkFyZ3VtZW50UGFyc2VyKHByb2c9InB5dGhvbjMgLW0gaGVyZHJfcHkuZW5n
+aW5ldmlldyIsIGRlc2NyaXB0aW9uPSJEcmF3IChvciBzZXJ2ZSkgYSBydW4ncyBwYWdlLiIpCiAg
+ICBhcC5hZGRfYXJndW1lbnQoInJ1biIsIG1ldGF2YXI9IlJVTl9GT0xERVIiKQogICAgYXAuYWRk
+X2FyZ3VtZW50KCItLXNlcnZlIiwgYWN0aW9uPSJzdG9yZV90cnVlIiwgaGVscD0ic2VydmUgdGhl
+IHBhZ2Ugd2l0aCBhIHBlcnNvbidzIGJ1dHRvbnMgaW5zdGVhZCBvZiB3cml0aW5nIHZpZXcuaHRt
+bCIpCiAgICBhcC5hZGRfYXJndW1lbnQoIi0taG9zdCIsIGRlZmF1bHQ9IjEyNy4wLjAuMSIpCiAg
+ICBhcC5hZGRfYXJndW1lbnQoIi0tcG9ydCIsIHR5cGU9aW50LCBkZWZhdWx0PTg3ODApCiAgICBh
+cC5hZGRfYXJndW1lbnQoIi0tYWxsb3ctaG9zdCIsIGFjdGlvbj0iYXBwZW5kIiwgZGVmYXVsdD1b
+XSwgbWV0YXZhcj0iTkFNRSIsCiAgICAgICAgICAgICAgICAgICAgaGVscD0iYWxzbyBhbnN3ZXIg
+cmVxdWVzdHMgZm9yIHRoaXMgbmFtZSAoYSBwcm94eSBpbiBmcm9udCB0aGF0IHBhc3NlcyBvbiBp
+dHMgcHVibGljIG5hbWUpIikKICAgIGEgPSBhcC5wYXJzZV9hcmdzKGFyZ3YpCiAgICBpZiBub3Qg
+b3MucGF0aC5pc2ZpbGUob3MucGF0aC5qb2luKGEucnVuLCAiZW5naW5lLmpzb25sIikpOgogICAg
+ICAgIHByaW50KGYiaGVyZHItcHkgZW5naW5ldmlldzoge2EucnVufSBob2xkcyBubyBydW4gKGVu
+Z2luZS5qc29ubCkiLCBmaWxlPXN5cy5zdGRlcnIpCiAgICAgICAgcmV0dXJuIDIKICAgIGlmIGEu
+c2VydmU6CiAgICAgICAgdHJ5OgogICAgICAgICAgICBzZXJ2ZShhLnJ1biwgaG9zdD1hLmhvc3Qs
+IHBvcnQ9YS5wb3J0LCBhbGxvd19ob3N0cz1hLmFsbG93X2hvc3QpCiAgICAgICAgZXhjZXB0IEtl
+eWJvYXJkSW50ZXJydXB0OgogICAgICAgICAgICBwYXNzCiAgICAgICAgcmV0dXJuIDAKICAgIHBy
+aW50KHNhdmUoYS5ydW4pKQogICAgcmV0dXJuIDAKCgppZiBfX25hbWVfXyA9PSAiX19tYWluX18i
+OgogICAgc3lzLmV4aXQobWFpbigpKQo=
+HERDR_PY_EOF
+cat > herdr_py/lessons.py <<'HERDR_PY_EOF'
+"""Lessons: corrections a person, or the agent that supervises a team, made to a team's work, kept so that the next team
+that meets the same situation is told before it acts, and measured, so that a lesson that does not help is retired.
+Standard library only; Python 3.6+.
+
+A lessons file is an append-only JSON Lines log:
+
+    {"type": "lesson", "id": "L...", "t", "by", "when": REGEX, "wrong": TEXT, "right": TEXT, "detect": REGEX or null,
+     "evidence": TEXT, "source": {"run": FOLDER, "step": ID} or null}
+    {"type": "review", "id", "t", "status": "hypothesis" | "confirmed" | "retired", "why", "counts": {...}}
+
+- when: a regular expression searched, without regard to case, before an action: in the task and the todo a member
+  takes, and in the task when the planner is woken. A match puts the lesson into that prompt, and the turn's record
+  lists it ("lessons").
+- detect (may be left out): a regular expression that recognizes the mistake itself in what a member hands in, or in
+  the todos a planner adds. A turn that was shown the lesson and still matches it repeated the mistake
+  ("lessons_repeated").
+- review: over the runs given, the turns each lesson was shown in and the ones that repeated the mistake; and, from the
+  turns before the lesson existed that its `when` matches, how often the mistake was made then. Status changes only
+  by these rules, and only forward: repeated in RETIRE_AFTER or more turns after being shown -> retired, for good (to
+  try again, write the lesson anew: it gets a new id); with detect, shown in CONFIRM_AFTER or more turns and never
+  repeated -> confirmed. A review of fewer runs never moves a lesson back. A retired lesson is not shown.
+
+    python3 -m herdr_py.lessons FILE add --when REGEX --wrong TEXT --right TEXT [--detect REGEX] [--evidence TEXT]
+                                         [--run RUN_FOLDER --step ID] --by WHO
+    python3 -m herdr_py.lessons FILE list
+    python3 -m herdr_py.lessons FILE review RUN_FOLDER...    (records the status changes the rules make)
+"""
+import argparse
+import collections
+import hashlib
+import json
+import os
+import re
+import sys
+import time
+
+from .teamkb import TeamKB, artifact_path
+
+RETIRE_AFTER = 2
+CONFIRM_AFTER = 3
+MAX_TEXT = 1000
+STATUSES = ("hypothesis", "confirmed", "retired")
+SHOWN = """
+CORRECTIONS FROM EARLIER WORK (a person or the team's supervisor found these mistakes before; check that you are not
+about to make them again):
+{lines}
+"""
+
+
+class LessonError(Exception):
+    """A lesson that cannot be added (the message says why), or a lessons file that cannot be read."""
+
+
+def pattern(text, what):
+    if not isinstance(text, str) or not text.strip():
+        raise LessonError(f"{what}: give a regular expression")
+    try:
+        return re.compile(text, re.I)
+    except re.error as exc:
+        raise LessonError(f"{what} {text!r} is not a regular expression: {exc}")
+
+
+def one_line(text, limit=MAX_TEXT):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1] + "…"
+
+
+class Lessons:
+    def __init__(self, path):
+        self.path = os.path.abspath(os.path.expanduser(path))
+        self.lessons = collections.OrderedDict()
+        self.bad_lines = 0
+        if os.path.exists(self.path):
+            with open(self.path, encoding="utf-8") as handle:
+                for line in handle:
+                    if line.strip():
+                        self._apply(line)
+
+    def _apply(self, line):
+        try:
+            e = json.loads(line)
+            if e.get("type") == "lesson":
+                lesson = dict(e, status="hypothesis", _when=pattern(e["when"], "when"),
+                              _detect=pattern(e["detect"], "detect") if e.get("detect") else None)
+                self.lessons.setdefault(e["id"], lesson)
+            elif e.get("type") == "review" and e.get("id") in self.lessons and e.get("status") in STATUSES:
+                self.lessons[e["id"]]["status"] = e["status"]
+            else:
+                self.bad_lines += 1
+        except (ValueError, KeyError, TypeError, AttributeError, LessonError):
+            self.bad_lines += 1
+
+    def _write(self, event):
+        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        with open(self.path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(event, ensure_ascii=False) + "\n")
+        self._apply(json.dumps(event))
+
+    def add(self, when, wrong, right, by, detect=None, evidence="", source=None):
+        """Record a lesson (a hypothesis); the same when, wrong and right again is the lesson already there."""
+        pattern(when, "when")
+        if detect:
+            pattern(detect, "detect")
+        if not str(wrong or "").strip() or not str(right or "").strip():
+            raise LessonError("a lesson needs what went wrong (wrong) and the right way (right)")
+        if not str(by or "").strip():
+            raise LessonError("say who made the correction (by)")
+        lid = "L" + hashlib.sha256(f"{when}\0{wrong}\0{right}".encode("utf-8")).hexdigest()[:8]
+        if lid not in self.lessons:
+            self._write({"type": "lesson", "id": lid, "t": round(time.time(), 3), "by": one_line(by, 200),
+                         "when": when, "wrong": one_line(wrong), "right": one_line(right), "detect": detect or None,
+                         "evidence": one_line(evidence), "source": source or None})
+        return self.lessons[lid]
+
+    def active(self):
+        return [l for l in self.lessons.values() if l["status"] != "retired"]
+
+    def matching(self, text):
+        """The lessons (not retired) whose `when` is found in this text."""
+        return [l for l in self.active() if l["_when"].search(text or "")]
+
+    def review(self, runs, write=True):
+        """[(lesson, counts, status, why)] for every lesson; with write, status changes are recorded."""
+        turns = list(read_turns(runs))
+        out = []
+        for lesson in self.lessons.values():
+            counts = measure(lesson, turns)
+            status, why = decide(lesson, counts)
+            if write and status != lesson["status"]:
+                self._write({"type": "review", "id": lesson["id"], "t": round(time.time(), 3), "status": status,
+                             "why": why, "counts": counts})
+            out.append((lesson, counts, status, why))
+        return out
+
+
+def shown_text(lessons):
+    """The part of a prompt that tells a member or the planner what was corrected before."""
+    lines = [f"- {l['id']}: wrong: {l['wrong']}\n  right: {l['right']}" for l in lessons]
+    return SHOWN.format(lines="\n".join(lines)) if lines else ""
+
+
+def repeated(lessons, texts):
+    """The ids of the lessons whose `detect` is found in any of these texts (what a turn handed in)."""
+    return [l["id"] for l in lessons if l.get("_detect") and any(l["_detect"].search(t or "") for t in texts)]
+
+
+def read_turns(runs):
+    """Every member turn and planner wake of these run folders: {"t", "where", "text" (what `when` is matched against),
+    "made" (what `detect` is matched against), "shown", "repeated"}."""
+    for run in runs:
+        task = ""
+        try:
+            with open(os.path.join(run, "task.md"), encoding="utf-8", errors="replace") as handle:
+                task = handle.read()
+        except OSError:
+            pass  # a run from before task.md was kept: its todos are matched on their own
+        kb = TeamKB(os.path.join(run, "kb")) if os.path.isdir(os.path.join(run, "kb")) else None
+        todos = {t["id"]: t for t in kb.todo_list()} if kb else {}
+        entries = {e["id"]: e for e in kb.entries()} if kb else {}
+        for rec in records(os.path.join(run, "run.jsonl")):
+            if "member" not in rec or "todo" not in rec:
+                continue
+            todo = todos.get(rec["todo"]) or {}
+            made = [answer(kb, entries.get(eid)) for eid in [rec.get("entry")] + [r.get("entry") for r in rec.get("repairs") or []]
+                    if eid]
+            yield {"t": rec.get("start") or rec.get("t") or 0, "where": f"{run} turn {rec.get('turn')}",
+                   "text": task + "\n" + (todo.get("text") or ""), "made": made,
+                   "shown": rec.get("lessons") or [], "repeated": rec.get("lessons_repeated") or []}
+        for rec in records(os.path.join(run, "engine.jsonl")):
+            if rec.get("kind") != "wake":
+                continue
+            yield {"t": rec.get("t") or 0, "where": f"{run} wake {rec.get('wake')}", "text": task,
+                   "made": [(todos.get(tid) or {}).get("text") or "" for tid in rec.get("added") or []],
+                   "shown": rec.get("lessons") or [], "repeated": rec.get("lessons_repeated") or []}
+
+
+def records(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(rec, dict):
+                    yield rec
+    except OSError:
+        return
+
+
+def answer(kb, entry):
+    if not kb or not entry or not entry.get("artifact"):
+        return (entry or {}).get("summary") or ""
+    path = artifact_path(kb.folder, entry["artifact"])
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except (OSError, TypeError):
+        return ""
+
+
+def measure(lesson, turns):
+    """{"shown", "repeated", "before", "before_made"}: turns shown the lesson and those of them that repeated the
+    mistake; turns from before the lesson whose `when` matches, and those of them that made the mistake."""
+    c = {"shown": 0, "repeated": 0, "before": 0, "before_made": 0}
+    for turn in turns:
+        if lesson["id"] in turn["shown"]:
+            c["shown"] += 1
+            c["repeated"] += lesson["id"] in turn["repeated"]
+        elif turn["t"] < lesson["t"] and lesson["_when"].search(turn["text"]):
+            c["before"] += 1
+            c["before_made"] += bool(lesson.get("_detect") and any(lesson["_detect"].search(m) for m in turn["made"]))
+    return c
+
+
+def decide(lesson, c):
+    """(status, why) by the rules in the module notes."""
+    now = lesson.get("status", "hypothesis")
+    if c["repeated"] >= RETIRE_AFTER:
+        return "retired", f"shown in {c['shown']} turns and the mistake came back in {c['repeated']}"
+    if now == "retired":
+        return "retired", "retired by an earlier review (write the lesson anew to try it again)"
+    if lesson.get("_detect") and c["shown"] >= CONFIRM_AFTER and c["repeated"] == 0:
+        return "confirmed", f"shown in {c['shown']} turns and the mistake did not come back"
+    if not lesson.get("_detect"):
+        return now, "no detect: nothing to measure it by"
+    return now, f"shown in {c['shown']} turns, the mistake came back in {c['repeated']}"
+
+
+def rate(made, of):
+    return "-" if not of else f"{made}/{of}"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="python3 -m herdr_py.lessons", description=__doc__.split("\n\n")[0])
+    ap.add_argument("file", metavar="FILE", help="the lessons file (JSON Lines; made when the first lesson is added)")
+    ap.add_argument("command", choices=["add", "list", "review"])
+    ap.add_argument("runs", nargs="*", metavar="RUN_FOLDER", help="review: the runs to measure the lessons on")
+    ap.add_argument("--when", help="add: a regular expression; the lesson is shown where it is found")
+    ap.add_argument("--wrong", help="add: what the team did wrong")
+    ap.add_argument("--right", help="add: the right way")
+    ap.add_argument("--detect", help="add: a regular expression that finds the mistake in what a member hands in")
+    ap.add_argument("--evidence", default="", help="add: what shows it (a run, a file, a test)")
+    ap.add_argument("--run", help="add: the run the mistake was made in")
+    ap.add_argument("--step", help="add: the turn, todo or entry in that run")
+    ap.add_argument("--by", help="add: who made the correction")
+    a = ap.parse_args(argv)
+    try:
+        book = Lessons(a.file)
+        if a.command == "add":
+            source = {"run": os.path.abspath(a.run), "step": a.step} if a.run else None
+            lesson = book.add(a.when, a.wrong, a.right, a.by, detect=a.detect, evidence=a.evidence, source=source)
+            print(f"{lesson['id']} ({lesson['status']}): shown where /{lesson['when']}/ is found")
+        elif a.command == "list":
+            for l in book.lessons.values():
+                print(f"{l['id']}  {l['status']:<10}  when /{l['when']}/  detect "
+                      + (f"/{l['detect']}/" if l.get("detect") else "-") + f"\n    wrong: {l['wrong']}\n    right: {l['right']}")
+        else:
+            if not a.runs:
+                raise LessonError("review: give the run folders to measure the lessons on")
+            for lesson, c, status, why in book.review(a.runs):
+                print(f"{lesson['id']}  {status:<10}  shown {c['shown']}, repeated {c['repeated']}; mistake before the "
+                      f"lesson {rate(c['before_made'], c['before'])}  ({why})")
+        if book.bad_lines:
+            print(f"warning: {book.bad_lines} lines of {a.file} could not be read", file=sys.stderr)
+    except (LessonError, OSError) as exc:
+        print(f"herdr-py lessons: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
 HERDR_PY_EOF
 cat > herdr_py/members.py <<'HERDR_PY_EOF'
 """Team members behind one contract, whatever runs them.
@@ -15233,6 +15854,7 @@ except ImportError:  # not POSIX: one writer at a time
 from . import dagview, engineview
 from .engineview import artifact_reads, read_jsonl
 from .members import MemberError, parse_member
+from .teamkb import artifact_path
 
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 KINDS = ("engine", "dag", "other")
@@ -15240,7 +15862,7 @@ BUDGET = ("turns", "planner_wakes", "time_limit", "max_open", "turn_timeout")
 LOOP = {"repairs": "--repairs", "repair_below": "--repair-below", "target": "--target", "wrap_up": "--wrap-up"}  # page.json "loop"
 SHOW = ("results", "failures", "answer_bytes")
 BRING = ("skills", "knowledge", "current")  # what a request may ask a new task to bring from another page
-LOOKED = ("approve", "note", "pick", "exclude", "include", "accept", "hold", "done")  # someone looked at the page
+LOOKED = ("approve", "note", "correct", "pick", "exclude", "include", "accept", "hold", "done")  # someone looked at the page
 QUIET = 15 * 60  # a run with no end that has written nothing for this long is stuck
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the folder herdr_py is in, for the engine's process
 
@@ -15334,6 +15956,8 @@ S = {  # (English, 繁體中文)
     "ev_create": ("opened the page", "開頁"), "ev_revise": ("revised the definition", "改了定義"),
     "ev_approve": ("approved version {d}", "核准版本 {d}"), "ev_run": ("run {n} started", "第 {n} 次執行開始"),
     "ev_attach": ("attached run {n}: {dir}", "掛上第 {n} 次執行：{dir}"), "ev_run_end": ("run {n} ended (exit {code})", "第 {n} 次執行結束（結束碼 {code}）"),
+    "ev_correct": ("correction {lesson}{where}: wrong: {wrong} / right: {right} (told to later runs where /{when}/ is found)",
+                   "糾正 {lesson}{where}：錯在 {wrong}／應該 {right}（之後的執行遇到 /{when}/ 會被提醒）"),
     "ev_note": ("note {id}: {text}", "批註 {id}：{text}"), "ev_pick": ("picked {entry} as the current {kind}", "選 {entry} 當現行的 {kind}"),
     "ev_exclude": ("excluded {entry}: {why}", "排除 {entry}：{why}"), "ev_include": ("included {entry} again", "取消排除 {entry}"),
     "ev_accept": ("accepted: {why}", "驗收：{why}"), "ev_hold": ("put on hold: {why}", "擱置：{why}"),
@@ -15592,6 +16216,10 @@ class Notebook:
         return self._append("requests.jsonl", dict(kind="request", id=rid, goal=goal.strip()[:2000],
                                                     title=(title or "").strip()[:200] or None, bring=wanted), by, at)
 
+    def lessons_path(self):
+        """The notebook's lessons (lessons.py): corrections made on any page, told to every later run they fit."""
+        return os.path.join(self.folder, "lessons.jsonl")
+
     def _append(self, name, event, by, at=None):
         event = dict(event, by=by, t=now())
         if at is not None:
@@ -15793,8 +16421,8 @@ def last_write(*paths):
 def with_files(folder, made):
     """engineview's entries, each with the artifact file its proposal names (kb/artifacts/...), so it can be opened."""
     files = {e.get("id"): e.get("artifact") for e in read_jsonl(os.path.join(folder, "kb", "events.jsonl"))
-             if e.get("type") == "propose"}
-    return [dict(e, artifact=files.get(e["id"])) for e in made]
+             if e.get("type") == "propose"}  # a name that is not the knowledge base's own is left out (teamkb.artifact_path)
+    return [dict(e, artifact=files.get(e["id"]) if artifact_path(folder, files.get(e["id"])) else None) for e in made]
 
 
 def engine_facts(folder, at):
@@ -16031,7 +16659,7 @@ def write_references(folder, refs, lang):
     rows = []
     for r in refs:
         for e in r["entries"]:
-            src = os.path.join(e["folder"], "kb", e["artifact"]) if e.get("artifact") else None
+            src = artifact_path(os.path.join(e["folder"], "kb"), e["artifact"]) if e.get("artifact") else None
             if not src or not os.path.isfile(src):
                 continue
             path = os.path.join(board, ref_file(r, e))
@@ -16071,6 +16699,8 @@ def run_argv(page, folder, task_file, source=None, picks=(), source_n=None):
             argv += [flag, str(int(value)) if key in ("repairs", "wrap_up") else f"{value:g}"]
     if isinstance(d.get("tools"), dict) and d["tools"].get("sandbox"):
         argv += ["--mcp-sandbox", d["tools"]["sandbox"]]
+    if os.path.isfile(page.notebook.lessons_path()):  # corrections from any page, told where they fit
+        argv += ["--lessons", page.notebook.lessons_path()]
     if "repair_below" in (d.get("loop") or {}):
         for kind in d.get("outputs") or []:  # the bar is for the page's outputs, not for a skill that always scores the same
             argv += ["--repair-kind", kind]
@@ -16184,6 +16814,28 @@ def pick(page, eid, by, at=None):
     return page.append("pick", by, at=at, entry=eid, run=entry["run"], of=entry["kind"])
 
 
+def correct(page, by, wrong, right, when, detect=None, evidence="", run=None, step=None, at=None):
+    """A correction of a page's work: a lesson in the notebook's lessons.jsonl (told to every later run, on any page,
+    where its `when` matches; lessons.py) and an event in the page's history."""
+    from .lessons import LessonError, Lessons
+    source = {"page": page.id}
+    if run is not None:
+        found = next((r for r in page.runs() if r["n"] == run), None)
+        if found is None:
+            raise NotebookError(f"{page.id} has no run {run}")
+        source.update(run=found["folder"], n=run)
+    if step:
+        source["step"] = step
+    try:
+        lesson = Lessons(page.notebook.lessons_path()).add(when, wrong, right, by, detect=detect, evidence=evidence or "",
+                                                           source=source)
+    except LessonError as exc:
+        raise NotebookError(str(exc))
+    page.append("correct", by, at=at, lesson=lesson["id"], run=run, step=step, wrong=lesson["wrong"],
+                right=lesson["right"], when=lesson["when"], detect=lesson.get("detect"))
+    return lesson
+
+
 def add_note(page, text, by, at=None):
     if not text.strip():
         raise NotebookError("a note says something")
@@ -16252,8 +16904,8 @@ def parse_at(text):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python3 -m herdr_py.notebook", description=__doc__.split("\n\n")[0])
     ap.add_argument("notebook", help="the notebook's folder")
-    ap.add_argument("command", choices=["draft", "approve", "run", "attach", "note", "pick", "exclude", "include", "accept",
-                                        "hold", "done", "reopen", "status", "view", "request", "serve"])
+    ap.add_argument("command", choices=["draft", "approve", "run", "attach", "note", "correct", "pick", "exclude", "include",
+                                        "accept", "hold", "done", "reopen", "status", "view", "request", "serve"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--by", default=os.environ.get("USER") or "person", help="who decided (default: this user)")
     ap.add_argument("--at", help="when it happened, for a record made before the notebook existed (marked imported)")
@@ -16263,6 +16915,13 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="run: show the engine command and the task, run nothing")
     ap.add_argument("--detach", action="store_true", help="run: start the run and return")
     ap.add_argument("--note", help="attach: a line about the run")
+    ap.add_argument("--wrong", help="correct: what the team did wrong")
+    ap.add_argument("--right", help="correct: the right way")
+    ap.add_argument("--when", help="correct: a regular expression; later runs whose task or todo has it are told")
+    ap.add_argument("--detect", help="correct: a regular expression that finds the same mistake in what they hand in")
+    ap.add_argument("--evidence", default="", help="correct: what shows it (a file, a test, a run)")
+    ap.add_argument("--run", type=int, metavar="N", help="correct: the run of the page the mistake was made in")
+    ap.add_argument("--step", help="correct: the turn, todo or entry of that run")
     ap.add_argument("--out", help="view: the folder to write")
     ap.add_argument("--request", help="draft: the request (r1, r2, ...) this page answers")
     ap.add_argument("--title", help="request: a title for the new task")
@@ -16270,10 +16929,13 @@ def main(argv=None):
                     help="request: what the new task brings from that page: skills, knowledge, current (comma separated)")
     ap.add_argument("--host", default="127.0.0.1", help="serve: the address to listen on (default: this machine only)")
     ap.add_argument("--port", type=int, default=8790, help="serve: the port (default 8790)")
+    ap.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                    help="serve: also answer requests for this name (a proxy in front that passes on its public name)")
     ap.add_argument("--runs", action="append", default=[], metavar="DIR", help="view: list the run folders under DIR no page holds")
     a = ap.parse_args(argv)
     nb = Notebook(a.notebook)
-    need = {"draft": 1, "approve": 1, "run": 1, "attach": 2, "note": 2, "pick": 2, "exclude": 2, "include": 2, "accept": 1,
+    need = {"draft": 1, "approve": 1, "run": 1, "attach": 2, "note": 2, "correct": 1, "pick": 2, "exclude": 2, "include": 2,
+            "accept": 1,
             "hold": 1, "done": 1, "reopen": 1, "status": 0, "view": 0, "request": 1, "serve": 0}[a.command]
     if len(a.args) != need:
         print(f"herdr-py notebook: {a.command} takes {need} argument{'s' if need != 1 else ''}", file=sys.stderr)
@@ -16296,7 +16958,7 @@ def main(argv=None):
             print(f"request {e['id']}: Claude drafts the page; it runs after a person approves it")
         elif a.command == "serve":
             from . import notebookview
-            notebookview.serve(nb.folder, a.host, a.port, roots=a.runs,
+            notebookview.serve(nb.folder, a.host, a.port, roots=a.runs, allow_hosts=a.allow_host,
                                ready=lambda url: print(f"open: {url}  (the buttons need the token after #)", flush=True))
         elif a.command == "view":
             from . import notebookview
@@ -16317,6 +16979,12 @@ def main(argv=None):
             elif a.command == "attach":
                 e = attach(page, a.args[1], a.by, a.source, at, a.note)
                 print(f"{page.id}: run {e['n']} is {e['dir']}")
+            elif a.command == "correct":
+                lesson = correct(page, a.by, a.wrong, a.right, a.when, detect=a.detect, evidence=a.evidence, run=a.run,
+                                 step=a.step, at=at)
+                print(f"{page.id}: lesson {lesson['id']} ({lesson['status']}); later runs whose task or todo has "
+                      f"/{lesson['when']}/ are told" + ("" if lesson.get("detect") else "; without --detect it cannot be "
+                                                        "measured, so it stays a hypothesis"))
             elif a.command == "note":
                 e = add_note(page, a.args[1], a.by, at)
                 print(f"{page.id}: note {e['id']} goes into the next run")
@@ -16362,7 +17030,6 @@ only unless --host says otherwise, and serves the teams' own files in a sandbox 
 token). Data is escaped, never written into a page as markup.
 """
 import collections
-import hmac
 import http.server
 import json
 import math
@@ -16374,12 +17041,12 @@ import sys
 import time
 import urllib.parse
 
-from . import coopview, dagview, engineview, rundiag
+from . import coopview, dagview, engineview, rundiag, webguard
 from .engineview import esc, fit
 from .members import MemberError, parse_member
 from .notebook import (LOOKED, S, Notebook, NotebookError, add_note, approve, command, day_of, find_entry, local,
                        need_text, one_line, pick, run_facts, say, score_text, span_text, tilde, tokens_text)
-from .teamkb import TAG
+from .teamkb import TAG, artifact_path
 from .viewstyle import TOKENS
 
 V = {  # (English, 繁體中文); the shared words are notebook.S
@@ -16446,6 +17113,10 @@ V = {  # (English, 繁體中文); the shared words are notebook.S
     "dg_lost": ("{turns} member turns left nothing ({which}; {tokens_text} tokens)", "{turns} 個成員回合什麼都沒留下（{which}；{tokens_text} tokens）"),
     "dgs_lost": ("a turn that runs out of time loses all it did: give one part of the work per todo, or a longer budget.turn_timeout",
                  "超時的回合做的一切都會丟失：一個待辦只給一部分工作，或把 budget.turn_timeout 加長"),
+    "dg_lesson_repeated": ("{turns} turns made a mistake they had been told about ({which})",
+                           "{turns} 個回合被提醒過，還是犯了同樣的錯（{which}）"),
+    "dgs_lesson_repeated": ("telling it did not stop it: say the right way more plainly, or make it something the judge checks",
+                            "提醒沒有擋住：把對的做法寫得更直接，或改成評分程式會檢查的項目"),
     "dg_cancelled": ("{turns} member turns were cancelled when the target was reached ({which}; {tokens_text} tokens)",
                      "達標時取消了 {turns} 個成員回合（{which}；{tokens_text} tokens）"),
     "dgs_cancelled": ("what they were making was no longer needed", "它們在做的東西已經不需要了"),
@@ -16989,7 +17660,7 @@ def outputs_of(page):
 
 def artifact_body(entry):
     """(text, extension) of an entry's artifact for people to open: its kind line taken off, HTML kept as a page."""
-    src = os.path.join(entry["folder"], "kb", entry["artifact"]) if entry.get("artifact") else None
+    src = artifact_path(os.path.join(entry["folder"], "kb"), entry["artifact"]) if entry.get("artifact") else None
     if not src or not os.path.isfile(src):
         return None, None
     with open(src, "rb") as handle:
@@ -17833,6 +18504,12 @@ def versions_html(page, lang, outs):
     return f'<div class="items" style="gap:14px">{"".join(blocks)}</div>'
 
 
+def where_of(e):
+    """" (run 2, T7)" for a correction that names its run and step; "" when it names neither."""
+    parts = [f"run {e['run']}" if e.get("run") else "", str(e.get("step") or "")]
+    return " (" + ", ".join(p for p in parts if p) + ")" if any(parts) else ""
+
+
 def history_html(page, lang):
     rows = []
     for e in sorted(page.history, key=lambda e: e.get("t") or 0):
@@ -17843,6 +18520,8 @@ def history_html(page, lang):
             "run": lambda: (say(lang, "ev_attach", n=e.get("n"), dir=tilde(e.get("dir"))) if e.get("attached") else say(lang, "ev_run", n=e.get("n"))),
             "run_end": lambda: say(lang, "ev_run_end", n=e.get("n"), code=e.get("exit")),
             "note": lambda: say(lang, "ev_note", id=e.get("id"), text=e.get("text")),
+            "correct": lambda: say(lang, "ev_correct", lesson=e.get("lesson"), wrong=e.get("wrong"), right=e.get("right"),
+                                   when=e.get("when"), where=where_of(e)),
             "pick": lambda: say(lang, "ev_pick", entry=e.get("entry"), kind=e.get("of")),
             "exclude": lambda: say(lang, "ev_exclude", entry=e.get("entry"), why=why),
             "include": lambda: say(lang, "ev_include", entry=e.get("entry")),
@@ -18299,9 +18978,10 @@ class _Server(socketserver.ThreadingMixIn, http.server.HTTPServer):  # Threading
     allow_reuse_address = True
 
 
-def serve(folder, host="127.0.0.1", port=8790, token=None, roots=(), ready=None):
+def serve(folder, host="127.0.0.1", port=8790, token=None, roots=(), ready=None, allow_hosts=()):
     """Serve the notebook live: every GET draws the page from the records as they are; POST api/new and api/act take a
-    person's command, with the token. ready(url) is called once it listens."""
+    person's command, with the token. ready(url) is called once it listens. On this machine only, it answers requests
+    for localhost and the names in allow_hosts (webguard)."""
     token = token or secrets.token_urlsafe(18)
     folder = os.path.abspath(os.path.expanduser(folder))
 
@@ -18322,6 +19002,8 @@ def serve(folder, host="127.0.0.1", port=8790, token=None, roots=(), ready=None)
             self.wfile.write(data)
 
         def do_GET(self):
+            if webguard.refused(self, host, allow_hosts):
+                return
             path = urllib.parse.urlparse(self.path).path
             try:
                 code, body, ctype, headers = route(folder, path, roots, True)
@@ -18332,11 +19014,13 @@ def serve(folder, host="127.0.0.1", port=8790, token=None, roots=(), ready=None)
         def do_POST(self):
             def answer(code, obj):
                 self.reply(code, json.dumps(obj, ensure_ascii=False), "application/json; charset=utf-8")
-            if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + token):
+            if webguard.refused(self, host, allow_hosts):
+                return
+            if not webguard.token_ok(webguard.bearer(self.headers), token):
                 return answer(403, {"error": "the token is missing or wrong"})
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > 20000:
-                return answer(413, {"error": "too long"})
+            length, problem = webguard.body_length(self.headers, 20000)
+            if problem:
+                return answer(problem[0], {"error": problem[1]})
             try:
                 body = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
             except ValueError:
@@ -18414,7 +19098,10 @@ class OpenCode:
     def __init__(self, url, username=None, password=None, timeout=30):
         self.url = url.rstrip("/")
         parsed = urllib.parse.urlparse(self.url)
-        self.host, self.port = parsed.hostname or "127.0.0.1", parsed.port or 80
+        if parsed.scheme != "http" or not parsed.hostname:  # urlopen would also take file:// and ftp://
+            raise OpenCodeError(f"OpenCode URL {url!r}: give http://HOST:PORT (OpenCode serves plain HTTP, and the "
+                                f"event stream reads it so)")
+        self.host, self.port = parsed.hostname, parsed.port or 80
         self.headers = {"Content-Type": "application/json"}
         if password:
             token = base64.b64encode(f"{username or 'opencode'}:{password}".encode()).decode()
@@ -19023,6 +19710,7 @@ The rules (codes):
 - skill_overlap: pairs of skills that quote the same sentences (three or more, of five words or more), unless one is a
   revision of the other (it builds on it and keeps its name): the same rules written down twice.
 - references: the files brought from other tasks (reference/), and how many of them members opened.
+- lesson_repeated: turns told a correction from earlier work (--lessons) whose work still made that mistake.
 - broken: what broke in the setup (a backend, the judge)."""
 import argparse
 import collections
@@ -19033,7 +19721,7 @@ import re
 import sys
 
 from . import engineview
-from .teamkb import TAG, TeamKB
+from .teamkb import TAG, TeamKB, artifact_path
 
 WAIT_SHARE = 0.25  # a member free this share of the run (or more) waited too long
 QUOTE = re.compile(r'"([^"\n]{20,})"|\u201c([^\u201d\n]{20,})\u201d')  # a quoted sentence ("..." or curly quotes)
@@ -19065,7 +19753,10 @@ def artifact_kind(run, entry):
     if not entry.get("artifact"):
         return entry.get("kind")
     try:
-        with open(os.path.join(run, "kb", entry["artifact"]), encoding="utf-8", errors="replace") as handle:
+        path = artifact_path(os.path.join(run, "kb"), entry["artifact"])
+        if path is None:
+            return entry.get("kind")
+        with open(path, encoding="utf-8", errors="replace") as handle:
             first = handle.readline()
     except OSError:
         return entry.get("kind")
@@ -19280,12 +19971,25 @@ def findings(run):
                     "what they were making was no longer needed; the tokens before the cancel were spent all the same",
                     which=which, tokens_text=short)
 
+    # corrections from earlier work that a turn was told and made again anyway
+    again = [r for r in list(turns) + list(wakes) if r.get("lessons_repeated")]
+    if again:
+        ids = collections.Counter(i for r in again for i in r["lessons_repeated"])
+        which = ", ".join(f"{i} {n}x" for i, n in ids.most_common(4))
+        add("lesson_repeated", f"{len(again)} turns made a mistake they had been told about ({which})",
+            {"turns": len(again), "lessons": dict(ids)},
+            "telling it did not stop it: say the right way more plainly, or make it something the judge checks",
+            which=which)
+
     # skills that restate each other
     said, names = {}, {}
     for e in entries:
         if e["status"] == "valid" and kinds.get(e["id"]) == "skill" and e.get("artifact"):
+            path = artifact_path(os.path.join(run, "kb"), e["artifact"])
+            if path is None:
+                continue
             try:
-                with open(os.path.join(run, "kb", e["artifact"]), encoding="utf-8", errors="replace") as handle:
+                with open(path, encoding="utf-8", errors="replace") as handle:
                     text = handle.read()
             except OSError:
                 continue
@@ -19346,6 +20050,117 @@ def main(argv=None):
 if __name__ == "__main__":
     sys.exit(main())
 HERDR_PY_EOF
+cat > herdr_py/sandbox.py <<'HERDR_PY_EOF'
+"""Running code that agents wrote: inside a container with no network, a read-only root, no capabilities and no way to
+gain privileges, as this machine's user, with memory, CPU and process limits. Standard library only; Python 3.6+.
+
+Judges that run a member's code use it (examples/self_improve/patch_judge.py, examples/dag/judge.py):
+
+    box = Sandbox.parse("docker:python:3-slim")   # or "podman:IMAGE", or "none"
+    box.check(work)                                 # SandboxError when it cannot run there, with what to do
+    code, output = box.run(["python3", "-m", "unittest"], work, timeout=120, cwd="tests", path_env={"PYTHONPATH": "."})
+
+`work` is the only folder the container sees (at /work, writable: judges give it a throwaway copy). check() starts one
+container that looks for a file it just wrote there: with colima only folders under $HOME are shared, and a folder
+from elsewhere arrives empty without an error. "none" runs the command on this machine as it is; only the person can
+ask for it, and judges say so in their detail. A command that does not finish in time is killed with its container.
+"""
+import itertools
+import os
+import posixpath
+import secrets
+import shutil
+import subprocess
+
+ENGINES = ("docker", "podman")
+INSIDE = "/work"
+HARDENING = ["--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+             "--tmpfs", "/tmp:rw,exec,size=512m", "--memory", "2g", "--cpus", "2", "--pids-limit", "256"]
+PROBE = ".herdr-sandbox-probe"
+_count = itertools.count(1)
+
+
+class SandboxError(Exception):
+    """There is no sandbox to run in; the message says what to do."""
+
+
+class Sandbox:
+    def __init__(self, engine, image):
+        self.engine, self.image = engine, image
+
+    @classmethod
+    def parse(cls, spec):
+        """'docker:IMAGE', 'podman:IMAGE' or 'none'."""
+        spec = (spec or "").strip()
+        if spec == "none":
+            return cls(None, None)
+        engine, _, image = spec.partition(":")
+        if engine not in ENGINES or not image:
+            raise SandboxError(f"sandbox {spec!r}: give docker:IMAGE, podman:IMAGE, or none (this machine, unsafe)")
+        return cls(engine, image)
+
+    @property
+    def on_host(self):
+        return self.engine is None
+
+    def describe(self):
+        return "on this machine, without a sandbox" if self.on_host else f"in {self.engine} ({self.image}), no network"
+
+    def check(self, work):
+        """Raise SandboxError unless commands can run in this sandbox with `work` mounted."""
+        if self.on_host:
+            return
+        if not shutil.which(self.engine):
+            raise SandboxError(f"{self.engine} is not installed: install it, or choose sandbox none to run the members' "
+                               f"code on this machine (unsafe)")
+        marker = secrets.token_hex(8)
+        path = os.path.join(work, PROBE)
+        with open(path, "w") as handle:
+            handle.write(marker)
+        try:
+            code, out = self.run(["cat", PROBE], work, timeout=120)
+        finally:
+            os.remove(path)
+        if code != 0 or out.strip() != marker:
+            raise SandboxError(f"{self.engine} cannot run {self.image} with {work} mounted (exit {code}: "
+                               f"{' '.join(out.split())[-300:]}); with colima only folders under $HOME are shared")
+
+    def argv(self, argv, work, cwd=".", env=None, path_env=None, name=None):
+        """The command line that runs argv: in a container, or as it is for sandbox none."""
+        if self.on_host:
+            return list(argv)
+        inside = posixpath.normpath(posixpath.join(INSIDE, cwd.replace(os.sep, "/")))
+        if inside != INSIDE and not inside.startswith(INSIDE + "/"):
+            raise SandboxError(f"cwd {cwd!r} is outside the work folder")
+        user = ["--userns=keep-id"] if self.engine == "podman" else ["--user", f"{os.getuid()}:{os.getgid()}"]
+        out = [self.engine, "run", "--rm"] + (["--name", name] if name else []) + HARDENING + user
+        out += ["-e", "HOME=/tmp", "-v", f"{os.path.abspath(work)}:{INSIDE}", "-w", inside]
+        for key, value in sorted((env or {}).items()):
+            out += ["-e", f"{key}={value}"]
+        for key, rel in sorted((path_env or {}).items()):
+            out += ["-e", f"{key}={posixpath.normpath(posixpath.join(INSIDE, rel))}"]
+        return out + [self.image] + list(argv)
+
+    def run(self, argv, work, timeout, cwd=".", env=None, path_env=None):
+        """(exit code, or None when it did not finish within timeout seconds; stdout and stderr together). env adds
+        variables; path_env adds variables holding paths relative to `work`."""
+        name = None if self.on_host else f"herdr-sandbox-{os.getpid()}-{next(_count)}-{secrets.token_hex(3)}"
+        if self.on_host:
+            extra = dict(env or {})
+            extra.update({k: os.path.normpath(os.path.join(work, v)) for k, v in (path_env or {}).items()})
+            options = {"cwd": os.path.normpath(os.path.join(work, cwd)), "env": dict(os.environ, **extra)}
+        else:
+            options = {}
+        try:
+            p = subprocess.run(self.argv(argv, work, cwd, env, path_env, name), stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, universal_newlines=True, timeout=timeout, **options)
+            return p.returncode, p.stdout
+        except subprocess.TimeoutExpired as exc:
+            if name:  # killing the client leaves the container running: stop it by name
+                subprocess.run([self.engine, "kill", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            out = exc.stdout.decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+            return None, out
+HERDR_PY_EOF
 cat > herdr_py/server.py <<'HERDR_PY_EOF'
 """The herdr-py daemon: owns the hub, follows OpenCode's event stream, and serves two front doors.
 
@@ -19358,7 +20173,6 @@ cat > herdr_py/server.py <<'HERDR_PY_EOF'
 
 Clients (CLI, TUI, web UI) can come and go: agents keep running in OpenCode and the daemon keeps answering permissions.
 """
-import hmac
 import http.server
 import json
 import os
@@ -19369,7 +20183,7 @@ import threading
 import time
 import urllib.parse
 
-from . import __version__
+from . import __version__, webguard
 from .core import Hub, HubError
 from .opencode import OpenCodeError, start_stream_thread
 
@@ -19380,17 +20194,19 @@ except AttributeError:  # Python 3.6 (RHEL 8's platform-python)
         daemon_threads = True
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+MAX_BODY = 4 * 1024 * 1024  # a prompt with its context; a larger body is refused (413)
 STATIC = {"/": ("index.html", "text/html; charset=utf-8"), "/app.js": ("app.js", "text/javascript; charset=utf-8"),
           "/style.css": ("style.css", "text/css; charset=utf-8")}
 
 
 class Daemon:
     def __init__(self, client, policy, state_dir, socket_path=None, http_addr=None, model=None, questions="ask",
-                 tick_s=0.25, max_agents=None, max_prompts=None):
+                 tick_s=0.25, max_agents=None, max_prompts=None, allow_hosts=()):
         os.makedirs(state_dir, exist_ok=True)
         self.state_dir = state_dir
         self.socket_path = socket_path or os.path.join(state_dir, "herdr-py.sock")
         self.http_addr = http_addr
+        self.allow_hosts = tuple(allow_hosts)
         self.hub = Hub(client, policy, log_path=os.path.join(state_dir, "events.jsonl"),
                        state_path=os.path.join(state_dir, "state.json"), model=model, questions=questions,
                        max_agents=max_agents, max_prompts=max_prompts)
@@ -19398,7 +20214,7 @@ class Daemon:
         self.tick_s = tick_s
         self.stopping = threading.Event()
         self.token = self.load_token()
-        self.unix = self.web = None
+        self.unix = self.web = self.web_host = None
         self.started = time.time()
         self.unasked = None  # set by `serve`: the permission kinds OpenCode runs without asking (opencode.unasked)
 
@@ -19469,12 +20285,17 @@ class Daemon:
         class UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
             daemon_threads = True
 
-        self.unix = UnixServer(self.socket_path, UnixHandler)
+        mask = os.umask(0o177)  # the socket is born 0600: no moment in which another user could connect to it
+        try:
+            self.unix = UnixServer(self.socket_path, UnixHandler)
+        finally:
+            os.umask(mask)
         os.chmod(self.socket_path, 0o600)
         threading.Thread(target=self.unix.serve_forever, daemon=True, name="herdr-py-unix").start()
         if self.http_addr:
             host, _, port = self.http_addr.rpartition(":")
-            self.web = ThreadingHTTPServer((host or "127.0.0.1", int(port)), make_http_handler(self))
+            self.web_host = host or "127.0.0.1"
+            self.web = ThreadingHTTPServer((self.web_host, int(port)), make_http_handler(self))
             self.web.daemon_threads = True
             threading.Thread(target=self.web.serve_forever, daemon=True, name="herdr-py-http").start()
         return reattached
@@ -19555,9 +20376,11 @@ def make_http_handler(daemon):
             pass
 
         def authorized(self, query):
-            header = self.headers.get("Authorization", "")
-            given = header[7:] if header.startswith("Bearer ") else (query.get("token") or [""])[0]
-            return hmac.compare_digest(given.encode(), daemon.token.encode())
+            given = webguard.bearer(self.headers) or (query.get("token") or [""])[0]
+            return webguard.token_ok(given, daemon.token)
+
+        def refused(self):
+            return webguard.refused(self, daemon.web_host, daemon.allow_hosts)
 
         def reply(self, status, obj):
             body = json.dumps(obj, ensure_ascii=False).encode()
@@ -19569,6 +20392,8 @@ def make_http_handler(daemon):
             self.wfile.write(body)
 
         def do_GET(self):
+            if self.refused():
+                return
             url = urllib.parse.urlparse(self.path)
             query = urllib.parse.parse_qs(url.query)
             if url.path in STATIC:
@@ -19601,10 +20426,14 @@ def make_http_handler(daemon):
             return self.reply(404, {"error": "not found"})
 
         def do_POST(self):
+            if self.refused():
+                return
             url = urllib.parse.urlparse(self.path)
             if not self.authorized(urllib.parse.parse_qs(url.query)):
                 return self.reply(401, {"error": "missing or wrong token"})
-            length = int(self.headers.get("Content-Length") or 0)
+            length, problem = webguard.body_length(self.headers, MAX_BODY)
+            if problem:
+                return self.reply(problem[0], {"error": problem[1]})
             try:
                 body = json.loads(self.rfile.read(length) or b"{}") if length else {}
             except ValueError:
@@ -19990,6 +20819,17 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+ARTIFACT = re.compile(r"artifacts/(?!\.\.?$)[^/\\\x00]+")  # one file in artifacts/ (_store names it by its hash)
+
+
+def artifact_path(folder, rel):
+    """Where an entry's artifact is, or None when the name the log records is not one the knowledge base gives: a log
+    edited by hand or by someone else cannot make a reader open a file outside the knowledge base."""
+    if not isinstance(rel, str) or not ARTIFACT.fullmatch(rel):
+        return None
+    return os.path.join(folder, rel)
+
+
 class TeamKB:
     def __init__(self, folder):
         self.folder = os.path.abspath(folder)
@@ -20164,8 +21004,12 @@ class TeamKB:
                 continue
             data, kind = None, (p.get("kind") or "").lower()
             if p.get("artifact"):
+                path = artifact_path(source, p["artifact"])
+                if path is None:
+                    out["left_out"]["artifact name not the knowledge base's"] += 1
+                    continue
                 try:
-                    with open(os.path.join(source, p["artifact"]), "rb") as handle:
+                    with open(path, "rb") as handle:
                         data = handle.read()
                 except OSError:
                     out["left_out"]["artifact missing"] += 1
@@ -20318,7 +21162,9 @@ class TeamKB:
             entry = self.proposals.get(eid)
         if entry is None:
             raise TeamKBError(f"no entry {eid}")
-        path = os.path.join(self.folder, entry["artifact"]) if entry.get("artifact") else None
+        path = artifact_path(self.folder, entry["artifact"]) if entry.get("artifact") else None
+        if entry.get("artifact") and path is None:
+            raise TeamKBError(f"entry {eid}: its artifact name {entry['artifact']!r} is not one this knowledge base gives")
         status, score, detail = "infra_error", None, ""
         try:
             if path is not None:
@@ -20415,7 +21261,10 @@ class TeamKB:
         """An entry's artifact as a fenced block for a brief, or a line saying why it is not shown."""
         if not entry.get("artifact"):
             return []
-        with open(os.path.join(self.folder, entry["artifact"]), "rb") as handle:
+        path = artifact_path(self.folder, entry["artifact"])
+        if path is None:
+            return ["  (its answer is not shown: the log names a file outside the knowledge base)"]
+        with open(path, "rb") as handle:
             data = handle.read(limit + 1)
         if len(data) > limit:
             return [f"  (its answer is longer than {limit} bytes, so it is not shown here)"]
@@ -20518,9 +21367,11 @@ a one-file MCP server (the rest of the answer); the engine offers it to the memb
 run only by the sandbox command the person gave (--mcp-sandbox), never on this machine as it is.
 
 The sandbox command is a template: {file} is the server's code, {kb} the run's knowledge base folder and {board} the
-members' board folder, for example (no network, read-only, the code and the knowledge base mounted read-only):
+members' board folder, for example (no network, read-only, no capabilities, no way to gain privileges, not root, the
+code and the knowledge base mounted read-only):
 
-    docker run --rm -i --network none --read-only --tmpfs /tmp:rw,size=16m --memory 256m --cpus 1 --pids-limit 64
+    docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user 65534:65534
+      --tmpfs /tmp:rw,size=16m --memory 256m --cpus 1 --pids-limit 64
       -v {file}:/srv/tool.py:ro -v {kb}:/kb:ro IMAGE python3 /srv/tool.py
 
 Before a tool is offered, the engine starts it once in the sandbox and asks server/discover and tools/list (MCP
@@ -20534,7 +21385,7 @@ import subprocess
 import threading
 import time
 
-from .teamkb import TAG
+from .teamkb import TAG, artifact_path
 
 KIND = "mcp"
 VERSION = "2026-07-28"
@@ -20625,7 +21476,9 @@ class TeamTools:
         for e in entries:
             if e.get("status") != "valid" or not e.get("artifact") or e["id"] in self.tools:
                 continue
-            path = os.path.join(folder, e["artifact"])
+            path = artifact_path(folder, e["artifact"])
+            if path is None:  # a log that names a file outside the knowledge base: never mounted into a sandbox
+                continue
             try:
                 with open(path, encoding="utf-8", errors="replace") as handle:
                     first, _, code = handle.read().partition("\n")
@@ -22157,6 +23010,112 @@ details.new summary { cursor: pointer; min-height: 28px; font-weight: 600; }
   text-align: center; pointer-events: none; color: var(--text); }
 .toast:not(:empty) { padding: 10px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; }
 code { font-family: ui-monospace, Menlo, monospace; }
+HERDR_PY_EOF
+cat > herdr_py/webguard.py <<'HERDR_PY_EOF'
+"""What every herdr-py web server checks before it answers. Standard library only; Python 3.6+.
+
+- Host: a server that listens on this machine only answers requests addressed to this machine (localhost, a name
+  under .localhost, 127.0.0.0/8, ::1) or to a name given with --allow-host. A web page elsewhere can point its own
+  domain at 127.0.0.1 (DNS rebinding) and then read whatever the server shows without a token; the browser still sends
+  that domain in Host, so such requests are refused. A server bound to any other address was exposed on purpose and
+  answers any Host.
+- token: compared as bytes in constant time; a header with characters outside ASCII is a wrong token, not a crash.
+- body: Content-Length must be a whole number (ASCII digits only) no larger than the endpoint's limit.
+"""
+import hmac
+import ipaddress
+import re
+
+DIGITS = re.compile(r"[0-9]+")
+PORT = re.compile(r"(?::[0-9]*)?")
+
+
+def _loopback_name(name):
+    if name == "localhost" or name.endswith(".localhost"):  # RFC 6761: always this machine; browsers never ask DNS
+        return True
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    if ip.version == 6 and ip.ipv4_mapped:  # ::ffff:127.0.0.1 is 127.0.0.1 (Python before 3.13 says otherwise)
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def is_loopback(bound):
+    """True when the address a server is bound to can only be reached from this machine."""
+    return _loopback_name((bound or "").strip().strip("[]").lower())
+
+
+def host_name(header):
+    """The name in a Host header, lower case and without the port ('Example.com:80' -> 'example.com', '[::1]:8790'
+    -> '::1'); None when the header is missing or malformed."""
+    header = (header or "").strip().lower()
+    if header.startswith("["):
+        name, bracket, rest = header[1:].partition("]")
+        if not bracket:
+            return None
+    else:
+        name, colon, port = header.partition(":")
+        rest = colon + port
+    if not name or not PORT.fullmatch(rest):
+        return None
+    return name
+
+
+def host_allowed(header, bound, allow=()):
+    """Whether a request with this Host header may be answered by a server bound to `bound` (see the module notes)."""
+    if not is_loopback(bound):
+        return True
+    name = host_name(header)
+    if name is None:
+        return False
+    return _loopback_name(name) or name in {a.strip().lower() for a in allow if a}
+
+
+def refused(handler, bound, allow=()):
+    """Answer 403 and return True when the request's Host is not allowed; return False to go on. `handler` is an
+    http.server.BaseHTTPRequestHandler."""
+    header = handler.headers.get("Host")
+    if host_allowed(header, bound, allow):
+        return False
+    body = ("this server answers requests for localhost, 127.0.0.1 or ::1 only (Host was %r); behind a proxy that "
+            "passes on a public name, start it with --allow-host NAME\n" % (header,)).encode("utf-8")
+    handler.send_response(403)
+    handler.send_header("Content-Type", "text/plain; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.end_headers()
+    handler.wfile.write(body)
+    return True
+
+
+def token_ok(given, token):
+    """Constant-time comparison of a token from a request with the server's; anything that is not it is False."""
+    if not token:
+        return False
+    return hmac.compare_digest((given or "").encode("utf-8", "replace"), token.encode("utf-8"))
+
+
+def bearer(headers):
+    """The token in "Authorization: Bearer <token>", or ""."""
+    header = headers.get("Authorization") or ""
+    return header[7:] if header.startswith("Bearer ") else ""
+
+
+def body_length(headers, limit):
+    """(length, None) for a body this endpoint takes, or (None, (status, message)). No Content-Length is an empty body."""
+    raw = headers.get("Content-Length")
+    if raw is None:
+        return 0, None
+    raw = raw.strip()
+    if not DIGITS.fullmatch(raw):
+        return None, (400, "Content-Length must be a whole number")
+    length = int(raw)
+    if length > limit:
+        return None, (413, "too long: at most %d bytes" % limit)
+    return length, None
 HERDR_PY_EOF
 cat > scripts/check_opencode.py <<'HERDR_PY_EOF'
 """Check herdr-py against a real OpenCode server: each path the daemon uses, one scenario each, judged by program.
@@ -25677,7 +26636,7 @@ import time
 import unittest
 
 from herdr_py.core import Hub, HubError
-from herdr_py.opencode import OpenCode, start_stream_thread
+from herdr_py.opencode import OpenCode, OpenCodeError, start_stream_thread
 from herdr_py.policy import Policy, PolicyError, describe, target_of
 
 from fake_opencode import FakeOpenCode
@@ -26046,6 +27005,15 @@ class HubTest(unittest.TestCase):
         started = time.time()
         self.hub.prompt("c", "again")
         self.assertLess(time.time() - started, 0.2)
+
+
+class ClientURLTest(unittest.TestCase):
+    def test_only_plain_http_urls(self):
+        for url in ("http://127.0.0.1:4096", "http://127.0.0.1:4096/", "http://oc.internal"):
+            self.assertTrue(OpenCode(url).host)
+        for url in ("file:///etc/passwd", "ftp://127.0.0.1/x", "https://127.0.0.1:4096", "127.0.0.1:4096", "http://", ""):
+            with self.assertRaises(OpenCodeError, msg=url):
+                OpenCode(url)
 
 
 class PolicyTest(unittest.TestCase):
@@ -26582,6 +27550,19 @@ class RunTest(Base):
         s = self.summary(out)
         self.assertEqual(s["nodes"]["R"]["sha"], s["base"])  # its output is where it started
         self.assertIn("A judge program checks your reply", self.prompts("R")[0])
+
+
+class JudgeContractTest(Base):
+    def test_the_judge_is_told_its_time_limit_and_its_words_reach_the_terminal_without_control_characters(self):
+        with open(os.path.join(self.plans, "loud_judge.py"), "w") as handle:
+            handle.write("import json, os\nprint(json.dumps({'status': 'invalid', 'score': 0, 'detail': 'limit ' + "
+                         "os.environ['HERDR_DAG_JUDGE_TIMEOUT'] + ' \\x1b]0;owned\\x07 \\u202e end'}))\n")
+        plan = self.plan([{"id": "A", "judge": "%s -B loud_judge.py" % sys.executable, "judge_timeout": 77}])
+        code, said, err = self.run_main(plan, "--out", os.path.join(self.dir, "run"))
+        self.assertIn("limit 77", said)
+        self.assertIn("]0;owned", said)
+        self.assertNotIn("\x1b", said)
+        self.assertNotIn("\u202e", said)
 
 
 class TextPlanTest(Base):
@@ -27703,6 +28684,48 @@ class CommandLineTest(unittest.TestCase):
         code, text = self.run_main(empty)
         self.assertEqual(code, 1)
         self.assertIn("no logs in", text)
+
+
+if __name__ == "__main__":
+    unittest.main()
+HERDR_PY_EOF
+cat > tests/test_display.py <<'HERDR_PY_EOF'
+"""Terminal text (herdr_py/display.py): what agents, judges and web pages wrote reaches the terminal without control
+characters, which the terminal would obey (set the clipboard, the title, clear the screen), and without bidirectional
+overrides, which reorder what follows on screen."""
+import os
+import sys
+import unicodedata
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from herdr_py import display  # noqa: E402
+
+EVIL = "ok\x1b]52;c;ZWNobyBwd25lZA==\x07\x1b[2J\u202etxt.exe\x9b31m\x00\x7f fake\rreal\u2066x\u2069"
+
+
+def unsafe(text):
+    return [hex(ord(c)) for c in text if c in display.BIDI or (unicodedata.category(c) == "Cc" and c not in "\n\t")]
+
+
+class TerminalTextTest(unittest.TestCase):
+    def test_control_characters_never_reach_the_terminal(self):
+        for name, out in (("clip", display.clip(EVIL, 500)[0]), ("tail", display.tail(EVIL, 500)),
+                          ("printable", display.printable(EVIL)), ("row", display.row([(EVIL, "")], 500))):
+            self.assertEqual(unsafe(out), [], name)
+            self.assertIn("ZWNobyBwd25lZA==", out, name)  # the visible text stays, only the control characters go
+        self.assertEqual(display.printable("a\nb\x1bc\td\re"), "a\nb�c\td�e")
+        self.assertEqual(display.clip("\x1b[2J", 3), ("�[2", 3))  # a replacement takes one cell, like any letter
+
+    def test_a_styled_row_keeps_its_own_colours_only(self):
+        out = display.row([("hi\x1b[31m", "1;32")], 10)
+        self.assertEqual(out, "\x1b[1;32mhi�[31m\x1b[0m" + " " * 3)
+
+    def test_ordinary_text_is_unchanged(self):
+        for text in ("plain words", "中文字與全形，標點", "emoji 👍🏽", "zero‍width joiner", "tab\there", "Ελληνικά"):
+            self.assertEqual(display.printable(text), text)
+        self.assertEqual(display.clip("中文字", 4), ("中文", 4))
 
 
 if __name__ == "__main__":
@@ -29117,6 +30140,278 @@ class ViewTest(unittest.TestCase):
         with open(path, "w") as handle:
             handle.write('{"drawA": ')  # half written
         self.assertEqual(view.fetch_agents(None, path), {})
+
+
+if __name__ == "__main__":
+    unittest.main()
+HERDR_PY_EOF
+cat > tests/test_lessons.py <<'HERDR_PY_EOF'
+"""Lessons (herdr_py/lessons.py): a correction becomes a lesson that is told before an action where its `when` matches,
+checked against what was handed in, and reviewed by fixed rules. The loop here runs with program members, so no model
+is called: a run makes a mistake; a person records the lesson; the next runs are told and make it again; the review
+retires the lesson, and the run after that is no longer told."""
+import collections
+import contextlib
+import io
+import json
+import os
+import sys
+import time
+import unittest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.dirname(HERE))
+sys.path.insert(0, HERE)
+
+from herdr_py import engineview, lessons, notebook, rundiag  # noqa: E402
+from herdr_py.lessons import CONFIRM_AFTER, RETIRE_AFTER, LessonError, Lessons  # noqa: E402
+import test_engine  # noqa: E402
+import test_notebook  # noqa: E402
+
+SCREENSHOT = dict(when=r"screenshot", wrong="took the screenshot with headless Chrome --window-size, which has a minimum width",
+                  right="use phone-check: it emulates a 390 px phone", detect=r"--window-size")
+ONE_BY_ONE = dict(when=r"number as high", wrong="planned to try the numbers one by one",
+                  right="start from the best answer so far and raise it", detect=r"one by one")
+
+
+class RuleTest(unittest.TestCase):
+    def setUp(self):
+        self.path = os.path.join(test_engine.tempfile.mkdtemp(), "lessons.jsonl")
+        self.addCleanup(test_engine.shutil.rmtree, os.path.dirname(self.path), True)
+
+    def test_a_lesson_is_added_once_and_checked(self):
+        book = Lessons(self.path)
+        first = book.add(by="person", **SCREENSHOT)
+        self.assertEqual((first["status"], first["id"][0], len(first["id"])), ("hypothesis", "L", 9))
+        self.assertEqual(book.add(by="someone else", **SCREENSHOT)["id"], first["id"])  # the same lesson again
+        with open(self.path) as handle:
+            self.assertEqual(len(handle.readlines()), 1)
+        for bad, why in ((dict(SCREENSHOT, when="(unclosed"), "not a regular expression"),
+                         (dict(SCREENSHOT, detect="[a-"), "not a regular expression"),
+                         (dict(SCREENSHOT, when=""), "give a regular expression"),
+                         (dict(SCREENSHOT, wrong=" "), "needs what went wrong"),
+                         (dict(SCREENSHOT, right=""), "needs what went wrong")):
+            with self.assertRaises(LessonError) as caught:
+                book.add(by="person", **bad)
+            self.assertIn(why, str(caught.exception))
+        with self.assertRaises(LessonError):
+            book.add(by="", **dict(SCREENSHOT, wrong="other"))
+
+    def test_matching_ignores_case_and_retired_lessons(self):
+        book = Lessons(self.path)
+        a = book.add(by="p", **SCREENSHOT)
+        b = book.add(by="p", **ONE_BY_ONE)
+        self.assertEqual([l["id"] for l in book.matching("Take a SCREENSHOT of the page")], [a["id"]])
+        self.assertEqual(book.matching("count the words"), [])
+        with open(self.path, "a") as handle:
+            handle.write(json.dumps({"type": "review", "id": a["id"], "t": 1, "status": "retired", "why": "test"}) + "\n")
+            handle.write("not json\n")
+        again = Lessons(self.path)
+        self.assertEqual(again.matching("a screenshot of a number as high as possible"), [again.lessons[b["id"]]])
+        self.assertEqual(again.bad_lines, 1)
+        self.assertIn(b["right"], lessons.shown_text([again.lessons[b["id"]]]))
+        self.assertEqual(lessons.shown_text([]), "")
+        self.assertEqual(lessons.repeated([again.lessons[b["id"]]], ["try them ONE BY ONE", "x"]), [b["id"]])
+        self.assertEqual(lessons.repeated([again.lessons[b["id"]]], ["start from the best"]), [])
+
+    def test_the_review_rules_on_both_sides_of_each_threshold(self):
+        book = Lessons(self.path)
+        with_detect = book.add(by="p", **SCREENSHOT)
+        without = book.add(by="p", **dict(SCREENSHOT, detect=None, wrong="another mistake"))
+
+        def decide(lesson, shown, repeated):
+            return lessons.decide(lesson, {"shown": shown, "repeated": repeated, "before": 0, "before_made": 0})[0]
+        self.assertEqual(decide(with_detect, CONFIRM_AFTER - 1, 0), "hypothesis")
+        self.assertEqual(decide(with_detect, CONFIRM_AFTER, 0), "confirmed")
+        self.assertEqual(decide(with_detect, CONFIRM_AFTER, 1), "hypothesis")
+        self.assertEqual(decide(with_detect, 10, RETIRE_AFTER - 1), "hypothesis")
+        self.assertEqual(decide(with_detect, RETIRE_AFTER, RETIRE_AFTER), "retired")
+        self.assertEqual(decide(without, 10, 0), "hypothesis")  # nothing to measure it by
+        self.assertIn("no detect", lessons.decide(without, {"shown": 10, "repeated": 0})[1])
+        # only forward: fewer runs never move a lesson back, and retired is for good
+        self.assertEqual(decide(dict(with_detect, status="confirmed"), 1, 0), "confirmed")
+        self.assertEqual(decide(dict(with_detect, status="confirmed"), 9, RETIRE_AFTER), "retired")
+        self.assertEqual(decide(dict(with_detect, status="retired"), 0, 0), "retired")
+        self.assertEqual(decide(dict(with_detect, status="retired"), CONFIRM_AFTER, 0), "retired")
+
+    def test_counts_before_and_after_the_lesson(self):
+        book = Lessons(self.path)
+        lesson = book.add(by="p", **SCREENSHOT)
+        t = lesson["t"]
+        turns = [{"t": t - 9, "text": "take a screenshot", "made": ["chrome --window-size=390"], "shown": [], "repeated": []},
+                 {"t": t - 8, "text": "take a screenshot", "made": ["phone-check"], "shown": [], "repeated": []},
+                 {"t": t - 7, "text": "count words", "made": ["--window-size"], "shown": [], "repeated": []},
+                 {"t": t + 1, "text": "take a screenshot", "made": ["x"], "shown": [lesson["id"]], "repeated": []},
+                 {"t": t + 2, "text": "take a screenshot", "made": ["x"], "shown": [lesson["id"]], "repeated": [lesson["id"]]},
+                 {"t": t + 3, "text": "take a screenshot", "made": ["--window-size"], "shown": [], "repeated": []}]
+        self.assertEqual(lessons.measure(lesson, turns), {"shown": 2, "repeated": 1, "before": 2, "before_made": 1})
+
+
+class LoopTest(test_engine.Base):
+    def setUp(self):
+        super().setUp()
+        self.book_path = os.path.join(self.dir, "lessons.jsonl")
+        self.runs = []
+
+    def team_run(self, n):
+        """One run: the planner adds a screenshot todo for a and a counting todo for b, and plans "one by one"; a hands
+        in a screenshot made with --window-size (the mistake), b hands in a number."""
+        self.script([test_engine.add({"text": "take a screenshot of the result", "for": "a", "parents": []},
+                                     {"text": "count to ten one by one", "for": "b", "parents": []}),
+                     test_engine.add(), test_engine.add(done=True)],
+                    {"a": [{"answer": "ARTIFACT: data\nchrome --headless --window-size=390,800 shot.png"}],
+                     "b": [{"answer": "7"}]})
+        if os.path.isdir(self.log):
+            test_engine.shutil.rmtree(self.log)
+        self.out = os.path.join(self.dir, "run%d" % n)
+        self.runs.append(self.out)
+        extra = ["--lessons", self.book_path] if os.path.exists(self.book_path) else []
+        code, said, err = self.run_main(*extra)
+        self.assertEqual(code, 0, said + err)
+        return said
+
+    def turns(self):
+        return {r["member"]: r for r in self.records("run.jsonl")}
+
+    def test_told_repeated_retired(self):
+        self.team_run(0)  # before any lesson: the mistake is made, and nobody is told anything
+        self.assertNotIn("lessons", json.dumps(self.records("run.jsonl")))
+        self.assertFalse(os.path.exists(os.path.join(self.out, "lessons.json")))
+        with open(os.path.join(self.out, "task.md")) as handle:
+            self.assertEqual(handle.read(), "Give a number as high as you can.\n")
+        time.sleep(0.01)
+        book = Lessons(self.book_path)
+        shot = book.add(by="person", **SCREENSHOT)["id"]
+        plan = book.add(by="supervisor", **ONE_BY_ONE)["id"]
+        never = book.add(by="person", when="no task says this", wrong="w", right="r", detect="x")["id"]
+        old = book.add(by="person", when="number", wrong="an old mistake", right="r", detect="x")["id"]
+        with open(self.book_path, "a") as handle:
+            handle.write(json.dumps({"type": "review", "id": old, "t": time.time(), "status": "retired", "why": "test"}) + "\n")
+
+        said = self.team_run(1)
+        turns = self.turns()
+        self.assertEqual(turns["a"]["lessons"], [shot, plan])  # its todo says screenshot, the task says number as high
+        self.assertEqual(turns["a"]["lessons_repeated"], [shot])
+        self.assertEqual(turns["b"]["lessons"], [plan])
+        self.assertNotIn("lessons_repeated", turns["b"])
+        a_prompt, b_prompt = self.read_log("a-01.prompt"), self.read_log("b-01.prompt")
+        self.assertIn("CORRECTIONS FROM EARLIER WORK", a_prompt)
+        self.assertIn(SCREENSHOT["right"], a_prompt)
+        self.assertNotIn(SCREENSHOT["right"], b_prompt)
+        wakes = [w for w in self.records("engine.jsonl") if w.get("kind") == "wake"]
+        self.assertTrue(all(w["lessons"] == [plan] for w in wakes))
+        self.assertEqual([w.get("lessons_repeated") for w in wakes if w.get("added")], [[plan]])  # its todo says one by one
+        self.assertIn(ONE_BY_ONE["right"], self.read_log("planner-01.txt"))
+        for text in (json.dumps(self.records("run.jsonl")), json.dumps(wakes), a_prompt):
+            self.assertNotIn(never, text)
+            self.assertNotIn(old, text)  # retired: never told
+        with open(os.path.join(self.out, "lessons.json")) as handle:
+            self.assertEqual([l["id"] for l in json.load(handle)], [shot, plan, never])
+        s = self.summary()["lessons"]
+        self.assertEqual(s["repeated"], {shot: 1, plan: 1})
+        self.assertEqual(s["turns_told"], 2 + len(wakes))
+        self.assertIn("the corrected mistake came back in 2 (%s)" % ", ".join(sorted([shot, plan])), said)
+        page = engineview.render(self.out)
+        self.assertIn("Corrections from earlier work", page)
+        self.assertIn("made a corrected mistake again: " + shot, page)
+        self.assertIn("not told: no task or todo matched", page)  # the lesson nothing matched
+        found = {f["code"]: f for f in rundiag.findings(self.out)}
+        self.assertEqual(found["lesson_repeated"]["numbers"], {"turns": 2, "lessons": {shot: 1, plan: 1}})
+
+        review = {l["id"]: (c, status) for l, c, status, _ in Lessons(self.book_path).review(self.runs[:2])}
+        self.assertEqual(review[shot], ({"shown": 1, "repeated": 1, "before": 1, "before_made": 1}, "hypothesis"))
+        self.assertEqual(review[never][0]["shown"], 0)
+
+        self.team_run(2)  # told again, and the mistakes again: the second time retires both lessons
+        review = {l["id"]: (c, status) for l, c, status, _ in Lessons(self.book_path).review(self.runs)}
+        self.assertEqual(review[shot], ({"shown": 2, "repeated": 2, "before": 1, "before_made": 1}, "retired"))
+        self.assertEqual(review[plan][1], "retired")  # the planner's "one by one" todo, in both runs
+        self.assertEqual(review[plan][0]["before_made"], 1)  # run 0's planner added that todo before the lesson existed
+        self.assertEqual((review[old][1], review[never][1]), ("retired", "hypothesis"))  # retired stays retired
+        book = Lessons(self.book_path)
+        self.assertEqual([book.lessons[i]["status"] for i in (shot, plan, never, old)],
+                         ["retired", "retired", "hypothesis", "retired"])  # the review was recorded
+
+        self.team_run(3)
+        self.assertNotIn("lessons", self.turns()["a"])  # a retired lesson is not told any more
+        self.assertNotIn(SCREENSHOT["right"], self.read_log("a-01.prompt"))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(lessons.main([self.book_path, "list"]), 0)
+        self.assertIn(shot + "  retired", out.getvalue())
+
+    def test_every_version_a_repaired_turn_handed_in_is_checked(self):
+        Lessons(self.book_path).add(by="person", **SCREENSHOT)
+        self.script([test_engine.add({"text": "take a screenshot of the result", "for": "a", "parents": []}),
+                     test_engine.add(), test_engine.add(done=True)],
+                    {"a": [{"answer": "ARTIFACT: data\nchrome --window-size=390 shot.png"}, {"answer": "9"}]})
+        self.out = os.path.join(self.dir, "repaired")
+        code, said, err = self.run_main("--lessons", self.book_path, "--repairs", "1", members=("a",))
+        self.assertEqual(code, 0, said + err)
+        turn = self.turns()["a"]
+        self.assertEqual((turn["status"], turn["best_of"]), ("valid", 2))  # the repair is the version that counts
+        self.assertEqual(len(turn["lessons_repeated"]), 1)  # but the first version made the mistake
+
+    def test_a_lessons_file_that_cannot_be_read_stops_the_run_before_it_starts(self):
+        os.makedirs(self.book_path)  # a folder, not a file
+        self.out = os.path.join(self.dir, "never")
+        code, said, err = self.run_main("--lessons", self.book_path)
+        self.assertEqual(code, 2)
+        self.assertIn("--lessons", err)
+        self.assertFalse(os.path.exists(self.out))
+
+
+class CommandLineTest(unittest.TestCase):
+    def test_add_list_review(self):
+        folder = test_engine.tempfile.mkdtemp()
+        self.addCleanup(test_engine.shutil.rmtree, folder, True)
+        path = os.path.join(folder, "l.jsonl")
+
+        def run(*argv):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = lessons.main([path] + list(argv))
+            return code, out.getvalue(), err.getvalue()
+        code, said, _ = run("add", "--when", "screenshot", "--wrong", "w", "--right", "r", "--by", "me", "--run", folder, "--step", "t1")
+        self.assertEqual(code, 0)
+        self.assertRegex(said, r"^L[0-9a-f]{8} \(hypothesis\)")
+        with open(path) as handle:
+            self.assertEqual(json.loads(handle.readline())["source"], {"run": folder, "step": "t1"})
+        self.assertEqual(run("add", "--when", "(", "--wrong", "w", "--right", "r", "--by", "me")[0], 2)
+        self.assertIn("give the run folders", run("review")[2])
+        code, said, _ = run("review", folder)
+        self.assertEqual(code, 0)
+        self.assertIn("shown 0, repeated 0; mistake before the lesson -", said)
+
+
+class NotebookTest(test_notebook.Base):
+    def test_a_correction_on_a_page_is_told_to_the_next_runs(self):
+        self.draft()
+        notebook.approve(self.page(), "tester")
+        self.assertNotIn("--lessons", self.run_page(dry=True)[1])  # no lessons yet
+        self.script([test_notebook.add({"text": "the answer", "for": "a", "parents": []}), test_notebook.add(done=True)],
+                    {"a": [{"answer": "5"}]})
+        self.assertEqual(self.run_page()[0], 0)
+        with self.assertRaises(notebook.NotebookError):
+            notebook.correct(self.page(), "user", "w", "r", "(", run=1)
+        with self.assertRaises(notebook.NotebookError):
+            notebook.correct(self.page(), "user", "w", "r", "x", run=9)
+        lesson = notebook.correct(self.page(), "user", "guessed a small number", "give the highest number you can",
+                                  "number", detect=r"^\s*5\s*$", run=1, step="t1")
+        with open(self.nb.lessons_path()) as handle:
+            kept = json.loads(handle.readline())
+        self.assertEqual(kept["source"]["page"], "p1")
+        self.assertEqual((kept["source"]["n"], kept["source"]["step"]), (1, "t1"))
+        event = self.page().events("correct")[-1]
+        self.assertEqual((event["lesson"], event["by"], event["run"]), (lesson["id"], "user", 1))
+        self.assertIn("--lessons " + self.nb.lessons_path(), self.run_page(dry=True)[1])
+        from herdr_py import notebookview
+        self.assertIn("correction %s (run 1, t1)" % lesson["id"], notebookview.history_html(self.page(), "en"))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = notebook.main([self.folder, "correct", "p1", "--wrong", "w2", "--right", "r2", "--when", "number"])
+        self.assertEqual(code, 0, err.getvalue())
+        self.assertIn("without --detect it cannot be measured", out.getvalue())
 
 
 if __name__ == "__main__":
@@ -31221,6 +32516,231 @@ class RunDiagTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 HERDR_PY_EOF
+cat > tests/test_sandbox.py <<'HERDR_PY_EOF'
+"""herdr_py/sandbox.py and the example judges that use it: the command line it builds (no network, a read-only root, no
+capabilities, no privileges, this machine's user, only the work folder), sandbox none, a container engine that is
+missing or cannot see the folder, and, where docker answers, what a command inside can and cannot do. The image is
+$HERDR_PY_TEST_IMAGE (default python:3-slim)."""
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from herdr_py.sandbox import HARDENING, INSIDE, Sandbox, SandboxError  # noqa: E402
+
+IMAGE = os.environ.get("HERDR_PY_TEST_IMAGE", "python:3-slim")
+DAG_JUDGE = os.path.join(ROOT, "examples", "dag", "judge.py")
+
+
+def docker_answers():
+    if not shutil.which("docker"):
+        return False
+    try:
+        return subprocess.run(["docker", "info"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+DOCKER = docker_answers()
+
+
+def home_folder():
+    """A folder under $HOME: colima shares only that with its VM."""
+    base = os.path.join(os.path.expanduser("~"), ".cache", "herdr-py", "test")
+    os.makedirs(base, exist_ok=True)
+    return tempfile.mkdtemp(dir=base)
+
+
+def fake_engine(folder, script):
+    """A `docker` on PATH that runs this shell script instead (and nothing else from PATH but the basics)."""
+    path = os.path.join(folder, "docker")
+    with open(path, "w") as handle:
+        handle.write("#!/bin/sh\n" + script)
+    os.chmod(path, os.stat(path).st_mode | stat.S_IXUSR)
+    return folder
+
+
+class CommandLineTest(unittest.TestCase):
+    def test_specs(self):
+        self.assertTrue(Sandbox.parse("none").on_host)
+        box = Sandbox.parse("docker:registry.example/py:3.12-slim")
+        self.assertEqual((box.engine, box.image), ("docker", "registry.example/py:3.12-slim"))
+        self.assertEqual(Sandbox.parse(" podman:img ").engine, "podman")
+        for spec in ("", "docker", "docker:", "lxc:img", "None", "sh:img"):
+            with self.assertRaises(SandboxError, msg=spec):
+                Sandbox.parse(spec)
+
+    def test_the_container_command(self):
+        argv = Sandbox.parse("docker:img:1").argv(["python3", "-c", "1"], "/w/copy", cwd="a/b", env={"X": "1"},
+                                                  path_env={"PYTHONPATH": "."}, name="n")
+        self.assertEqual(argv[:5], ["docker", "run", "--rm", "--name", "n"])
+        joined = " ".join(argv)
+        self.assertIn(" ".join(HARDENING), joined)
+        for flag in ("--network none", "--read-only", "--cap-drop ALL", "--security-opt no-new-privileges",
+                     f"--user {os.getuid()}:{os.getgid()}", "-v /w/copy:/work", "-w /work/a/b", "-e PYTHONPATH=/work",
+                     "-e X=1", "-e HOME=/tmp"):
+            self.assertIn(flag, joined)
+        self.assertEqual([argv[i + 1] for i, a in enumerate(argv) if a == "-v"], ["/w/copy:/work"])  # only the copy
+        self.assertEqual(argv[-4:], ["img:1", "python3", "-c", "1"])
+
+    def test_podman_keeps_the_users_id(self):
+        argv = Sandbox.parse("podman:img").argv(["true"], "/w")
+        self.assertIn("--userns=keep-id", argv)
+        self.assertNotIn("--user", argv)
+
+    def test_the_command_stays_in_the_work_folder(self):
+        box = Sandbox.parse("docker:img")
+        self.assertIn("-w " + INSIDE, " ".join(box.argv(["true"], "/w", cwd="a/..")))
+        for cwd in ("..", "../x", "a/../../b", "/etc", "../work2"):
+            with self.assertRaises(SandboxError, msg=cwd):
+                box.argv(["true"], "/w", cwd=cwd)
+
+    def test_none_runs_here_in_the_work_folder(self):
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        os.makedirs(os.path.join(work, "sub"))
+        box = Sandbox.parse("none")
+        box.check(work)  # nothing to check
+        code, out = box.run(["sh", "-c", "pwd; echo $P; echo $Q"], work, 30, cwd="sub", env={"Q": "q"}, path_env={"P": "."})
+        self.assertEqual(code, 0)
+        where, p, q = out.split()
+        self.assertEqual(os.path.realpath(where), os.path.realpath(os.path.join(work, "sub")))
+        self.assertEqual((p, q), (work, "q"))
+        start = time.time()
+        self.assertEqual(box.run(["sleep", "5"], work, 1)[0], None)
+        self.assertLess(time.time() - start, 4)
+
+    def test_no_engine_is_an_error_that_says_what_to_do(self):
+        work, empty = tempfile.mkdtemp(), tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        self.addCleanup(shutil.rmtree, empty, True)
+        with mock.patch.dict(os.environ, {"PATH": empty}):
+            with self.assertRaises(SandboxError) as caught:
+                Sandbox.parse("docker:img").check(work)
+        self.assertIn("docker is not installed", str(caught.exception))
+        self.assertIn("none", str(caught.exception))
+
+    def test_a_folder_the_container_cannot_see_is_refused(self):
+        work, bin_dir = tempfile.mkdtemp(), tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, True)
+        self.addCleanup(shutil.rmtree, bin_dir, True)
+        # colima mounts a folder outside $HOME as an empty one, and docker run still succeeds
+        fake_engine(bin_dir, 'echo "cat: .herdr-sandbox-probe: No such file or directory"; exit 1\n')
+        with mock.patch.dict(os.environ, {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}):
+            with self.assertRaises(SandboxError) as caught:
+                Sandbox.parse("docker:img").check(work)
+        self.assertIn("cannot run img with %s mounted" % work, str(caught.exception))
+        self.assertEqual(os.listdir(work), [])  # the probe file is gone
+        fake_engine(bin_dir, 'echo something else\n')  # exit 0 but not the probe's contents: refused as well
+        with mock.patch.dict(os.environ, {"PATH": bin_dir + os.pathsep + os.environ.get("PATH", "")}):
+            with self.assertRaises(SandboxError):
+                Sandbox.parse("docker:img").check(work)
+
+
+@unittest.skipUnless(DOCKER, "docker does not answer here")
+class DockerTest(unittest.TestCase):
+    def setUp(self):
+        self.work = home_folder()
+        self.addCleanup(shutil.rmtree, self.work, True)
+        self.box = Sandbox.parse("docker:" + IMAGE)
+        self.box.check(self.work)
+
+    def run_in(self, script, timeout=120):
+        return self.box.run(["sh", "-c", script], self.work, timeout)
+
+    def test_what_the_code_inside_can_and_cannot_do(self):
+        self.assertEqual(self.run_in("id -u")[1].strip(), str(os.getuid()))
+        code, out = self.box.run(["python3", "-c", "import socket; socket.create_connection(('1.1.1.1', 53), timeout=5)"],
+                                 self.work, 120)
+        self.assertNotEqual(code, 0, out)  # no network
+        code, out = self.run_in("touch /evil")
+        self.assertNotEqual(code, 0, out)  # the root is read-only
+        self.assertIn("Read-only file system", out)
+        self.assertEqual(self.run_in("grep -c . /proc/self/status >/dev/null; grep CapEff /proc/self/status")[1].split()[-1],
+                         "0000000000000000")  # no capabilities
+        self.assertEqual(self.run_in("grep NoNewPrivs /proc/self/status")[1].split()[-1], "1")
+        self.assertEqual(self.run_in("echo made > made.txt && cat made.txt"), (0, "made\n"))
+        with open(os.path.join(self.work, "made.txt")) as handle:
+            self.assertEqual(handle.read(), "made\n")  # the work folder is the copy the judge reads
+
+    def test_a_command_that_runs_too_long_is_stopped_with_its_container(self):
+        start = time.time()
+        self.assertEqual(self.run_in("sleep 120", timeout=3)[0], None)
+        self.assertLess(time.time() - start, 30)
+        left = subprocess.run(["docker", "ps", "-q", "--filter", "name=herdr-sandbox-%d-" % os.getpid()],
+                              stdout=subprocess.PIPE, universal_newlines=True).stdout.split()
+        self.assertEqual(left, [])
+
+
+class DagJudgeTest(unittest.TestCase):
+    """examples/dag/judge.py: a step's tests are a member's code, so they run in the sandbox."""
+
+    def setUp(self):
+        self.step = home_folder()
+        self.addCleanup(shutil.rmtree, self.step, True)
+        self.marker = os.path.join(tempfile.mkdtemp(), "ran-here")
+        self.addCleanup(shutil.rmtree, os.path.dirname(self.marker), True)
+        with open(os.path.join(self.step, "test_step.py"), "w") as handle:
+            handle.write("import unittest\nopen(%r, 'w').close()  # where this runs shows here\n\n"
+                         "class T(unittest.TestCase):\n    def test_ok(self):\n        pass\n" % self.marker)
+
+    def judge(self, **env):
+        p = subprocess.run([sys.executable, DAG_JUDGE, "reply.txt"], cwd=self.step, stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, universal_newlines=True, timeout=300,
+                           env=dict(os.environ, HERDR_DAG_NODE="mul", PYTHONDONTWRITEBYTECODE="1", **env))
+        return p.returncode, (json.loads(p.stdout) if p.returncode == 0 else None), p.stderr
+
+    def test_no_sandbox_is_a_judge_error_and_the_tests_do_not_run_here(self):
+        empty = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, empty, True)
+        code, verdict, err = self.judge(PATH=empty, HERDR_JUDGE_SANDBOX="docker:" + IMAGE)
+        self.assertEqual(code, 2)
+        self.assertIn("docker is not installed", err)
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_by_default_it_wants_docker(self):
+        empty = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, empty, True)
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("HERDR_JUDGE_SANDBOX", None)
+            code, verdict, err = self.judge(PATH=empty)
+        self.assertEqual(code, 2)
+        self.assertIn("docker is not installed", err)
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_none_runs_here_and_says_so(self):
+        code, verdict, err = self.judge(HERDR_JUDGE_SANDBOX="none")
+        self.assertEqual((code, verdict["status"], verdict["score"]), (0, "valid", 1), err)
+        self.assertTrue(verdict["detail"].startswith("[no sandbox] Ran 1 test"))
+        self.assertTrue(os.path.exists(self.marker))
+
+    @unittest.skipUnless(DOCKER, "docker does not answer here")
+    def test_in_docker_the_tests_run_inside_and_pass(self):
+        code, verdict, err = self.judge(HERDR_JUDGE_SANDBOX="docker:" + IMAGE)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(verdict["status"], "invalid")  # the marker's folder is not there inside: the test cannot write it
+        self.assertFalse(os.path.exists(self.marker))
+        os.remove(os.path.join(self.step, "test_step.py"))
+        with open(os.path.join(self.step, "test_fine.py"), "w") as handle:
+            handle.write("import unittest\n\nclass T(unittest.TestCase):\n    def test_ok(self):\n        pass\n")
+        code, verdict, err = self.judge(HERDR_JUDGE_SANDBOX="docker:" + IMAGE)
+        self.assertEqual((code, verdict["status"]), (0, "valid"), err)
+        self.assertTrue(verdict["detail"].startswith("Ran 1 test"), verdict["detail"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+HERDR_PY_EOF
 cat > tests/test_scoring.py <<'HERDR_PY_EOF'
 """The strict picture score (examples/slide_team/scoring.py), calibrated on synthetic slides drawn straight into pixels.
 
@@ -31525,15 +33045,18 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from unittest import mock
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 EXAMPLE = os.path.join(ROOT, "examples", "self_improve")
 sys.path.insert(0, ROOT)
 sys.path.insert(0, EXAMPLE)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import make_task  # noqa: E402
 import patch_judge  # noqa: E402
+from test_sandbox import DOCKER, IMAGE  # noqa: E402
 from herdr_py.coop import CoopRun, command_judge  # noqa: E402
 from herdr_py.members import Members, parse_member  # noqa: E402
 
@@ -31640,9 +33163,9 @@ class Base(unittest.TestCase):
             handle.write(CALC.replace("return x", "return x  # working tree only"))
         self.test_cmd = f"{sys.executable} -B -m unittest discover -s tests -q"
 
-    def args(self, *extra):
+    def args(self, *extra):  # these patches are the test's own: they may run here (--sandbox none)
         return ["--repo", self.repo, "--base", "HEAD", "--scenarios", os.path.join(self.repo, "scen"),
-                "--test", self.test_cmd, "--timeout", "60"] + list(extra)
+                "--test", self.test_cmd, "--timeout", "60", "--sandbox", "none"] + list(extra)
 
     def patch(self, text, name="answer.diff"):
         path = os.path.join(self.dir, name)
@@ -31665,7 +33188,7 @@ class JudgeTest(Base):
         self.assertEqual(self.judge(FIX_BOTH)[1]["score"], 2)
         v = self.judge(NOTHING)[1]
         self.assertEqual((v["status"], v["score"]), ("valid", 0))
-        self.assertRegex(v["detail"], r"^0 of 2 scenario\(s\) pass; still failing: "  # names differ across Pythons
+        self.assertRegex(v["detail"], r"^\[no sandbox\] 0 of 2 scenario\(s\) pass; still failing: "  # names differ across Pythons
                          r"high \(FAIL: test_high \(test_high\.High[.\w]*\) \| AssertionError: 50 != 10\); "
                          r"order \(FAIL: test_swapped_limits_are_refused \([.\w]+\) \| AssertionError: ValueError not raised\)$")
 
@@ -31807,6 +33330,72 @@ class TaskTest(Base):
             json.dump(data, handle)
         with self.assertRaisesRegex(ValueError, "missing.py is not in HEAD"):
             make_task.build(self.repo, "HEAD", os.path.join(self.repo, "scen"))
+
+
+def evil_patch(marker):
+    """A new test file (allowed) that leaves a file at `marker` when it is imported, wherever that happens."""
+    body = ["import unittest", "open(%r, 'w').close()" % marker, "", "", "class Evil(unittest.TestCase):",
+            "    def test_nothing(self):", "        pass"]
+    return ("diff --git a/tests/test_evil.py b/tests/test_evil.py\nnew file mode 100644\n--- /dev/null\n"
+            "+++ b/tests/test_evil.py\n@@ -0,0 +1,%d @@\n" % len(body) + "".join("+" + line + "\n" for line in body))
+
+
+class SandboxTest(Base):
+    """A patch is code a member wrote: by default the judge runs it only in a container."""
+
+    def setUp(self):
+        super().setUp()
+        self.marker = os.path.join(self.dir, "ran-on-this-machine")
+
+    def sandboxed(self, text, sandbox=None):
+        args = ["--repo", self.repo, "--base", "HEAD", "--scenarios", os.path.join(self.repo, "scen"),
+                "--test", "python3 -B -m unittest discover -s tests -q", "--timeout", "300"]
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = patch_judge.main(args + (["--sandbox", sandbox] if sandbox else []) + [self.patch(text)])
+        return code, (json.loads(out.getvalue()) if code == 0 else None), err.getvalue()
+
+    def test_by_default_without_docker_the_judge_refuses_and_runs_nothing(self):
+        tools = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tools, True)
+        for tool in ("git", "tar"):  # what exporting the base needs, and no docker
+            os.symlink(shutil.which(tool), os.path.join(tools, tool))
+        with mock.patch.dict(os.environ, {"PATH": tools}):
+            code, v, err = self.sandboxed(evil_patch(self.marker))
+        self.assertEqual(code, 2, err)
+        self.assertIn("docker is not installed", err)
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_without_the_preflight_the_patched_copy_is_checked_too(self):
+        tools = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tools, True)
+        for tool in ("git", "tar"):
+            os.symlink(shutil.which(tool), os.path.join(tools, tool))
+        with mock.patch.dict(os.environ, {"PATH": tools}):
+            out, err_io = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err_io):
+                code = patch_judge.main(["--repo", self.repo, "--base", "HEAD", "--scenarios", os.path.join(self.repo, "scen"),
+                                         "--no-preflight", self.patch(evil_patch(self.marker))])
+        self.assertEqual(code, 2)
+        self.assertIn("docker is not installed", err_io.getvalue())
+        self.assertFalse(os.path.exists(self.marker))
+
+    def test_with_sandbox_none_the_patch_runs_here_and_the_verdict_says_so(self):
+        code, v, _ = self.judge(evil_patch(self.marker))
+        self.assertEqual((code, v["status"]), (0, "valid"))
+        self.assertTrue(v["detail"].startswith("[no sandbox] "), v["detail"])
+        self.assertTrue(os.path.exists(self.marker))
+
+    @unittest.skipUnless(DOCKER, "docker does not answer here")
+    def test_in_docker_a_patch_is_judged_inside_and_cannot_reach_this_machine(self):
+        code, v, err = self.sandboxed(FIX_HIGH, "docker:" + IMAGE)
+        self.assertEqual((code, v["status"], v["score"]), (0, "valid", 1), err)
+        self.assertIn("1 of 2 scenario(s) pass: high; still failing: order", v["detail"])
+        self.assertNotIn("[no sandbox]", v["detail"])
+        code, v, err = self.sandboxed(evil_patch(self.marker), "docker:" + IMAGE)
+        self.assertEqual((code, v["status"]), (0, "invalid"), err)  # its folder is not there inside: the import fails
+        self.assertIn("breaks the existing tests", v["detail"])
+        self.assertFalse(os.path.exists(self.marker))
 
 
 class LoopTest(Base):
@@ -32049,19 +33638,23 @@ cat > tests/test_sources.py <<'HERDR_PY_EOF'
 """Every Python file of the repository compiles with warnings as errors, on the Python running the tests (CI: 3.6 and
 the newest): the examples, benches, scripts and tools too, which no other test imports. An invalid escape such as
 "\\ " in a string is a warning today (a DeprecationWarning on 3.6, a SyntaxWarning on 3.12) and an error in a later
-Python."""
+Python. And no text file of the repository holds a bidirectional control character as such (it can make code read
+differently from how it runs, "Trojan Source"); a test that needs one writes it as an escape, \\u202e."""
 import os
 import unittest
 import warnings
 
+BIDI = frozenset(chr(c) for c in (0x061C, 0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E, 0x2066, 0x2067, 0x2068, 0x2069))
+TEXT = (".py", ".sh", ".md", ".json", ".toml", ".yml", ".yaml", ".txt", ".html", ".js", ".css", ".service")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def sources():
+def sources(ends=(".py",)):
     for folder, dirs, files in os.walk(ROOT):
         dirs[:] = sorted(d for d in dirs if not d.startswith(".") and d != "__pycache__")
         for name in sorted(files):
-            if name.endswith(".py"):
+            if name.endswith(ends):
                 yield os.path.join(folder, name)
 
 
@@ -32080,6 +33673,17 @@ class SourcesTest(unittest.TestCase):
                     bad.append("%s: %s" % (os.path.relpath(path, ROOT), exc))
         self.assertGreater(seen, 100)  # the walk found the repository, not an empty folder
         self.assertEqual(bad, [])
+
+    def test_no_bidirectional_control_characters(self):
+        found, seen = [], 0
+        for path in sources(TEXT):
+            seen += 1
+            with open(path, encoding="utf-8", errors="replace") as handle:
+                for n, line in enumerate(handle, 1):
+                    if BIDI.intersection(line):
+                        found.append("%s:%d %s" % (os.path.relpath(path, ROOT), n, sorted("U+%04X" % ord(c) for c in BIDI.intersection(line))))
+        self.assertGreater(seen, 150)
+        self.assertEqual(found, [])
 
 
 if __name__ == "__main__":
@@ -32707,6 +34311,41 @@ class SeedTest(Base):
         # a carried entry is a real entry here: the team can build on it
         new = dst.propose("c", "result", "builds on the page", artifact="ARTIFACT: page\n<p>better", parents=[ids["page"]])
         self.assertIn(new, {e["id"] for e in dst.entries()})
+
+    def test_a_log_cannot_point_a_reader_outside_the_knowledge_base(self):
+        import hashlib
+        from herdr_py import notebookview, rundiag
+        run = os.path.join(self.dir, "run")
+        src = TeamKB(os.path.join(run, "kb"))
+        good = src.propose("a", "result", "fine", artifact="ARTIFACT: data\n1 2 3", name="x.txt")
+        src.judge(good, lambda path: ("valid", 1, ""))
+        secret = b"ARTIFACT: data\nnot for the team"
+        with open(os.path.join(self.dir, "secret.txt"), "wb") as handle:
+            handle.write(secret)
+        sha = hashlib.sha256(secret).hexdigest()  # a log edited to name a file outside, with that file's own hash
+        names = {"kaaaaaaaaaaaa": "../../secret.txt", "kbbbbbbbbbbbb": os.path.join(self.dir, "secret.txt"),
+                 "kcccccccccccc": "artifacts/../../../secret.txt", "kdddddddddddd": "artifacts/" + sha + "/x",
+                 "keeeeeeeeeeee": "artifacts/..", "kffffffffffff": "artifacts/.", "kgggggggggggg": "artifacts\\..\\x"}
+        with open(os.path.join(src.folder, "events.jsonl"), "a") as handle:
+            for eid, rel in names.items():
+                handle.write(json.dumps({"type": "propose", "id": eid, "t": 1, "member": "x", "kind": "data", "summary": "s",
+                                         "artifact": rel, "sha": sha, "parents": []}) + "\n")
+                handle.write(json.dumps({"type": "verdict", "id": eid, "t": 2, "status": "valid", "score": 9,
+                                         "judge": "check", "detail": "", "sha": sha}) + "\n")
+        dst = TeamKB(os.path.join(self.dir, "dst"))
+        got = dst.seed(src.folder)
+        self.assertEqual(got["carried"], [good])
+        self.assertEqual(got["left_out"], {"artifact name not the knowledge base's": 7})
+        again = TeamKB(src.folder)
+        for eid in names:
+            entry = again.proposals[eid]
+            self.assertEqual(again.answer_lines(entry, 1000), ["  (its answer is not shown: the log names a file outside "
+                                                               "the knowledge base)"])
+            with self.assertRaises(TeamKBError):
+                again.judge(eid, lambda path: ("valid", 1, ""))
+            self.assertEqual(rundiag.artifact_kind(run, entry), "data")  # the recorded kind, not the file's
+            self.assertEqual(notebookview.artifact_body(dict(entry, folder=run)), (None, None))
+        self.assertIn("1 2 3", "".join(again.answer_lines(again.proposals[good], 1000)))  # the real ones still read
 
     def test_kinds_and_a_persons_exclusions_choose_what_is_carried(self):
         src, ids = self.source()
@@ -33480,6 +35119,240 @@ class TeamToolsTest(unittest.TestCase):
 if __name__ == "__main__":
     unittest.main()
 HERDR_PY_EOF
+cat > tests/test_webguard.py <<'HERDR_PY_EOF'
+"""What every web server checks before it answers (herdr_py/webguard.py), first as rules and then against the four
+servers: a request for a name that is not this machine's (DNS rebinding) is refused, a token with characters outside
+ASCII is a wrong token rather than a dropped connection, and a Content-Length that is not a whole number is refused
+instead of leaving the thread reading until the client gives up."""
+import json
+import os
+import shutil
+import socket
+import sys
+import tempfile
+import threading
+import unittest
+from unittest import mock
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from herdr_py import dashboard, engineview, notebookview, webguard  # noqa: E402
+from herdr_py.opencode import OpenCode  # noqa: E402
+from herdr_py.policy import Policy  # noqa: E402
+from herdr_py.server import Daemon  # noqa: E402
+from fake_opencode import FakeOpenCode  # noqa: E402
+from test_core import wait_for  # noqa: E402
+
+
+class Headers(dict):
+    def get(self, key, default=None):
+        return super().get(key, default)
+
+
+class RuleTest(unittest.TestCase):
+    def test_host_names(self):
+        cases = {"localhost": "localhost", "LocalHost:8790": "localhost", "127.0.0.1:1": "127.0.0.1", "[::1]:8790": "::1",
+                 "[::1]": "::1", "example.com:": "example.com", "a.example": "a.example", None: None, "": None,
+                 ":8790": None, "::1": None, "[::1": None, "[::1]x": None, "host:port": None, "[]:1": None}
+        for header, name in cases.items():
+            self.assertEqual(webguard.host_name(header), name, header)
+
+    def test_a_loopback_server_answers_this_machine_names_only(self):
+        for host in ("localhost", "LOCALHOST:80", "127.0.0.1:8790", "127.9.9.9", "[::1]:8790", "app.localhost:1",
+                     "[::ffff:127.0.0.1]:1"):
+            self.assertTrue(webguard.host_allowed(host, "127.0.0.1"), host)
+        for host in ("attacker.example:8790", "localhost.attacker.example", "127.0.0.1.attacker.example", "0.0.0.0",
+                     "10.0.0.5", "[::2]", "localhost.", None, "", "::1", "[::ffff:10.0.0.1]", "evil-localhost",
+                     "attackerlocalhost:80"):
+            self.assertFalse(webguard.host_allowed(host, "127.0.0.1"), host)
+        self.assertTrue(webguard.host_allowed("box.tailnet.example:8443", "127.0.0.1", ["Box.Tailnet.Example"]))
+        self.assertFalse(webguard.host_allowed("other.example", "127.0.0.1", ["box.tailnet.example", ""]))
+
+    def test_what_counts_as_a_loopback_bind(self):
+        for bound in ("127.0.0.1", "localhost", "::1", "[::1]", "127.1.2.3"):
+            self.assertTrue(webguard.is_loopback(bound), bound)
+        for bound in ("0.0.0.0", "", None, "::", "192.168.1.5", "box.example"):
+            self.assertFalse(webguard.is_loopback(bound), bound)
+            self.assertTrue(webguard.host_allowed("attacker.example", bound))  # exposed on purpose: any Host
+
+    def test_tokens(self):
+        self.assertTrue(webguard.token_ok("abc", "abc"))
+        for given in ("abd", "ab", "abcd", "", None, "\xff\xfe", "abç"):
+            self.assertFalse(webguard.token_ok(given, "abc"), given)
+        self.assertFalse(webguard.token_ok("", ""))  # a server without a token takes no commands
+        self.assertEqual(webguard.bearer(Headers({"Authorization": "Bearer xyz"})), "xyz")
+        self.assertEqual(webguard.bearer(Headers({"Authorization": "Basic xyz"})), "")
+        self.assertEqual(webguard.bearer(Headers({})), "")
+
+    def test_body_lengths(self):
+        self.assertEqual(webguard.body_length(Headers({}), 10), (0, None))
+        self.assertEqual(webguard.body_length(Headers({"Content-Length": " 10 "}), 10), (10, None))
+        self.assertEqual(webguard.body_length(Headers({"Content-Length": "0"}), 10), (0, None))
+        self.assertEqual(webguard.body_length(Headers({"Content-Length": "11"}), 10)[1][0], 413)
+        for raw in ("-1", "+5", "1e3", "5.0", "", "١", "²", "0x10", "1 2"):
+            self.assertEqual(webguard.body_length(Headers({"Content-Length": raw}), 10)[1][0], 400, raw)
+
+
+def status(port, method, path, host="127.0.0.1", headers=(), body=b"", wait=5):
+    """The status code of one raw request (None when the server closed without answering or did not answer in time):
+    raw, because the requests this test sends are ones that urllib refuses to make."""
+    lines = [f"{method} {path} HTTP/1.1"] + ([f"Host: {host}"] if host is not None else []) + list(headers)
+    data = ("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body
+    with socket.create_connection(("127.0.0.1", port), timeout=wait) as s:
+        s.sendall(data)
+        try:
+            first = s.recv(64)
+        except socket.timeout:
+            return None
+    parts = first.split(b" ")
+    return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+
+
+class CommandLineTest(unittest.TestCase):
+    """--allow-host reaches each server from its command line."""
+
+    def test_allow_host_is_passed_on(self):
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, True)
+        with open(os.path.join(out, "engine.jsonl"), "w") as handle:
+            handle.write("{}\n")
+        with mock.patch.object(engineview, "serve") as serve:
+            engineview.main([out, "--serve", "--allow-host", "a.example", "--allow-host", "b.example"])
+        self.assertEqual(serve.call_args[1]["allow_hosts"], ["a.example", "b.example"])
+        with mock.patch.object(notebookview, "serve") as serve:
+            from herdr_py import notebook
+            notebook.main([out, "serve", "--allow-host", "n.example"])
+        self.assertEqual(serve.call_args[1]["allow_hosts"], ["n.example"])
+        os.makedirs(os.path.join(out, "work"))
+        with mock.patch.object(dashboard.Dashboard, "start"), mock.patch.object(dashboard.ThreadingHTTPServer, "serve_forever",
+                                                                                side_effect=KeyboardInterrupt):
+            with mock.patch.object(dashboard, "Dashboard", wraps=dashboard.Dashboard) as made:
+                dashboard.main([out, "--port", "0", "--allow-host", "d.example"])
+        self.assertEqual(made.call_args[1]["allow_hosts"], ["d.example"])
+        from herdr_py import cli
+        with mock.patch("herdr_py.server.Daemon") as daemon, mock.patch("herdr_py.opencode.wait_healthy", return_value={}), \
+                mock.patch("herdr_py.opencode.unasked", return_value=[]), mock.patch.object(cli, "Client") as client, \
+                mock.patch("signal.signal"):
+            client.return_value.call.side_effect = cli.ClientError("unreachable", "none running")
+            daemon.return_value.start.return_value = 0
+            code = cli.main(["serve", "--opencode", "http://127.0.0.1:1", "--state-dir", out, "--allow-host", "s.example"])
+        self.assertEqual(code, 0)
+        self.assertEqual(daemon.call_args[1]["allow_hosts"], ["s.example"])
+
+
+class Attacks:
+    """Shared by the four servers below: self.port, self.page (a GET that needs no token), self.post (a POST path),
+    self.token, self.answers (the status of an authorized POST of {}), and self.allowed (a name given to --allow-host)."""
+
+    def test_a_request_for_another_name_is_refused(self):
+        for host in ("attacker.example:%d" % self.port, "127.0.0.1.attacker.example", None):
+            self.assertEqual(status(self.port, "GET", self.page, host=host), 403, host)
+        for host in ("127.0.0.1:%d" % self.port, "localhost:%d" % self.port, "[::1]:%d" % self.port, self.allowed):
+            self.assertNotEqual(status(self.port, "GET", self.page, host=host), 403, host)
+        auth = ["Authorization: Bearer " + self.token, "Content-Type: application/json", "Content-Length: 2"]
+        self.assertEqual(status(self.port, "POST", self.post, host="attacker.example", headers=auth, body=b"{}"), 403)
+
+    def test_a_token_outside_ascii_is_a_wrong_token(self):
+        bad = ["Authorization: Bearer \xff" + self.token, "Content-Type: application/json", "Content-Length: 2"]
+        self.assertIn(status(self.port, "POST", self.post, headers=bad, body=b"{}"), (401, 403))
+
+    def test_a_body_length_that_is_not_a_whole_number_is_refused(self):
+        for raw in ("-1", "abc", "1e3"):
+            head = ["Authorization: Bearer " + self.token, "Content-Type: application/json", "Content-Length: " + raw]
+            self.assertEqual(status(self.port, "POST", self.post, headers=head, body=b"{}", wait=3), 400, raw)
+        head = ["Authorization: Bearer " + self.token, "Content-Type: application/json", "Content-Length: 2"]
+        self.assertEqual(status(self.port, "POST", self.post, headers=head, body=b"{}"), self.answers)
+
+
+class EngineViewAttackTest(Attacks, unittest.TestCase):
+    page, post, answers, allowed = "/", "/control", 400, "run.example"
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.out, True)
+        with open(os.path.join(self.out, "engine.jsonl"), "w") as handle:
+            handle.write(json.dumps({"t": 100.0, "kind": "start", "members": ["a"], "planner": "plan", "turns": 3}) + "\n")
+        got, ready = {}, threading.Event()
+
+        def up(server, token):
+            got.update(server=server, token=token)
+            ready.set()
+        threading.Thread(target=engineview.serve, args=(self.out,), daemon=True,
+                         kwargs={"port": 0, "ready": up, "allow_hosts": [self.allowed]}).start()
+        self.assertTrue(ready.wait(5))
+        self.addCleanup(got["server"].shutdown)
+        self.port, self.token = got["server"].server_address[1], got["token"]
+
+
+class NotebookAttackTest(Attacks, unittest.TestCase):
+    page, post, answers, allowed = "/", "/api/act", 409, "notes.example:8443"
+
+    def setUp(self):
+        folder = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, folder, True)
+        got, ready = {}, threading.Event()
+
+        def up(url):
+            got["url"] = url
+            ready.set()
+        self.token = "tok"
+        threading.Thread(target=notebookview.serve, args=(folder,), daemon=True,
+                         kwargs={"port": 0, "token": self.token, "ready": up, "allow_hosts": ["notes.example"]}).start()
+        self.assertTrue(ready.wait(10))
+        self.port = int(got["url"].split(":")[2].split("/")[0])
+
+
+class DaemonAttackTest(Attacks, unittest.TestCase):
+    page, post, answers, allowed = "/", "/api/agents", 400, "daemon.example"
+
+    def setUp(self):
+        self.fake = FakeOpenCode().start()
+        self.addCleanup(self.fake.stop)
+        self.dir = tempfile.mkdtemp(dir="/tmp")  # AF_UNIX paths are limited to ~104 bytes on macOS
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.daemon = Daemon(OpenCode(self.fake.url), Policy([], default="ask"), self.dir, http_addr=":0",
+                             allow_hosts=[self.allowed])
+        self.daemon.start()
+        self.addCleanup(self.daemon.stop)
+        wait_for(lambda: self.fake.stream_count() == 1, what="event stream")
+        self.port, self.token = self.daemon.web.server_address[1], self.daemon.token
+
+    def test_the_socket_is_never_open_to_others(self):
+        self.assertEqual(os.stat(self.daemon.socket_path).st_mode & 0o777, 0o600)
+        before = os.umask(0o022)
+        os.umask(before)
+        with mock.patch("os.umask", wraps=os.umask) as umask:  # born 0600: the mask is set before the socket exists
+            other = Daemon(OpenCode(self.fake.url), Policy([], default="ask"), os.path.join(self.dir, "b"))
+            other.start()
+            other.stop()
+        self.assertIn(mock.call(0o177), umask.call_args_list)
+        after = os.umask(before)
+        self.assertEqual(after, before)  # and the process's own mask is back
+
+
+class DashboardAttackTest(Attacks, unittest.TestCase):
+    page, post, answers, allowed = "/", "/api/state", 405, "dash.example"
+
+    def setUp(self):
+        run = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, run, True)
+        os.makedirs(os.path.join(run, "work"))
+        self.token = "t" * 20
+        self.dash = dashboard.Dashboard(run, port=0, token=self.token, allow_hosts=[self.allowed]).start()
+        self.addCleanup(self.dash.stop)
+        self.port = self.dash.web.server_address[1]
+
+    def test_a_token_outside_ascii_is_a_wrong_token(self):  # read-only: no POST; the token guards GET /api
+        self.assertEqual(status(self.port, "GET", "/api/state", headers=["Authorization: Bearer \xff" + self.token]), 401)
+        self.assertEqual(status(self.port, "GET", "/api/state", headers=["Authorization: Bearer " + self.token]), 200)
+
+    def test_a_body_length_that_is_not_a_whole_number_is_refused(self):  # nothing reads a body: every write is 405
+        self.assertEqual(status(self.port, "POST", "/api/state", headers=["Content-Length: -1"]), 405)
+
+
+if __name__ == "__main__":
+    unittest.main()
+HERDR_PY_EOF
 cat > tools/cast2mp4.py <<'HERDR_PY_EOF'
 #!/usr/bin/env python3
 """把 asciicast v2 錄影轉成 MP4。
@@ -33838,8 +35711,8 @@ cat > "$sums" <<'HERDR_PY_EOF'
 5bcfa4072040f3c9296fb2158707d4ee31ba5812d1fc54002c8c963142f4977b  .github/workflows/tests.yml
 60c9bdd905fcf45ac485c680d32e9773962cf061b6f041dcddd033911558a672  .gitignore
 59802752a201a64e0a49a358493da129b95007c88bdafe4c8744e92b2d6691a0  LICENSE
-873a1dad6de277b66baa070b915c0abb30aeffe82a4a38948d34152cb6a1b096  README.md
-4404586166999f236b7762c78eec91cb4197b18ec8ab73edb1f0854ef5bada2d  README.zh-TW.md
+df63fd16f0ac8f80bcfb2f308b45dd94e0cc53e3de4f5a531121270170ae59c9  README.md
+e17e3c931e6f08b6a60e7a8b35aa242720e583fb7d3117c0e3c4faa753c803e2  README.zh-TW.md
 204a8f05aa212e8c50105ce9b4dca83c16691ea695b2d49181e5a58d0a7d8a98  bench/herdr_compare/herdr_driver.py
 d553ca36aeae3bf69847de968a516ad8ce562449420bb11c32846233ad4092e4  bench/p23/Dockerfile
 a1b6b01890afb5608647cbd6752f75b273ae8f812510943f1a875d4c6cb8de23  bench/p23/build-image.sh
@@ -33885,7 +35758,7 @@ d94a8dc050f7ee0c6e1ba468a9d77ae1442ea8bec974de99fbaf609dac6ed36b  bench/p23/vali
 4e712c3712b0c85891a36d06eba9da6ad4104dc853dccd5034827b6801deb2ca  examples/coop/packing_judge.py
 f03ae62e0fd2bacd90423e6238b93862827ddb5cb1423f1e097ba79a5c5d914d  examples/coop/packing_member.py
 8b31e4e1979d330d0983387f18021b7ab4aa5ca161a5b77afbafef13f71c8f26  examples/coop/packing_task.md
-61f369e40de506a3b3e7113d69c08602769457afb76b31d27dc671037b4f82e7  examples/dag/judge.py
+502bd4f6c6f067ec31f90412cfcbd5e29b8d13d046df06932cb3a5bbd25ae27d  examples/dag/judge.py
 df1aef38d6ba1ffe47bc7baf0756c172e82bf28f202112bb431ef2ddeb2c5578  examples/dag/make_demo.py
 b64b648cfe690bbf09cdba0436518e5e72839cfc4683a01d90c50ae352b96c8b  examples/dag/member.py
 2e27c58008fa4ea93000badc0437ded8563cb989393a07b0ad6d2af59402e0ec  examples/dag/tasks/div.md
@@ -33904,7 +35777,7 @@ f65d61eb94ef28fc435bfabc0502367947ab07a3380b20930fcdf70a8dd07c18  examples/noteb
 979222c92a708b9ac57932eeb7122e1b837b35a429d10290f4e2b15e775119ca  examples/policy.json
 c2b24fdb4087b2fb16a6be40f3a4ad337b5915032bddbd68cba1eb266fee3190  examples/policy.toml
 88b8dedd8b43e4506838fb4db44a578a35013533b7232ba0c53d5ff7362012ac  examples/self_improve/make_task.py
-3b468739d787fffa5a216634654f6e8445046e57142b6328dc0a1bc7294a8174  examples/self_improve/patch_judge.py
+afa83590a735767b2f65e6142cadf1ca27a3fa1d16f0a9e0773e90a113043aef  examples/self_improve/patch_judge.py
 50d416b59e4ff346cedd3905873999f2a24238b43b4708b919e985f71b94de8c  examples/self_improve/patch_member.py
 e716e8d8a1d7943bb20e7b1f8f1594ae7d522214a2824ae9ede1c462c3155c3d  examples/self_improve/scenarios/scenario.json
 66cdbacdb4b669bbb9dedc9c4c2d8520370a6417eee4c5383b9ff64e4f2cef9c  examples/self_improve/scenarios/test_two_teams_one_daemon.py
@@ -33923,7 +35796,7 @@ e7d9abf316cfa932e885225ee3df6e692f159a6dfc1241e3a7a213052d2a12fb  examples/slide
 482e8ac0c9d82400a9fbcdeeac7de03fb7e15dfe3925f3a61a42437c6fbefa17  examples/slide_team/layout/reference_portrait.json
 79f832fb4e39898152ec57ad9e82332edab4913741c3a5b0cdc068e5f1cd5467  examples/slide_team/layout_team.py
 a0f1af5d5cd6c90df6083a8307d19ad1574c12ddab0476ec9d2fc09d2aa8c671  examples/slide_team/policy.json
-b94b9095e00df2498e15cdf6c53ee6b8cea1797b3800b3f09330a94ba4f091d8  examples/slide_team/run_demo.py
+a722b3ee38657fc001235bbcc28de4a42faacd5b7870056866bdc7a6ac846955  examples/slide_team/run_demo.py
 f392ac3c32a61b6424425c79cca6b6166e7a1cd0557f2abf8312ea9818c9203f  examples/slide_team/runreport.py
 101eb0431f5b71f87483834f88c0d9fd9d1896ea3510d9dfc7dd72c170ddf058  examples/slide_team/scaffold/kit.py
 a2f619b8b76150c303d38a6970b4e4c8f28b7b2c3f0f23baf2b1145e29e49b63  examples/slide_team/scaffold/make_deck.py
@@ -33935,30 +35808,32 @@ d0d9dda646ac14e2a1bca2b49458af934efafa60664fa4039a0378fd73bd9ff1  examples/slide
 d11d4e1c83c4c8d4e4fb8f863dd5b5ddb1e6c9f9c6d7aa97c5de784534cc4e50  herdr_py/__init__.py
 13a1a5b340cdcfc1902b62be90e508c7c71886000d5bf087e7854aadf09fb35e  herdr_py/__main__.py
 f863c93b3c37228ad5e3826c382ce6c3e4e6fa8fa284f4012ca1735ff31733d0  herdr_py/claude_agents.py
-4d18dcac65f5bc8f289cc8ee5968bc31a937d3461077b8e9463534c537037d3e  herdr_py/cli.py
+65ab77396e6acbed3e8032abff748ccb6e950fb8eec410557e68c7cecb144a77  herdr_py/cli.py
 fe254a50da788a3968054ff74d9fe61f6fd7e8d04f4bcf7aacd16385c59c7810  herdr_py/client.py
 1741d2422a76478abc094aa0a9928caeb938ca397c88ba51e6cc1571c4d45090  herdr_py/codex_agents.py
-9dcbd60d56495f5b78ee06603ea16cb51c6b2866acc1a14750b419a9a30d178e  herdr_py/coop.py
+20b883d2378c268cd7bff7a02df6d4943d1ce7ff5b8764ed3c3adb33e84f2519  herdr_py/coop.py
 8a7622c91a074ee13e2b1acd3ee399bb9d52f2896fd5e58129c8b41b3a43bed7  herdr_py/coopview.py
 3bdc8c4c5e1cda6413645acd678b44069ad484d4b969fd4f0eae9ed79fe75f97  herdr_py/core.py
-f6adbdf3f2be17d6d2c01893cfcf92a04593c8b97764e6be30a13ba9a6bc2e6f  herdr_py/dag.py
+bbc09c7076a3d554fef2f27f25f3fe48bbe21a2d1644750a77b56705db6e60a9  herdr_py/dag.py
 dc0519940fe1333b3512943b149c4153ff72508d706129dfa6358041047e42e6  herdr_py/dagview.py
-7346a0766208dcdb41e74a8f1245ed332fd4634124040d6324452a9275d5e9de  herdr_py/dashboard.py
+22d1e9ad594d20f9dd29fcbc5621afc048ddf71063c5a0fd82db49d0b557f218  herdr_py/dashboard.py
 c36ae3d20c139bb7465777bfb4d71b6f4d1573b7bb507a4f487f6ee398d2d6e5  herdr_py/diagnose.py
-1ff0070fca32243cae19c57842205ae8982b7fe0c25a3a43c8f2c8f9b7269616  herdr_py/display.py
-b322946eaf6056039317af3523050e2653e1e51ddf4320d230d9efd8d8036f42  herdr_py/engine.py
-b30df8fccf8849512c90a6a1845eb359af619c105139753798130fcd47b3af81  herdr_py/engineview.py
+d26bcdebdb32ff5d99969676f6dea71d54ac4338be4ad07e6b34f3a3531f9d56  herdr_py/display.py
+c105f8f57b09eab1eb88edfacc24808d45f35083563d390b2568e8d1a4157adb  herdr_py/engine.py
+0c037257e937512837a772c0e97e43320e75dff6c5609196ca7f987ec0719b25  herdr_py/engineview.py
+79a4f22b104ae809b53af6455d54d5b0aea221979085960c3490176b8f5c05eb  herdr_py/lessons.py
 b4309f92353ea05656156c7df5f1991f4738bd4c058d5b946e6a5a3f78b2858b  herdr_py/members.py
-ac8b8547749a7b35466172c478a3318a9437bfff1bbe897af8a2d5ef600d1be5  herdr_py/notebook.py
-dcf6f71965174a30b2e4231f4de047f4b48a870d9940b03e10b75409d1653d04  herdr_py/notebookview.py
-9b86d2268b8a3d38ad4db399e06b5b00f927562b1176c154052213d3cac70f15  herdr_py/opencode.py
+d87a05b20f604aa7ed8ce287756ea403c121e995a93323931f2241c6d8bc6a5c  herdr_py/notebook.py
+f680988949cc94a9f97c46c324d9bba47d08f7ca7a91252d380a77589f180a23  herdr_py/notebookview.py
+b2d7f0de434cbd43872f6c954bf814d4b55184d14977e8777da43d1a83b6524e  herdr_py/opencode.py
 129f87320f3c8da3a1ccac241c422e265ecd99cb254b489d1629430660cc5b66  herdr_py/organize.py
 b0d60369df166859b7f3c1250be392b9cc59b78d2a1f72d203b17bdcef010d75  herdr_py/policy.py
-feb44aa29f06b56d8e31ab61106e902ec26d080374809e2f8a1c0c398aba8b99  herdr_py/rundiag.py
-fc4274b90209daac0f59038f84b7f95a03c12e5e322912fd6e33f5feeac12c2a  herdr_py/server.py
+2f36adf1e7a27286d4f7b30113d7aa521c8f634b6fe37d074ecc52d075293d33  herdr_py/rundiag.py
+63021c5a888a0532d48e8f39a7b72c5ad8f2e8a83a256e47356df485e126728d  herdr_py/sandbox.py
+00736b6af8482d41b708cea8f3c191a30e58568b2985aba0e16c389ecbb3ff8e  herdr_py/server.py
 9a2a4888a135f566eabb2a0d2056260a3cb3ea16d4807438d20828f785d131bb  herdr_py/team.py
-0a8894ce4e6330013dad1e76d055a1a56fb6949a4ca1189c13d16f4a4eb47b0d  herdr_py/teamkb.py
-86a808aabe4e9b95f63f55b45d3698008366f25bb34607f55225ddb5f42bfcd0  herdr_py/teamtools.py
+11460afbb88a03b063d7cc19237c66aed9094e2173da084486611962dc4b9826  herdr_py/teamkb.py
+9d1f2b0594a2b92a896411220b82652b7dfbe2f54ef8abcaa941e86b810e46d5  herdr_py/teamtools.py
 03a470fda89c4ce6e6189fbec4c6e4145295a5f0c651591dc107357707a8c4fe  herdr_py/tui.py
 a6223b15ea9ccabd8b7205ba09ae426683cf1541209306b79e52cebdde5d7042  herdr_py/viewstyle.py
 29e8b0b657aad07431a57950e4a04236a1cda0b935f5ace2266317b53f554ee1  herdr_py/web/app.js
@@ -33968,6 +35843,7 @@ b722a63ad5149b7768d9b9268f32ee822eb7e64a8a6b21226979291fc785ee11  herdr_py/web/d
 d75cbda876d4a76fa42c7eafa22955d5173bade2e4a92870c2bc34a4717c2255  herdr_py/web/dashboard/index.html
 214accbc1acd6726b786240fb68f1fc3694de4462f9de5675fd3b4bc77de671d  herdr_py/web/index.html
 b1aee2779e35cf47f104b2999f0cc7c1d319a2e2688790c31ff5aa4112f5c8fe  herdr_py/web/style.css
+b3a407e8f62ea078d75ea312784f743b4f8d85a74634a23a747c87fe63ce549e  herdr_py/webguard.py
 8538f716aade7790a60fd5281e772a36dece2d64a6a471f38b316cc7db63a9a8  scripts/check_opencode.py
 c3843cb69fc4ef6fb281fd7d0626ca333c18e5210d7e2e57581064e00fda6604  scripts/check_opencode_policy.json
 d7a1cdd133113513a90160695ee7c2ad844bb9543c429a64b23ced78910bca33  scripts/ci_privacy.py
@@ -34023,35 +35899,39 @@ ce5c4217c95774b43e22b6dc8bad5d84d0e4a5fbfa04f4494b1c570689de9ee8  tests/test_cod
 40a030ed9b8eb7632d7a8f5b2dab85f5c5084c8e82a8d8ce8115688e03d85afd  tests/test_components.py
 ce77183c01489a08b2f9e40039dbe50209de2e2a5714a60e16a39f5ef4ec1616  tests/test_coop.py
 ffaed5c063ba02a0b692be4d5b18d856853aeb3a93571218baf96aabdf64b22a  tests/test_coopview.py
-57b9c47ec95e5024ee5f60910b72763d1d8226f9555b416b48ecc73a5b94df4e  tests/test_core.py
-9c458bce835d169982837101c4603d93c857233ab0d03313d0a97f601cc7a468  tests/test_dag.py
+f4c6a3c8998bd4860a2c1bf5126ae0c828ab9b8bde55e96667576699948da2e0  tests/test_core.py
+ea4c08a256fa2140adcb2408c259797959dbf75f01be063ef8b82b0bca38e0a4  tests/test_dag.py
 c771075bc6cc29faab4b596f78c5cbee5c54deaba6e8fbca2faf3ac4bb766e57  tests/test_dashboard.py
 b4a91aafcec4a28c3f03520000b52ef2b0c54c3ba86557b1296b88b88b5211d1  tests/test_diagnose.py
+681e71ac2ff16eecf6c6230880a704c2670a1c1d11db4ecd2ab2a1121f75674a  tests/test_display.py
 e0af90e222283b13c3adb826c780ea5dc10d73569e6c1b7c93c9a3ae5a0730c1  tests/test_engine.py
 fae1d3ba88a9048a9e75f88c5dae21cd38f78e27a3d0eb03b2565503bd8fb3a8  tests/test_example_policies.py
 7f9aaac073cb4bb5c89edcafe12a90f322aa80270834bca0ffe6eae01d8e9fbc  tests/test_layout.py
+78ba7769c80654741866bbdd21e2daf5ff563a35f7ae3b3f281456b9c72f7b62  tests/test_lessons.py
 88478892eb9ca74e5af8b3ed0a2d47c2aa5194990e334437a6cae15e1b2ea8d0  tests/test_members.py
 8bf44dc53be401bed122ce2c9015ab389cf87874c95a5d5e575ba5c5c909971c  tests/test_notebook.py
 1cb320f33baff47834a19a8c4f46a6ed0be8c033c84b145d6f1af3b1b4b92f06  tests/test_oneshot.py
 f6e4daa3c67b08d75136853634e00cd250981b2ddac8656107c0a83abf9c5832  tests/test_opencode_config.py
 6f6e39586f447331a8eeae14fb2bc2156c24678bf8a8d596fdaa9a5d02db4a4a  tests/test_organize.py
 145b4cccb7a47eae3a744bc6d8edc4ab6d2fef00b3be3f7773ed6f4777595c80  tests/test_rundiag.py
+b04599f4b47fb15400a34d2b5a22b57c049e36981a67c690d3743a970b749d30  tests/test_sandbox.py
 fca387bda5198c9a82dc85a0ab7b5393d09b72fc3691f7bac31a3f5139535015  tests/test_scoring.py
-56abaebaac58e6d4af79a3a153454273002ad4193bf6f0a02b68de8f1c4571de  tests/test_self_improve.py
+32a5c747585629af215e4a8b1f1e03827fd441acfb3c30f24d3e3593672174ec  tests/test_self_improve.py
 7305031b7d4e0cdd50f992f72262556cf5c4d13dfd50354b46306c34a6c8afa2  tests/test_server.py
 7930da1237918c45c38d155ffb0290f8d84d8e38b8cde8457e86a7d67417b12d  tests/test_slide_team.py
-b2a362c0bff4fb52c605420807c82495375c686a32ae4238d39bcd1dd3cf4f57  tests/test_sources.py
+005edc29e85874a37216d26acc5b6450ad31bdbf2a2ce35d4d6adc6eedbb6b92  tests/test_sources.py
 b693fdcb2ea5cbcfd45bb259713aa9fd54ec01b3cf73009d401da729e1ada4ff  tests/test_team.py
-f6e7cae843b16550728b40a2921e19eb63d7f628431b6296dc91656c36d90e10  tests/test_teamkb.py
+e1dd555e894fa4cee8862abaa9f29d02d4331b1ffdd4afbbfe2665c0cec4ed7d  tests/test_teamkb.py
 97a836a6f60e4e1d254365f813fecf8bc7e3b8ef5401f9057ceffa1e2bd16407  tests/test_teamrun.py
 a43859a6274b4fc5a5bfe289fff8f43e2fd523bfce771781eed2b79f448ec8f6  tests/test_teamtools.py
+f8f22a844b2f0793d2a88471d49d6cb49db559a8b76fb33bf728e2474fd5630f  tests/test_webguard.py
 003ace89eeccf63a47b965b0f5b54e671057e8cff8b2ffae283b3667c620433e  tools/cast2mp4.py
 d8bea6a0119c0121f2a88f1c2c13d3f067fe950ba3238807288ea473e5d12652  tools/rec.py
 HERDR_PY_EOF
 if command -v sha256sum >/dev/null 2>&1; then check="sha256sum -c"; else check="shasum -a 256 -c"; fi
 if $check "$sums" > "$sums.out" 2>/dev/null; then
   rm -f "$sums" "$sums.out"
-  echo "herdr-py: 212 files written to $(pwd); every file's sha256 matches the original"
+  echo "herdr-py: 219 files written to $(pwd); every file's sha256 matches the original"
 else
   grep -v ': OK$' "$sums.out" >&2 || echo "herdr-py: the sha256 check could not run" >&2
   rm -f "$sums" "$sums.out"

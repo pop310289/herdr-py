@@ -147,7 +147,8 @@ python3 -m herdr_py.teamkb runs/c1/kb     # every entry: score, who built on who
 today and says what should happen; members hand in a unified diff; `patch_judge.py` applies it to a clean export of
 a commit, refuses patches that touch the scenarios, the judge or an existing test, runs the existing suites (one
 `--test` per platform) and scores the patch by how many scenarios pass. Before judging, it checks the base: its tests
-must pass and every scenario must fail, or the judge reports itself broken instead of blaming the patch.
+must pass and every scenario must fail, or the judge reports itself broken instead of blaming the patch. A patch is
+code a member wrote, so the tests and the scenarios run in a container (`--sandbox`, see [Security](#security)).
 `make_task.py` builds the task text with the scenarios and the source files they name, for members without tools.
 The scenarios in the folder are candidates (`pending-review`): a person reads and freezes a scenario before members
 are run on it, and a person reviews the best patch before it is merged.
@@ -246,7 +247,7 @@ work at once, to let a todo come after the one finding out what it needs, and no
 findings into a research todo. Members can also make tools for each other: a verified answer whose first line is
 `ARTIFACT: mcp` is a one-file MCP server, and with `--mcp-sandbox COMMAND` the engine starts it once in that sandbox
 (`{file}` the tool's code, `{kb}` the knowledge base, `{board}` the board folder; for example a `docker run` with no
-network and a read-only file system), asks server/discover and tools/list (revision 2026-07-28), and offers the tools
+network, a read-only file system, no capabilities and not as root, as in [Security](#security)), asks server/discover and tools/list (revision 2026-07-28), and offers the tools
 that answered to the Claude members' later turns (the newest of a line of tools; their prompt lists them). Such a turn
 runs with `--restricted --strict-mcp-config` instead of `--safe-mode`, which keeps every MCP server out: checked with
 Claude Code 2.1.295, the context is the same size and holds no CLAUDE.md or skills, and the member called the tool.
@@ -370,6 +371,36 @@ open /tmp/notebook-demo/site/index.html
 `notebook.json` in the folder sets the title and the language of the pages (`en` or `zh-TW`). Commands are for one
 person on one machine; a decision written later than it happened (`--at`) is marked as recorded later.
 
+### Corrections the next run is told (lessons)
+
+When a team goes down a wrong path, a person (or the agent that supervises the team) writes the correction down once.
+Later runs are told before they act, and their records show whether that helped.
+
+```
+a correction ─> lessons.jsonl ─> before an action, does `when` match? ─> yes: told in that prompt
+(notebook correct)  (hypothesis)    (a member: the task + its todo;              │
+                                     the planner: the task)                      v
+        review <─ the mistake made again? (`detect` on what was handed in) <─ the turn
+  retired (back in 2 turns, for good) │ confirmed (told in 3, never back) │ otherwise as it was
+```
+
+```sh
+python3 -m herdr_py.notebook NOTEBOOK correct PAGE --run 2 --step t3 \
+    --wrong "took the screenshot with headless Chrome --window-size" \
+    --right "use phone-check: it emulates a 390 px phone" --when "screenshot" --detect "window-size"
+python3 -m herdr_py.lessons NOTEBOOK/lessons.jsonl review RUN_FOLDER...  # told, made again, and the mistake's rate before
+```
+
+- `when` is matched just before the action, against the action itself (the task and the todo), not against what a
+  person typed in a chat.
+- A lesson is a hypothesis until the records decide: the mistake back in 2 turns that were told it retires it, for good
+  (to try again, write it anew); with `detect`, told in 3 turns and never back confirms it. A review of fewer runs never
+  moves a lesson back. Without `detect` a lesson cannot be measured and stays a hypothesis.
+- It only tells: answers are judged as before. The replay page lists the lessons a run was given, and every todo and
+  planner wake shows which it was told and which mistake it made again; `rundiag` reports such turns.
+- Runs started from a notebook get its `lessons.jsonl` (`--lessons FILE` for the engine). Every run now keeps its task
+  as `task.md`, so a lesson can be measured on the runs from before it existed.
+
 ## DAG dispatch: steps that wait for each other
 
 `python3 -m herdr_py.dag` runs a **plan**: steps, each done by one member in **its own git clone** and passed or
@@ -384,13 +415,16 @@ div ───────────────┴─> docs
 ```
 
 ```sh
-python3 examples/dag/make_demo.py /tmp/dag-demo          # a small repository and a plan for it (program members, no model)
-python3 -m herdr_py.dag /tmp/dag-demo/plan.json --check  # the steps, level by level
-python3 -m herdr_py.dag /tmp/dag-demo/plan.json --out /tmp/dag-demo/run1 --parallel 3
-open /tmp/dag-demo/run1/view.html                         # the plan drawn as a graph, and every attempt
-python3 -m herdr_py.dag --recheck /tmp/dag-demo/run1      # judge every passed step again in a fresh clone
+python3 examples/dag/make_demo.py ~/dag-demo          # a small repository and a plan for it (program members, no model)
+python3 -m herdr_py.dag ~/dag-demo/plan.json --check  # the steps, level by level
+python3 -m herdr_py.dag ~/dag-demo/plan.json --out ~/dag-demo/run1 --parallel 3
+open ~/dag-demo/run1/view.html                         # the plan drawn as a graph, and every attempt
+python3 -m herdr_py.dag --recheck ~/dag-demo/run1      # judge every passed step again in a fresh clone
 ```
 
+- **The judge runs each step's tests in a container** (`examples/dag/judge.py`; `HERDR_JUDGE_SANDBOX`, default
+  `docker:python:3-slim`; `none` runs them here): a step's tests are code a member wrote. With colima, keep the demo
+  under your home folder, as above: only that is shared with the container.
 - **Isolation is the program's job**: every attempt gets its own `git clone --shared`, with no remote; a step's clone
   gets the output commit of each step it needs (`refs/dag/<id>`) and nothing from any other step, and its prompt shows
   only those steps' summaries and diffs. Codex members work there in the `workspace-write` sandbox; Claude members get
@@ -562,6 +596,42 @@ prompt can start every turn clean. Tokens, turns and decisions carry on; the old
 kinds refused for that agent before the policy is asked (`["edit", "bash"]` for an agent that only reads).
 `folder.list` returns what OpenCode lists in a folder, an error when it cannot see it.
 
+## Security
+
+Checked on 2026-10-11 with three scanners in a throwaway container (bandit 1.9.4; semgrep 1.180.0 with the rule sets
+p/python, p/security-audit, p/secrets and p/github-actions; zizmor 1.30.1 for the CI workflow) and with attacks on the
+running servers and on the judges (`tests/test_webguard.py`, `tests/test_sandbox.py`, `tests/test_display.py`).
+
+- **Code an agent wrote never runs on this machine as it is.** Claude members get permission modes and file tools
+  only; Codex members work in Codex's read-only or workspace-write sandbox; OpenCode members go through the daemon's
+  policy. A team tool (`ARTIFACT: mcp`) runs only through the `--mcp-sandbox` command you give, for example:
+
+  ```sh
+  docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 \
+    --tmpfs /tmp:rw,size=16m --memory 256m --cpus 1 --pids-limit 64 -v {file}:/srv/tool.py:ro -v {kb}:/kb:ro IMAGE python3 /srv/tool.py
+  ```
+- **A judge that runs a member's code runs it in a container.** `herdr_py/sandbox.py` starts one per command: no
+  network, a read-only root, no capabilities, no way to gain privileges, your user id, memory, CPU and process limits,
+  and only the work copy mounted; a command that runs too long is stopped with its container.
+  `examples/self_improve/patch_judge.py` (`--sandbox docker:IMAGE`, default `docker:python:3-slim`, or `podman:IMAGE`)
+  and `examples/dag/judge.py` (`HERDR_JUDGE_SANDBOX`) use it. Before anything runs, they check that the container sees
+  the copy (colima shares only folders under your home with its VM). Without docker they stop with a judge error.
+  `none` runs the code here: only when you ask for it, and the verdict then starts with `[no sandbox]`. A judge of your
+  own that runs members' code should do the same.
+- **The web servers** (`engineview --serve`, `serve --http`, the dashboard, `notebook serve`) listen on 127.0.0.1
+  unless you say otherwise. There they answer only requests addressed to this machine (localhost, 127.0.0.1, ::1): a
+  web page elsewhere that points its own domain at 127.0.0.1 (DNS rebinding) gets 403, so it cannot read a run or the
+  notebook. Behind a proxy that passes on its public name, add `--allow-host NAME`. Commands need the token printed
+  after `#` in the link; a token is compared in constant time, request bodies have a size limit, and a
+  `Content-Length` that is not a whole number is refused.
+- **The terminal** never gets control characters or bidirectional overrides from what agents, judges or web pages
+  wrote; they are shown as `�` (U+FFFD). Escape sequences that would set the clipboard or the window title, clear the
+  screen or reorder text are not passed on.
+- **The knowledge base reads only the files it wrote** (`artifacts/<sha256>`): a log edited to name a file elsewhere
+  is not read, carried or judged.
+- **The CI workflow** reads the repository only, pins third-party actions to commit SHAs and keeps no credentials; its
+  privacy check refuses personal data in pushed commits.
+
 ## RHEL 8 notes
 
 - `python3` on RHEL 8 is 3.6 (`/usr/libexec/platform-python` is always there): fine for herdr-py; use JSON config files.
@@ -586,7 +656,8 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 542 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 594 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # the sandbox in real containers when docker answers
 python3 bench/p23/validate.py                # checks the bench graders inside the RHEL 8 image (needs Docker)
 ```
 

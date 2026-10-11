@@ -21,7 +21,6 @@ the folder. Nothing is ever written: there are no write endpoints.
 import argparse
 import base64
 import errno
-import hmac
 import http.server
 import json
 import math
@@ -35,7 +34,7 @@ import threading
 import time
 import urllib.parse
 
-from . import __version__
+from . import __version__, webguard
 from .client import Client, ClientError
 from .server import ThreadingHTTPServer
 
@@ -519,9 +518,11 @@ class RunFolder:
 
 # ---------------------------------------------------------------------------- HTTP
 class Dashboard:
-    def __init__(self, run_dir, host="127.0.0.1", port=8770, socket_path=None, poll_s=1.0, token=None, keepalive_s=15.0):
+    def __init__(self, run_dir, host="127.0.0.1", port=8770, socket_path=None, poll_s=1.0, token=None, keepalive_s=15.0,
+                 allow_hosts=()):
         self.run = RunFolder(run_dir, socket_path=socket_path, member_poll_s=poll_s)
         self.token = token or secrets.token_urlsafe(18)
+        self.host, self.allow_hosts = host, tuple(allow_hosts)
         self.poll_s, self.keepalive_s = poll_s, keepalive_s
         self.stopping = threading.Event()
         self.web = ThreadingHTTPServer((host, port), make_handler(self))
@@ -550,9 +551,8 @@ def make_handler(dash):
             pass
 
         def authorized(self, query):
-            header = self.headers.get("Authorization", "")
-            given = header[7:] if header.startswith("Bearer ") else (query.get("token") or [""])[0]
-            return hmac.compare_digest(given.encode(), dash.token.encode())
+            given = webguard.bearer(self.headers) or (query.get("token") or [""])[0]
+            return webguard.token_ok(given, dash.token)
 
         def start_reply(self, status, ctype, length=None, extra=()):
             self.send_response(status)
@@ -569,6 +569,8 @@ def make_handler(dash):
             self.wfile.write(body)
 
         def do_GET(self):
+            if webguard.refused(self, dash.host, dash.allow_hosts):
+                return
             url = urllib.parse.urlparse(self.path)
             if url.path in STATIC:
                 name, ctype = STATIC[url.path]
@@ -591,6 +593,8 @@ def make_handler(dash):
             return self.reply(404, {"error": "not found"})
 
         def refuse(self):  # a read-only server: say so, for every method that would change something
+            if webguard.refused(self, dash.host, dash.allow_hosts):
+                return
             self.reply(405, {"error": "read-only: the dashboard has no write endpoints"})
 
         do_POST = do_PUT = do_PATCH = do_DELETE = refuse
@@ -720,6 +724,8 @@ def parse_args(argv=None):
     ap.add_argument("run_dir", metavar="RUN_DIR", help="a run folder (with work/ inside) or a team's --workdir")
     ap.add_argument("--port", type=int, default=8770, help="0 picks a free port")
     ap.add_argument("--host", default="127.0.0.1", help="address to listen on (default 127.0.0.1; reach it through an SSH tunnel)")
+    ap.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                    help="also answer requests for this name (a proxy in front that passes on its public name)")
     ap.add_argument("--socket", help="herdr-py daemon socket: members' states from the daemon instead of codex/agents.json")
     ap.add_argument("--poll", type=float, default=1.0, help="seconds between looks at the run folder and the daemon")
     ap.add_argument("--html", metavar="FILE", help="save the page with the run as it is now into one HTML file and exit "
@@ -740,7 +746,7 @@ def main(argv=None):
         print(f"saved: {saved['path']} ({saved['pictures']} pictures, {saved['bytes'] / 1e6:.1f} MB); open it in a browser")
         return 0
     try:
-        dash = Dashboard(a.run_dir, host=a.host, port=a.port, socket_path=a.socket, poll_s=a.poll)
+        dash = Dashboard(a.run_dir, host=a.host, port=a.port, socket_path=a.socket, poll_s=a.poll, allow_hosts=a.allow_host)
     except (ValueError, OSError) as exc:
         print(f"herdr-py dashboard: {exc}", file=sys.stderr)
         return 2

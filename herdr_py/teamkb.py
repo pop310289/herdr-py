@@ -62,6 +62,17 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+ARTIFACT = re.compile(r"artifacts/(?!\.\.?$)[^/\\\x00]+")  # one file in artifacts/ (_store names it by its hash)
+
+
+def artifact_path(folder, rel):
+    """Where an entry's artifact is, or None when the name the log records is not one the knowledge base gives: a log
+    edited by hand or by someone else cannot make a reader open a file outside the knowledge base."""
+    if not isinstance(rel, str) or not ARTIFACT.fullmatch(rel):
+        return None
+    return os.path.join(folder, rel)
+
+
 class TeamKB:
     def __init__(self, folder):
         self.folder = os.path.abspath(folder)
@@ -236,8 +247,12 @@ class TeamKB:
                 continue
             data, kind = None, (p.get("kind") or "").lower()
             if p.get("artifact"):
+                path = artifact_path(source, p["artifact"])
+                if path is None:
+                    out["left_out"]["artifact name not the knowledge base's"] += 1
+                    continue
                 try:
-                    with open(os.path.join(source, p["artifact"]), "rb") as handle:
+                    with open(path, "rb") as handle:
                         data = handle.read()
                 except OSError:
                     out["left_out"]["artifact missing"] += 1
@@ -390,7 +405,9 @@ class TeamKB:
             entry = self.proposals.get(eid)
         if entry is None:
             raise TeamKBError(f"no entry {eid}")
-        path = os.path.join(self.folder, entry["artifact"]) if entry.get("artifact") else None
+        path = artifact_path(self.folder, entry["artifact"]) if entry.get("artifact") else None
+        if entry.get("artifact") and path is None:
+            raise TeamKBError(f"entry {eid}: its artifact name {entry['artifact']!r} is not one this knowledge base gives")
         status, score, detail = "infra_error", None, ""
         try:
             if path is not None:
@@ -487,7 +504,10 @@ class TeamKB:
         """An entry's artifact as a fenced block for a brief, or a line saying why it is not shown."""
         if not entry.get("artifact"):
             return []
-        with open(os.path.join(self.folder, entry["artifact"]), "rb") as handle:
+        path = artifact_path(self.folder, entry["artifact"])
+        if path is None:
+            return ["  (its answer is not shown: the log names a file outside the knowledge base)"]
+        with open(path, "rb") as handle:
             data = handle.read(limit + 1)
         if len(data) > limit:
             return [f"  (its answer is longer than {limit} bytes, so it is not shown here)"]

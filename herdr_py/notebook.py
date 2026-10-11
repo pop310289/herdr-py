@@ -52,6 +52,7 @@ except ImportError:  # not POSIX: one writer at a time
 from . import dagview, engineview
 from .engineview import artifact_reads, read_jsonl
 from .members import MemberError, parse_member
+from .teamkb import artifact_path
 
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 KINDS = ("engine", "dag", "other")
@@ -59,7 +60,7 @@ BUDGET = ("turns", "planner_wakes", "time_limit", "max_open", "turn_timeout")
 LOOP = {"repairs": "--repairs", "repair_below": "--repair-below", "target": "--target", "wrap_up": "--wrap-up"}  # page.json "loop"
 SHOW = ("results", "failures", "answer_bytes")
 BRING = ("skills", "knowledge", "current")  # what a request may ask a new task to bring from another page
-LOOKED = ("approve", "note", "pick", "exclude", "include", "accept", "hold", "done")  # someone looked at the page
+LOOKED = ("approve", "note", "correct", "pick", "exclude", "include", "accept", "hold", "done")  # someone looked at the page
 QUIET = 15 * 60  # a run with no end that has written nothing for this long is stuck
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the folder herdr_py is in, for the engine's process
 
@@ -153,6 +154,8 @@ S = {  # (English, 繁體中文)
     "ev_create": ("opened the page", "開頁"), "ev_revise": ("revised the definition", "改了定義"),
     "ev_approve": ("approved version {d}", "核准版本 {d}"), "ev_run": ("run {n} started", "第 {n} 次執行開始"),
     "ev_attach": ("attached run {n}: {dir}", "掛上第 {n} 次執行：{dir}"), "ev_run_end": ("run {n} ended (exit {code})", "第 {n} 次執行結束（結束碼 {code}）"),
+    "ev_correct": ("correction {lesson}{where}: wrong: {wrong} / right: {right} (told to later runs where /{when}/ is found)",
+                   "糾正 {lesson}{where}：錯在 {wrong}／應該 {right}（之後的執行遇到 /{when}/ 會被提醒）"),
     "ev_note": ("note {id}: {text}", "批註 {id}：{text}"), "ev_pick": ("picked {entry} as the current {kind}", "選 {entry} 當現行的 {kind}"),
     "ev_exclude": ("excluded {entry}: {why}", "排除 {entry}：{why}"), "ev_include": ("included {entry} again", "取消排除 {entry}"),
     "ev_accept": ("accepted: {why}", "驗收：{why}"), "ev_hold": ("put on hold: {why}", "擱置：{why}"),
@@ -411,6 +414,10 @@ class Notebook:
         return self._append("requests.jsonl", dict(kind="request", id=rid, goal=goal.strip()[:2000],
                                                     title=(title or "").strip()[:200] or None, bring=wanted), by, at)
 
+    def lessons_path(self):
+        """The notebook's lessons (lessons.py): corrections made on any page, told to every later run they fit."""
+        return os.path.join(self.folder, "lessons.jsonl")
+
     def _append(self, name, event, by, at=None):
         event = dict(event, by=by, t=now())
         if at is not None:
@@ -612,8 +619,8 @@ def last_write(*paths):
 def with_files(folder, made):
     """engineview's entries, each with the artifact file its proposal names (kb/artifacts/...), so it can be opened."""
     files = {e.get("id"): e.get("artifact") for e in read_jsonl(os.path.join(folder, "kb", "events.jsonl"))
-             if e.get("type") == "propose"}
-    return [dict(e, artifact=files.get(e["id"])) for e in made]
+             if e.get("type") == "propose"}  # a name that is not the knowledge base's own is left out (teamkb.artifact_path)
+    return [dict(e, artifact=files.get(e["id"]) if artifact_path(folder, files.get(e["id"])) else None) for e in made]
 
 
 def engine_facts(folder, at):
@@ -850,7 +857,7 @@ def write_references(folder, refs, lang):
     rows = []
     for r in refs:
         for e in r["entries"]:
-            src = os.path.join(e["folder"], "kb", e["artifact"]) if e.get("artifact") else None
+            src = artifact_path(os.path.join(e["folder"], "kb"), e["artifact"]) if e.get("artifact") else None
             if not src or not os.path.isfile(src):
                 continue
             path = os.path.join(board, ref_file(r, e))
@@ -890,6 +897,8 @@ def run_argv(page, folder, task_file, source=None, picks=(), source_n=None):
             argv += [flag, str(int(value)) if key in ("repairs", "wrap_up") else f"{value:g}"]
     if isinstance(d.get("tools"), dict) and d["tools"].get("sandbox"):
         argv += ["--mcp-sandbox", d["tools"]["sandbox"]]
+    if os.path.isfile(page.notebook.lessons_path()):  # corrections from any page, told where they fit
+        argv += ["--lessons", page.notebook.lessons_path()]
     if "repair_below" in (d.get("loop") or {}):
         for kind in d.get("outputs") or []:  # the bar is for the page's outputs, not for a skill that always scores the same
             argv += ["--repair-kind", kind]
@@ -1003,6 +1012,28 @@ def pick(page, eid, by, at=None):
     return page.append("pick", by, at=at, entry=eid, run=entry["run"], of=entry["kind"])
 
 
+def correct(page, by, wrong, right, when, detect=None, evidence="", run=None, step=None, at=None):
+    """A correction of a page's work: a lesson in the notebook's lessons.jsonl (told to every later run, on any page,
+    where its `when` matches; lessons.py) and an event in the page's history."""
+    from .lessons import LessonError, Lessons
+    source = {"page": page.id}
+    if run is not None:
+        found = next((r for r in page.runs() if r["n"] == run), None)
+        if found is None:
+            raise NotebookError(f"{page.id} has no run {run}")
+        source.update(run=found["folder"], n=run)
+    if step:
+        source["step"] = step
+    try:
+        lesson = Lessons(page.notebook.lessons_path()).add(when, wrong, right, by, detect=detect, evidence=evidence or "",
+                                                           source=source)
+    except LessonError as exc:
+        raise NotebookError(str(exc))
+    page.append("correct", by, at=at, lesson=lesson["id"], run=run, step=step, wrong=lesson["wrong"],
+                right=lesson["right"], when=lesson["when"], detect=lesson.get("detect"))
+    return lesson
+
+
 def add_note(page, text, by, at=None):
     if not text.strip():
         raise NotebookError("a note says something")
@@ -1071,8 +1102,8 @@ def parse_at(text):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python3 -m herdr_py.notebook", description=__doc__.split("\n\n")[0])
     ap.add_argument("notebook", help="the notebook's folder")
-    ap.add_argument("command", choices=["draft", "approve", "run", "attach", "note", "pick", "exclude", "include", "accept",
-                                        "hold", "done", "reopen", "status", "view", "request", "serve"])
+    ap.add_argument("command", choices=["draft", "approve", "run", "attach", "note", "correct", "pick", "exclude", "include",
+                                        "accept", "hold", "done", "reopen", "status", "view", "request", "serve"])
     ap.add_argument("args", nargs="*")
     ap.add_argument("--by", default=os.environ.get("USER") or "person", help="who decided (default: this user)")
     ap.add_argument("--at", help="when it happened, for a record made before the notebook existed (marked imported)")
@@ -1082,6 +1113,13 @@ def main(argv=None):
     ap.add_argument("--dry-run", action="store_true", help="run: show the engine command and the task, run nothing")
     ap.add_argument("--detach", action="store_true", help="run: start the run and return")
     ap.add_argument("--note", help="attach: a line about the run")
+    ap.add_argument("--wrong", help="correct: what the team did wrong")
+    ap.add_argument("--right", help="correct: the right way")
+    ap.add_argument("--when", help="correct: a regular expression; later runs whose task or todo has it are told")
+    ap.add_argument("--detect", help="correct: a regular expression that finds the same mistake in what they hand in")
+    ap.add_argument("--evidence", default="", help="correct: what shows it (a file, a test, a run)")
+    ap.add_argument("--run", type=int, metavar="N", help="correct: the run of the page the mistake was made in")
+    ap.add_argument("--step", help="correct: the turn, todo or entry of that run")
     ap.add_argument("--out", help="view: the folder to write")
     ap.add_argument("--request", help="draft: the request (r1, r2, ...) this page answers")
     ap.add_argument("--title", help="request: a title for the new task")
@@ -1089,10 +1127,13 @@ def main(argv=None):
                     help="request: what the new task brings from that page: skills, knowledge, current (comma separated)")
     ap.add_argument("--host", default="127.0.0.1", help="serve: the address to listen on (default: this machine only)")
     ap.add_argument("--port", type=int, default=8790, help="serve: the port (default 8790)")
+    ap.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                    help="serve: also answer requests for this name (a proxy in front that passes on its public name)")
     ap.add_argument("--runs", action="append", default=[], metavar="DIR", help="view: list the run folders under DIR no page holds")
     a = ap.parse_args(argv)
     nb = Notebook(a.notebook)
-    need = {"draft": 1, "approve": 1, "run": 1, "attach": 2, "note": 2, "pick": 2, "exclude": 2, "include": 2, "accept": 1,
+    need = {"draft": 1, "approve": 1, "run": 1, "attach": 2, "note": 2, "correct": 1, "pick": 2, "exclude": 2, "include": 2,
+            "accept": 1,
             "hold": 1, "done": 1, "reopen": 1, "status": 0, "view": 0, "request": 1, "serve": 0}[a.command]
     if len(a.args) != need:
         print(f"herdr-py notebook: {a.command} takes {need} argument{'s' if need != 1 else ''}", file=sys.stderr)
@@ -1115,7 +1156,7 @@ def main(argv=None):
             print(f"request {e['id']}: Claude drafts the page; it runs after a person approves it")
         elif a.command == "serve":
             from . import notebookview
-            notebookview.serve(nb.folder, a.host, a.port, roots=a.runs,
+            notebookview.serve(nb.folder, a.host, a.port, roots=a.runs, allow_hosts=a.allow_host,
                                ready=lambda url: print(f"open: {url}  (the buttons need the token after #)", flush=True))
         elif a.command == "view":
             from . import notebookview
@@ -1136,6 +1177,12 @@ def main(argv=None):
             elif a.command == "attach":
                 e = attach(page, a.args[1], a.by, a.source, at, a.note)
                 print(f"{page.id}: run {e['n']} is {e['dir']}")
+            elif a.command == "correct":
+                lesson = correct(page, a.by, a.wrong, a.right, a.when, detect=a.detect, evidence=a.evidence, run=a.run,
+                                 step=a.step, at=at)
+                print(f"{page.id}: lesson {lesson['id']} ({lesson['status']}); later runs whose task or todo has "
+                      f"/{lesson['when']}/ are told" + ("" if lesson.get("detect") else "; without --detect it cannot be "
+                                                        "measured, so it stays a hypothesis"))
             elif a.command == "note":
                 e = add_note(page, a.args[1], a.by, at)
                 print(f"{page.id}: note {e['id']} goes into the next run")

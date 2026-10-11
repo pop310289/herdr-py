@@ -62,8 +62,8 @@ def cmd_serve(a):
         policy = Policy.load(a.policy) if a.policy else Policy(default="ask")
     except (OSError, PolicyError) as exc:
         sys.exit(f"herdr-py serve: policy: {exc}")
-    client = OpenCode(url, a.username or os.environ.get("HERDR_PY_OPENCODE_USERNAME"), password)
     try:
+        client = OpenCode(url, a.username or os.environ.get("HERDR_PY_OPENCODE_USERNAME"), password)
         health = wait_healthy(client, timeout=a.wait)
     except OpenCodeError as exc:
         sys.exit(f"herdr-py serve: {exc}")
@@ -74,7 +74,7 @@ def cmd_serve(a):
     except ClientError:
         pass
     daemon = Daemon(client, policy, a.state_dir, socket_path=socket_path, http_addr=a.http, model=a.model, questions=a.questions,
-                    max_agents=a.max_agents, max_prompts=a.max_prompts)
+                    max_agents=a.max_agents, max_prompts=a.max_prompts, allow_hosts=a.allow_host)
     reattached = daemon.start()
     print(f"herdr-py {__version__}: OpenCode {health.get('version')} at {url}", flush=True)
     print(f"socket: {socket_path}   state: {a.state_dir}" + (f"   re-attached {reattached} agent(s)" if reattached else ""), flush=True)
@@ -159,6 +159,8 @@ def main(argv=None):
     s.add_argument("--password-file", help="file holding the OpenCode server password (or $HERDR_PY_OPENCODE_PASSWORD)")
     s.add_argument("--policy", help="permission policy (TOML); without one every request waits for a human")
     s.add_argument("--http", help="serve the web UI at HOST:PORT, e.g. 127.0.0.1:8765")
+    s.add_argument("--allow-host", action="append", default=[], metavar="NAME",
+                   help="the web UI also answers requests for this name (a proxy in front that passes on its public name)")
     s.add_argument("--state-dir", default=default_state_dir())
     s.add_argument("--model", help="default model, provider/model")
     s.add_argument("--questions", choices=["ask", "reject"], default="ask", help="what to do with questions agents ask")

@@ -378,6 +378,41 @@ class SeedTest(Base):
         new = dst.propose("c", "result", "builds on the page", artifact="ARTIFACT: page\n<p>better", parents=[ids["page"]])
         self.assertIn(new, {e["id"] for e in dst.entries()})
 
+    def test_a_log_cannot_point_a_reader_outside_the_knowledge_base(self):
+        import hashlib
+        from herdr_py import notebookview, rundiag
+        run = os.path.join(self.dir, "run")
+        src = TeamKB(os.path.join(run, "kb"))
+        good = src.propose("a", "result", "fine", artifact="ARTIFACT: data\n1 2 3", name="x.txt")
+        src.judge(good, lambda path: ("valid", 1, ""))
+        secret = b"ARTIFACT: data\nnot for the team"
+        with open(os.path.join(self.dir, "secret.txt"), "wb") as handle:
+            handle.write(secret)
+        sha = hashlib.sha256(secret).hexdigest()  # a log edited to name a file outside, with that file's own hash
+        names = {"kaaaaaaaaaaaa": "../../secret.txt", "kbbbbbbbbbbbb": os.path.join(self.dir, "secret.txt"),
+                 "kcccccccccccc": "artifacts/../../../secret.txt", "kdddddddddddd": "artifacts/" + sha + "/x",
+                 "keeeeeeeeeeee": "artifacts/..", "kffffffffffff": "artifacts/.", "kgggggggggggg": "artifacts\\..\\x"}
+        with open(os.path.join(src.folder, "events.jsonl"), "a") as handle:
+            for eid, rel in names.items():
+                handle.write(json.dumps({"type": "propose", "id": eid, "t": 1, "member": "x", "kind": "data", "summary": "s",
+                                         "artifact": rel, "sha": sha, "parents": []}) + "\n")
+                handle.write(json.dumps({"type": "verdict", "id": eid, "t": 2, "status": "valid", "score": 9,
+                                         "judge": "check", "detail": "", "sha": sha}) + "\n")
+        dst = TeamKB(os.path.join(self.dir, "dst"))
+        got = dst.seed(src.folder)
+        self.assertEqual(got["carried"], [good])
+        self.assertEqual(got["left_out"], {"artifact name not the knowledge base's": 7})
+        again = TeamKB(src.folder)
+        for eid in names:
+            entry = again.proposals[eid]
+            self.assertEqual(again.answer_lines(entry, 1000), ["  (its answer is not shown: the log names a file outside "
+                                                               "the knowledge base)"])
+            with self.assertRaises(TeamKBError):
+                again.judge(eid, lambda path: ("valid", 1, ""))
+            self.assertEqual(rundiag.artifact_kind(run, entry), "data")  # the recorded kind, not the file's
+            self.assertEqual(notebookview.artifact_body(dict(entry, folder=run)), (None, None))
+        self.assertIn("1 2 3", "".join(again.answer_lines(again.proposals[good], 1000)))  # the real ones still read
+
     def test_kinds_and_a_persons_exclusions_choose_what_is_carried(self):
         src, ids = self.source()
         dst = TeamKB(os.path.join(self.dir, "dst"))

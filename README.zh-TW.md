@@ -130,7 +130,7 @@ python3 -m herdr_py.engine --task examples/coop/packing_task.md --judge "python3
 
 `view.html`（每個事件後重寫，執行中也能看；統一的深色外觀，寬螢幕兩欄、手機一欄）畫出：這次執行的數字標在迴圈上；每個 agent 一列、附狀態燈（最後一個回合：綠＝通過、紅＝失敗；工作中是白色）；這次執行的數字（回合、沒加任何待辦的喚醒、被退回的回覆、回合時間中位數、成員閒著的時間、token），全部來自紀錄；誰做了哪條待辦（每個成員一欄，連到它要等的、要接著做的待辦）；知識庫的流向（誰寫了每個成果、skill 排最前面並顯示名稱、誰接著做或打開了它的檔案；每個 agent 那列也寫出它寫了、讀了哪些 skill）；時間由上往下的時間軸（planner 和每個成員各一欄，每個回合一根長條，每個喚醒 planner 的結果一條虛線）；最佳分數隨時間的變化；每條待辦從新增到結束；planner 的每一回合。沒有 JavaScript 時內容完整；有 JavaScript 時多一個播放器，從第一個事件重播到結束：拖曳時間，迴圈上正在工作的那一段會亮起、數字跟著時間變；點長條可以看那一回合的待辦、判定與分數。頁面也畫出每一回合用了哪些工具（長條裡每次網路搜尋、抓網頁、讀檔各一個點，來自 Claude 與 OpenCode 的紀錄），以及團隊做出的每個成果和它接了誰的成果（從上游畫一條線到下游）；答案第一行寫 `ARTIFACT: <種類>` 的，依種類分欄。
 
-停止條件：成員回合用完、達到目標分數（`--target`）、planner 宣告完成、planner 的喚醒次數用完而且沒有待辦、或連續 `--patience` 個判定都沒有超過最佳分數。達標時，還在朝目標做的成員回合會被取消（Claude 與程式成員；待辦以 dropped 結束並寫明原因，不算失敗，也不會單獨叫醒 planner）：它們在做的東西已經不需要了。planner 下一次喚醒結束前，成員不接新待辦，讓 planner 先丟掉那些朝目標做、還沒開始的待辦。加上 `--wrap-up N`，達標後會再叫醒 planner 一次，最多再跑 N 個成員回合把有效的做法寫成 skill，然後停止。`--repairs N` 讓成員在同一回合、同一段對話裡修正被判不通過的答案（讀過的東西都還在），並告訴它評分說了什麼；`--repair-below 分數` 讓通過但低於這個分數的答案也修（`--repair-kind 種類`：只修這種成果，分數固定的 skill 不會被拿去修到程式的門檻；通過的答案修完分數沒提高就停止修正）。每次修正都是接著上一版的新版本，回合用最好的那一版結束（Claude 與程式成員；Codex、OpenCode 成員不修）。成員會知道這回合最多能跑多久（超時就全部丟失），Claude 成員也會知道自己有哪些工具、全隊都不能執行指令（寫的 skill 才是隊友做得到的）。planner 會知道還剩幾次喚醒（最後一次要把剩下回合的事一次派完），並被提醒：同一份工作不同時派給兩個人、需要隊友正在查的東西就排在那條待辦之後、研究題不要把自己猜的答案寫進待辦。成員也可以替彼此做工具：第一行是 `ARTIFACT: mcp` 的通過答案是一個單檔 MCP 伺服器，給了 `--mcp-sandbox 指令` 時，引擎先在那個沙盒裡啟動它一次（`{file}` 工具的程式、`{kb}` 知識庫、`{board}` 看板資料夾；例如不連網、檔案唯讀的 `docker run`），問 server/discover 與 tools/list（2026-07-28 版），有回應的工具就提供給 Claude 成員之後的回合（同一系列只提供最新版；提示裡會列出）。這種回合用 `--restricted --strict-mcp-config` 取代會把所有 MCP 伺服器擋掉的 `--safe-mode`：用 Claude Code 2.1.295 實測，上下文大小一樣、沒有 CLAUDE.md 與 skill，成員也真的呼叫到工具。沒給沙盒指令，成員寫的工具一律不執行。`python3 -m herdr_py.rundiag RUN_DIR` 讀一次執行的紀錄，說出浪費與出錯的地方：同一個原因被判不通過的答案、沒贏過最高分也沒人接著做的成果（同一份工作做了兩次）、沒人用到的 skill、被不只一個成員打開的網頁、最高分出現後的回合、planner 喚醒用完時剩下的回合、閒著等工作的成員、被退回的 planner 回覆、回合內修正、什麼都沒留下的回合（超時；被強制結束的回合，token 數是下限）與達標時被取消的回合、引用同樣句子的 skill 組合（同一套規則寫了兩次；同名的改版不算），以及從其他 task 帶來的檔案有沒有人打開。`summary.json` 會算：被領兩次的待辦數（必須是 0）、對得到待辦、看板版本與指令 hash 的回合比例（必須全部）、每個成員「有空卻沒有待辦可領」的時間、planner 占全部 token 的比例，以及成員讀看板的次數（從 Codex、Claude、OpenCode 的紀錄算；程式成員沒有紀錄）。每個已驗證的結果也會變成看板資料夾裡的檔案（`artifacts/<id>.txt`），太長放不進指令的成果，隊友也能打開來看。`--member-access research` 讓 Claude 成員也能上網查資料（WebSearch、WebFetch，用 settings 規則只允許這兩個；真的 CLI 實測：沒有規則時不詢問模式會拒絕 WebSearch，有規則時讀資料夾外的檔案仍然被擋）。Codex 成員維持唯讀。
+停止條件：成員回合用完、達到目標分數（`--target`）、planner 宣告完成、planner 的喚醒次數用完而且沒有待辦、或連續 `--patience` 個判定都沒有超過最佳分數。達標時，還在朝目標做的成員回合會被取消（Claude 與程式成員；待辦以 dropped 結束並寫明原因，不算失敗，也不會單獨叫醒 planner）：它們在做的東西已經不需要了。planner 下一次喚醒結束前，成員不接新待辦，讓 planner 先丟掉那些朝目標做、還沒開始的待辦。加上 `--wrap-up N`，達標後會再叫醒 planner 一次，最多再跑 N 個成員回合把有效的做法寫成 skill，然後停止。`--repairs N` 讓成員在同一回合、同一段對話裡修正被判不通過的答案（讀過的東西都還在），並告訴它評分說了什麼；`--repair-below 分數` 讓通過但低於這個分數的答案也修（`--repair-kind 種類`：只修這種成果，分數固定的 skill 不會被拿去修到程式的門檻；通過的答案修完分數沒提高就停止修正）。每次修正都是接著上一版的新版本，回合用最好的那一版結束（Claude 與程式成員；Codex、OpenCode 成員不修）。成員會知道這回合最多能跑多久（超時就全部丟失），Claude 成員也會知道自己有哪些工具、全隊都不能執行指令（寫的 skill 才是隊友做得到的）。planner 會知道還剩幾次喚醒（最後一次要把剩下回合的事一次派完），並被提醒：同一份工作不同時派給兩個人、需要隊友正在查的東西就排在那條待辦之後、研究題不要把自己猜的答案寫進待辦。成員也可以替彼此做工具：第一行是 `ARTIFACT: mcp` 的通過答案是一個單檔 MCP 伺服器，給了 `--mcp-sandbox 指令` 時，引擎先在那個沙盒裡啟動它一次（`{file}` 工具的程式、`{kb}` 知識庫、`{board}` 看板資料夾；例如不連網、檔案唯讀、沒有 capabilities、不用 root 的 `docker run`，見〈安全〉），問 server/discover 與 tools/list（2026-07-28 版），有回應的工具就提供給 Claude 成員之後的回合（同一系列只提供最新版；提示裡會列出）。這種回合用 `--restricted --strict-mcp-config` 取代會把所有 MCP 伺服器擋掉的 `--safe-mode`：用 Claude Code 2.1.295 實測，上下文大小一樣、沒有 CLAUDE.md 與 skill，成員也真的呼叫到工具。沒給沙盒指令，成員寫的工具一律不執行。`python3 -m herdr_py.rundiag RUN_DIR` 讀一次執行的紀錄，說出浪費與出錯的地方：同一個原因被判不通過的答案、沒贏過最高分也沒人接著做的成果（同一份工作做了兩次）、沒人用到的 skill、被不只一個成員打開的網頁、最高分出現後的回合、planner 喚醒用完時剩下的回合、閒著等工作的成員、被退回的 planner 回覆、回合內修正、什麼都沒留下的回合（超時；被強制結束的回合，token 數是下限）與達標時被取消的回合、引用同樣句子的 skill 組合（同一套規則寫了兩次；同名的改版不算），以及從其他 task 帶來的檔案有沒有人打開。`summary.json` 會算：被領兩次的待辦數（必須是 0）、對得到待辦、看板版本與指令 hash 的回合比例（必須全部）、每個成員「有空卻沒有待辦可領」的時間、planner 占全部 token 的比例，以及成員讀看板的次數（從 Codex、Claude、OpenCode 的紀錄算；程式成員沒有紀錄）。每個已驗證的結果也會變成看板資料夾裡的檔案（`artifacts/<id>.txt`），太長放不進指令的成果，隊友也能打開來看。`--member-access research` 讓 Claude 成員也能上網查資料（WebSearch、WebFetch，用 settings 規則只允許這兩個；真的 CLI 實測：沒有規則時不詢問模式會拒絕 WebSearch，有規則時讀資料夾外的檔案仍然被擋）。Codex 成員維持唯讀。
 
 ## 筆記本：每天交出去的工作，一件一頁
 
@@ -196,6 +196,30 @@ open /tmp/notebook-demo/site/index.html
 
 資料夾裡的 `notebook.json` 設定標題與頁面語言（`en` 或 `zh-TW`）。指令是給一台機器上的一個人用的；事後補記的決定（`--at`）會標成補記。
 
+### 下一次執行會被提醒的糾正（教訓）
+
+團隊走錯路時，人（或監督團隊的 agent）把糾正寫下來一次。之後的執行在動手前就會被提醒，紀錄也會顯示提醒有沒有用。
+
+```
+一則糾正 ─> lessons.jsonl ─> 動作前比對 `when` ─> 比中：寫進那一回合的提示
+(notebook correct)  (假設)     (成員：任務＋它領的待辦；         │
+                               planner：任務)                    v
+       審查 <─ 又犯了嗎？（用 `detect` 比對交出的東西）<─ 這一回合
+  淘汰（再犯 2 個回合，永久）│ 證實（提醒 3 個回合都沒再犯）│ 其他維持原狀
+```
+
+```sh
+python3 -m herdr_py.notebook 筆記本 correct 頁 --run 2 --step t3 \
+    --wrong "用 headless Chrome 的 --window-size 截圖" \
+    --right "用 phone-check：它模擬 390 px 的手機" --when "截圖|screenshot" --detect "window-size"
+python3 -m herdr_py.lessons 筆記本/lessons.jsonl review 執行資料夾...  # 提醒幾次、再犯幾次、教訓出現前的犯錯率
+```
+
+- `when` 在動作前一刻比對，比的是動作本身（任務與待辦），不是人在對話裡打的字。
+- 教訓一開始是假設，由紀錄決定：被提醒後仍再犯 2 個回合就淘汰，而且不會恢復（要重試就換個寫法另立一則）；有 `detect`、提醒 3 個回合都沒再犯就證實。審查時給的執行比較少，也不會讓狀態倒退。沒有 `detect` 的教訓量不到，永遠是假設。
+- 只提醒、不擋下：答案照常評分。回放頁列出這次執行拿到的教訓，每個待辦與 planner 喚醒都標出被提醒了哪幾則、又犯了哪幾則；`rundiag` 也會報告這種回合。
+- 從筆記本開始的執行會帶上筆記本的 `lessons.jsonl`（引擎的 `--lessons 檔案`）。現在每次執行都會把任務存成 `task.md`，所以教訓也能拿它出現之前的執行來量。
+
 ## DAG 分派：會互相等待的步驟
 
 `python3 -m herdr_py.dag` 執行一份**計畫**：每個步驟由一個成員在**自己的 git clone** 裡做，由**評分程式**判定過不過。一個步驟要等它需要的步驟全部通過才開始，而且只看得到那些步驟的成果。計畫是一個 JSON 檔，所以團隊怎麼組織（誰做什麼、誰等誰、誰看得到誰的成果）是可以修改、可以拿來比較的資料。
@@ -207,13 +231,14 @@ div ───────────────┴─> docs
 ```
 
 ```sh
-python3 examples/dag/make_demo.py /tmp/dag-demo          # 一個小 repo 和它的計畫（程式成員，不需要模型）
-python3 -m herdr_py.dag /tmp/dag-demo/plan.json --check  # 一層一層列出步驟
-python3 -m herdr_py.dag /tmp/dag-demo/plan.json --out /tmp/dag-demo/run1 --parallel 3
-open /tmp/dag-demo/run1/view.html                         # 計畫畫成圖，加上每一次嘗試
-python3 -m herdr_py.dag --recheck /tmp/dag-demo/run1      # 在全新的 clone 把每個通過的步驟重新評分
+python3 examples/dag/make_demo.py ~/dag-demo          # 一個小 repo 和它的計畫（程式成員，不需要模型）
+python3 -m herdr_py.dag ~/dag-demo/plan.json --check  # 一層一層列出步驟
+python3 -m herdr_py.dag ~/dag-demo/plan.json --out ~/dag-demo/run1 --parallel 3
+open ~/dag-demo/run1/view.html                         # 計畫畫成圖，加上每一次嘗試
+python3 -m herdr_py.dag --recheck ~/dag-demo/run1      # 在全新的 clone 把每個通過的步驟重新評分
 ```
 
+- **評分程式在容器裡跑每個步驟的測試**（`examples/dag/judge.py`；`HERDR_JUDGE_SANDBOX`，預設 `docker:python:3-slim`；`none` 是在這台機器上跑）：步驟的測試是成員寫的程式。用 colima 時，示範要像上面一樣放在家目錄底下，只有那裡會分享給容器。
 - **隔離由程式負責**：每次嘗試都有自己的 `git clone --shared`，不留遠端；步驟的 clone 只會拿到它需要的步驟的輸出 commit（`refs/dag/<id>`），沒有任何其他步驟的東西，指令裡也只有那些步驟的摘要與 diff。Codex 成員在 `workspace-write` 沙盒裡工作；Claude 成員用 `--permission-mode acceptEdits` 加上檔案工具（唯讀步驟用 `dontAsk` 加讀檔工具）。用真的 Claude Code 實測過：在 clone 之外寫、讀、Glob、Grep 都會被擋；不能用 `--allowedTools`，它會讓成員讀寫整台機器。OpenCode 成員（透過 daemon，`--socket`）每一步開一個在 clone 裡工作的新 session（OpenCode 的 `?directory=`）；daemon 會在問權限策略之前，先擋掉它在 clone 之外的動作，唯讀步驟連編輯和指令都擋。這只在 OpenCode 會先詢問這些動作時才成立（見權限策略），所以每一步開工前先確認 daemon 說 OpenCode 會詢問，而且 OpenCode 列出的 clone 內容和這台機器看到的一樣（OpenCode 在容器裡的話，執行資料夾要掛載在同一個路徑）；不成立就停下並說明原因。OpenCode 1.18.32 實測：唯讀步驟的編輯、讀 clone 之外的檔案都被擋下（檔案沒變；讀外面的檔案時 OpenCode 送來的是 external_directory 請求）。Codex 的沙盒不限制讀取，所以每次執行都會數成員的工具紀錄（Codex、Claude、OpenCode）裡，指向別的步驟 clone 的次數（`summary.json` 的 `out_of_bounds`）。
 - **步驟的檔案從哪裡開始**：不需要別的步驟 → 基準 commit；需要一個 → 接著那個步驟的輸出；需要好幾個 → 基準（兩種做法通常改同一批檔，由成員比較、整合），或指定 `"start": "merge"`（由程式先合併，衝突時這一步失敗並列出檔案）、或指定其中一個。重試會接著上一次的 commit，指令裡附上評分程式的說明。
 - **輸出是程式做的 commit**，不是成員做的：回合結束時把 clone 裡的變更全部 commit，評分程式檢查這個 commit（和 `coop` 同一套約定：回覆檔是最後一個參數；印 JSON 判定，或用 `"judge_mode": "exit"` 看結束碼）。評分程式的檔案以計畫檔所在的資料夾為準、在所有 clone 之外，開始時記下 hash：執行中被改就是評分錯誤。
@@ -265,6 +290,22 @@ python3 -m herdr_py.dashboard ~/.cache/herdr-slides/<某次執行> --html run.ht
 
 RUN_DIR 是 `run_demo.py` 產生的執行資料夾（或 `layout_team.py --workdir`）。成員狀態來自 `work/codex/agents.json`（Codex 成員），加 `--socket` 則來自 herdr-py 常駐程式。`summary.json` 要到結束才寫，在那之前分數從對話讀出，所以圖會隨執行更新。和常駐程式的網頁一樣只聽 127.0.0.1，而且要用印出的連結裡的 token；只提供 RUN_DIR 裡的圖片檔、不跟隨任何符號連結（執行資料夾裡也有常駐程式的 `state/token`），沒有任何寫入的端點。
 
+## 安全
+
+2026-10-11 用三套掃描器在用完即丟的容器裡檢查過：bandit 1.9.4；semgrep 1.180.0，規則集 p/python、p/security-audit、p/secrets、p/github-actions；zizmor 1.30.1，檢查 CI 設定。另外對執行中的服務與評分程式實際攻擊過（`tests/test_webguard.py`、`tests/test_sandbox.py`、`tests/test_display.py`）。
+
+- **agent 寫的程式不會直接在這台機器上跑。** Claude 成員只有權限模式與檔案工具；Codex 成員在 Codex 的唯讀或 workspace-write 沙盒裡工作；OpenCode 成員經過 daemon 的權限策略。團隊工具（`ARTIFACT: mcp`）只透過你給的 `--mcp-sandbox` 指令執行，例如：
+
+  ```sh
+  docker run --rm -i --network none --read-only --cap-drop ALL --security-opt no-new-privileges --user 65534:65534 \
+    --tmpfs /tmp:rw,size=16m --memory 256m --cpus 1 --pids-limit 64 -v {file}:/srv/tool.py:ro -v {kb}:/kb:ro IMAGE python3 /srv/tool.py
+  ```
+- **會執行成員程式的評分程式，在容器裡執行。** `herdr_py/sandbox.py` 每個指令開一個容器：不連網、根目錄唯讀、沒有 capabilities、不能提權、用你的 uid、限制記憶體與 CPU 與程序數，只掛進工作副本；跑太久的指令連同容器一起停掉。`examples/self_improve/patch_judge.py`（`--sandbox docker:IMAGE`，預設 `docker:python:3-slim`，也可以 `podman:IMAGE`）與 `examples/dag/judge.py`（`HERDR_JUDGE_SANDBOX`）都用它。執行任何東西之前，先確認容器看得到副本（colima 只把家目錄底下的資料夾分享給它的 VM）。沒有 docker 就以評分錯誤停下。`none` 是在這台機器上直接跑：只有你明說才會這樣做，判定的說明也會以 `[no sandbox]` 開頭。你自己寫的評分程式如果會執行成員的程式，也要這樣做。
+- **網頁服務**（`engineview --serve`、`serve --http`、面板、`notebook serve`）沒指定時只聽 127.0.0.1，而且只回應指名這台機器的請求（localhost、127.0.0.1、::1）：別的網頁把自己的網域指到 127.0.0.1（DNS 重綁定）會拿到 403，讀不到執行紀錄或筆記本。前面有代理、而且代理會把公開名稱傳進來時，加 `--allow-host 名稱`。下指令要有連結 `#` 後面的權杖；權杖用固定時間比對，請求內容有長度上限，不是整數的 `Content-Length` 一律拒絕。
+- **終端機**不會收到 agent、評分程式或網頁寫進來的控制字元與雙向文字覆寫，一律顯示成 `�`（U+FFFD）：可以改剪貼簿、視窗標題、清畫面或把文字反過來排的跳脫序列，都不會傳到終端機。
+- **知識庫只讀自己寫的檔案**（`artifacts/<sha256>`）：被改成指向別處的紀錄，不會被讀取、帶入或評分。
+- **CI 設定**只讀 repo、第三方 action 釘在 commit SHA、不保留憑證；隱私檢查會擋下含有個人資料的 commit。
+
 ## 部署到 RHEL 8
 
 - RHEL 8 的 `python3` 是 3.6（`/usr/libexec/platform-python` 一定在）：herdr-py 可以用，設定檔請用 JSON。
@@ -285,7 +326,8 @@ python3 scripts/check_opencode.py --socket SOCK --opencode http://127.0.0.1:4096
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 542 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 594 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # docker 能用時，沙箱在真的容器裡測
 python3 bench/p23/validate.py                # 在 RHEL 8 映像裡驗證實驗評分程式（需要 Docker）
 ```
 

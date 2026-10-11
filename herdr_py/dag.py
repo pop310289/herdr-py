@@ -63,6 +63,7 @@ import time
 
 from . import dagview
 from .coop import command_judge, exit_judge
+from .display import printable
 from .members import BROKEN, MemberError, Members, parse_member
 from .teamkb import one_line
 
@@ -345,8 +346,10 @@ def commit_all(path, start, message):
 
 
 def judge_once(node, reply_path, cwd, env):
-    """One verdict under coop.py's contract: (status, score, detail); a judge that breaks is infra_error."""
+    """One verdict under coop.py's contract: (status, score, detail); a judge that breaks is infra_error. The judge is
+    told its time limit (HERDR_DAG_JUDGE_TIMEOUT, seconds): one that starts a container stops it before then."""
     check = (command_judge if node["judge_mode"] == "json" else exit_judge)(node["judge_argv"], timeout=node["judge_timeout"])
+    env = dict(env if env is not None else os.environ, HERDR_DAG_JUDGE_TIMEOUT=str(node["judge_timeout"]))
     try:
         status, score, detail = check(reply_path, cwd=cwd, env=env)
     except Exception as exc:  # the judge itself broke: not a fail of the step
@@ -873,7 +876,7 @@ def main(argv=None):
         summary = run.run()
     finally:
         members.close()
-    print(report(summary))
+    print(printable(report(summary)))
     print(f"every step on one page: {os.path.join(os.path.abspath(a.out), 'view.html')}")
     if summary["stopped"]:
         return 3

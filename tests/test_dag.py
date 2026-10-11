@@ -425,6 +425,19 @@ class RunTest(Base):
         self.assertIn("A judge program checks your reply", self.prompts("R")[0])
 
 
+class JudgeContractTest(Base):
+    def test_the_judge_is_told_its_time_limit_and_its_words_reach_the_terminal_without_control_characters(self):
+        with open(os.path.join(self.plans, "loud_judge.py"), "w") as handle:
+            handle.write("import json, os\nprint(json.dumps({'status': 'invalid', 'score': 0, 'detail': 'limit ' + "
+                         "os.environ['HERDR_DAG_JUDGE_TIMEOUT'] + ' \\x1b]0;owned\\x07 \\u202e end'}))\n")
+        plan = self.plan([{"id": "A", "judge": "%s -B loud_judge.py" % sys.executable, "judge_timeout": 77}])
+        code, said, err = self.run_main(plan, "--out", os.path.join(self.dir, "run"))
+        self.assertIn("limit 77", said)
+        self.assertIn("]0;owned", said)
+        self.assertNotIn("\x1b", said)
+        self.assertNotIn("\u202e", said)
+
+
 class TextPlanTest(Base):
     def test_without_a_repository_the_reply_is_the_output(self):
         self.script({"A": [{"reply": "the answer is 42"}], "B": [{"reply": "B read it"}]})

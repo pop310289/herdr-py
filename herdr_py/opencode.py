@@ -46,7 +46,10 @@ class OpenCode:
     def __init__(self, url, username=None, password=None, timeout=30):
         self.url = url.rstrip("/")
         parsed = urllib.parse.urlparse(self.url)
-        self.host, self.port = parsed.hostname or "127.0.0.1", parsed.port or 80
+        if parsed.scheme != "http" or not parsed.hostname:  # urlopen would also take file:// and ftp://
+            raise OpenCodeError(f"OpenCode URL {url!r}: give http://HOST:PORT (OpenCode serves plain HTTP, and the "
+                                f"event stream reads it so)")
+        self.host, self.port = parsed.hostname, parsed.port or 80
         self.headers = {"Content-Type": "application/json"}
         if password:
             token = base64.b64encode(f"{username or 'opencode'}:{password}".encode()).decode()
