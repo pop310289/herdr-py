@@ -27552,6 +27552,7 @@ class RunTest(Base):
         self.assertIn("A judge program checks your reply", self.prompts("R")[0])
 
 
+@unittest.skipUnless(HAVE_GIT, "git is not installed")
 class JudgeContractTest(Base):
     def test_the_judge_is_told_its_time_limit_and_its_words_reach_the_terminal_without_control_characters(self):
         with open(os.path.join(self.plans, "loud_judge.py"), "w") as handle:
@@ -35900,7 +35901,7 @@ ce5c4217c95774b43e22b6dc8bad5d84d0e4a5fbfa04f4494b1c570689de9ee8  tests/test_cod
 ce77183c01489a08b2f9e40039dbe50209de2e2a5714a60e16a39f5ef4ec1616  tests/test_coop.py
 ffaed5c063ba02a0b692be4d5b18d856853aeb3a93571218baf96aabdf64b22a  tests/test_coopview.py
 f4c6a3c8998bd4860a2c1bf5126ae0c828ab9b8bde55e96667576699948da2e0  tests/test_core.py
-ea4c08a256fa2140adcb2408c259797959dbf75f01be063ef8b82b0bca38e0a4  tests/test_dag.py
+e3ef8ddd8906e1fc247171c85238fda20c13633786d1e2b8346bcfbe596ff4c3  tests/test_dag.py
 c771075bc6cc29faab4b596f78c5cbee5c54deaba6e8fbca2faf3ac4bb766e57  tests/test_dashboard.py
 b4a91aafcec4a28c3f03520000b52ef2b0c54c3ba86557b1296b88b88b5211d1  tests/test_diagnose.py
 681e71ac2ff16eecf6c6230880a704c2670a1c1d11db4ecd2ab2a1121f75674a  tests/test_display.py

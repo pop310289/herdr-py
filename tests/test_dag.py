@@ -425,6 +425,7 @@ class RunTest(Base):
         self.assertIn("A judge program checks your reply", self.prompts("R")[0])
 
 
+@unittest.skipUnless(HAVE_GIT, "git is not installed")
 class JudgeContractTest(Base):
     def test_the_judge_is_told_its_time_limit_and_its_words_reach_the_terminal_without_control_characters(self):
         with open(os.path.join(self.plans, "loud_judge.py"), "w") as handle:
