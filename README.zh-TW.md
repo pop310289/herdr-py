@@ -246,6 +246,20 @@ python3 -m herdr_py.dag --recheck ~/dag-demo/run1      # 在全新的 clone 把�
 - **收據與接續**：每次派工、交回、commit、判定都先寫進 `events.jsonl` 才往下走；`--resume` 從它重建狀態，已通過的步驟絕不重跑，因環境壞掉而失敗的步驟會重跑，計畫、題目或評分程式變了就拒絕接續。`summary.json` 只從事件算出「上游還沒通過就開始的次數」和「通過後又被派工的次數」（兩者都必須是 0），以及平行度。
 - 不會合併進你的 repo，也不會推送：輸出是執行資料夾裡的 commit，要不要合併由你決定。
 
+## 技能本體：執行前先檢查的技能拼法
+
+`herdr_py/ontology.py` 讓 agent 為沒有現成技能的任務拼出技能的順序。本體描述每個技能吃什麼、產出什麼、需要什麼（有型別的操作目錄），在執行前檢查 agent 提出的拼法，並記下每條拼法與每次執行；拼由 agent 負責。成功只看最後一步檢查的結束碼。寫入只能經過帶提交條件的動作，每個動作是一筆交易，動作紀錄重放後必須等於現況（參考 Palantir Foundry Ontology）。
+
+```
+python3 -m herdr_py.ontology build --db onto.db
+python3 -m herdr_py.ontology find  --db onto.db --task notes-site-builder
+python3 -m herdr_py.ontology run   --db onto.db --task notes-site-workstation \
+        --steps notes2site.build site-lint.check builtin.serve-local url-probe.check \
+        --start notes-md=examples/ontology/notes.md --work /tmp/onto-run
+```
+
+要定義哪些東西、驗收方式與完整範例（英文）：[`examples/ontology`](examples/ontology/README.md)。
+
 ## 範例：投影片團隊
 
 [`examples/slide_team`](examples/slide_team) 讓團隊重畫一張資訊圖：TheAiEdge.io 的「LLM Serving: When to Split Prefill and Decode」（原圖請自備，repo 裡沒有）。兩位畫圖者輪流畫，美術比對我們的圖和原圖，最後由監工程式決定保留哪一版。試過兩種架構：
@@ -336,7 +350,7 @@ herdr-py 不會自己啟動 OpenCode：用你自己的 launcher 啟動（容器�
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 597 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 638 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # docker 能用時，沙箱在真的容器裡測
 ```
 

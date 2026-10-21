@@ -461,6 +461,24 @@ python3 -m herdr_py.dag --recheck ~/dag-demo/run1      # judge every passed step
   their needs passed and passed steps dispatched again (both must be 0), and the parallelism of the run.
 - Nothing is merged into your repository or pushed: outputs are commits in the run folder, and merging is up to you.
 
+## Skill ontology: chains of skills checked before they run
+
+`herdr_py/ontology.py` lets an agent chain skills for a task no single skill covers. The ontology describes what each
+skill eats, makes and needs (a catalog of typed operations), checks a proposed chain before anything runs, and records
+every chain and run; the agent composes. A chain succeeds only when its last step, a check, exits with a success code.
+Writes go only through actions with submission criteria, each in one transaction with an action log that must replay
+to the current state (modeled on the Palantir Foundry Ontology).
+
+```
+python3 -m herdr_py.ontology build --db onto.db
+python3 -m herdr_py.ontology find  --db onto.db --task notes-site-builder
+python3 -m herdr_py.ontology run   --db onto.db --task notes-site-workstation \
+        --steps notes2site.build site-lint.check builtin.serve-local url-probe.check \
+        --start notes-md=examples/ontology/notes.md --work /tmp/onto-run
+```
+
+What you define, the checks, and a worked example: [`examples/ontology`](examples/ontology/README.md).
+
 ## Example: a slide team
 
 [`examples/slide_team`](examples/slide_team) rebuilds one infographic, TheAiEdge.io's "LLM Serving: When to Split Prefill
@@ -669,7 +687,7 @@ give the daemon its URL. What the launcher has to provide:
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 597 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 638 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # the sandbox in real containers when docker answers
 ```
 

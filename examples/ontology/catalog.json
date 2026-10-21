@@ -1,0 +1,256 @@
+{
+ "note": "Example catalog (a demonstration, not anyone's real skills): every entry point of the example skills declared as a typed operation. 'doc' says where the command and its exit codes are written. 'declared_against' is the md5 each skill had when its declarations were checked; after a skill changes, check its declarations again and run `python3 -m herdr_py.ontology pin`.",
+ "declared_against": {
+  "handoff": "808457eef1296448deb677e8ce620946",
+  "notes2site": "7a5d789145a6fa421e71a7c5569fdf3c",
+  "site-lint": "46bb7b36a3e7fe7791b5da87d52eef13",
+  "site-publish": "fe9fc0a062f09c5edbee7e9856f88920",
+  "url-probe": "a0596aca841b95d9ab91aadd87a3e0d9"
+ },
+ "conditions": {
+  "python3": "a Python 3.6+ interpreter (the one running the ontology)",
+  "loopback": "can open a port on 127.0.0.1 and connect to it",
+  "git": "git, to hand files to another machine"
+ },
+ "interfaces": {
+  "static-site": "a folder with index.html that a static server can serve",
+  "web-url": "a URL a browser can open"
+ },
+ "artifact_types": {
+  "notes-md": {
+   "kind": "file",
+   "ext": ".md",
+   "description": "a notes file: headings and paragraphs"
+  },
+  "site": {
+   "kind": "dir",
+   "implements": [
+    "static-site"
+   ],
+   "description": "a one-page site made from notes"
+  },
+  "lint-report": {
+   "kind": "stdout",
+   "description": "what site-lint found (one JSON line)"
+  },
+  "local-url": {
+   "kind": "value",
+   "implements": [
+    "web-url"
+   ],
+   "description": "a URL of a server on this machine (valid only here)"
+  },
+  "public-url": {
+   "kind": "value",
+   "implements": [
+    "web-url"
+   ],
+   "description": "a URL on the public host"
+  },
+  "probe-report": {
+   "kind": "stdout",
+   "description": "what url-probe found (one JSON line)"
+  }
+ },
+ "environments": {
+  "builder": {
+   "provides": [
+    "git",
+    "python3"
+   ],
+   "source": "declared: a build container that cannot open ports a browser could reach"
+  },
+  "workstation": {
+   "probe": [
+    "git",
+    "loopback",
+    "python3"
+   ],
+   "source": "probed on this machine when the ontology is built"
+  }
+ },
+ "operations": [
+  {
+   "id": "notes2site.build",
+   "skill": "notes2site",
+   "entry": "build.py",
+   "argv": [
+    "{python}",
+    "{skill_dir}/build.py",
+    "{in:notes-md}",
+    "{out:site}"
+   ],
+   "inputs": [
+    "notes-md"
+   ],
+   "outputs": [
+    "site"
+   ],
+   "requires": [
+    "python3"
+   ],
+   "check": false,
+   "success": [
+    0
+   ],
+   "doc": "notes2site/SKILL.md lines 8, 11"
+  },
+  {
+   "id": "site-lint.check",
+   "skill": "site-lint",
+   "entry": "lint.py",
+   "argv": [
+    "{python}",
+    "{skill_dir}/lint.py",
+    "{in:static-site}"
+   ],
+   "inputs": [
+    "static-site"
+   ],
+   "outputs": [
+    "lint-report"
+   ],
+   "requires": [
+    "python3"
+   ],
+   "check": true,
+   "success": [
+    0
+   ],
+   "doc": "site-lint/SKILL.md lines 8, 10"
+  },
+  {
+   "id": "builtin.serve-local",
+   "skill": "builtin",
+   "argv": [
+    "{python}",
+    "-m",
+    "http.server",
+    "{port}",
+    "--bind",
+    "127.0.0.1"
+   ],
+   "cwd": "{in:static-site}",
+   "inputs": [
+    "static-site"
+   ],
+   "outputs": [
+    "local-url"
+   ],
+   "requires": [
+    "loopback",
+    "python3"
+   ],
+   "check": false,
+   "success": [
+    0
+   ],
+   "service": true,
+   "value": "http://127.0.0.1:{port}/",
+   "doc": "Python's http.server serves the folder it runs in; started in the background and stopped when the chain ends"
+  },
+  {
+   "id": "url-probe.check",
+   "skill": "url-probe",
+   "entry": "probe.py",
+   "argv": [
+    "{python}",
+    "{skill_dir}/probe.py",
+    "{in:web-url}"
+   ],
+   "inputs": [
+    "web-url"
+   ],
+   "outputs": [
+    "probe-report"
+   ],
+   "requires": [
+    "loopback",
+    "python3"
+   ],
+   "check": true,
+   "success": [
+    0
+   ],
+   "doc": "url-probe/SKILL.md lines 8, 10"
+  },
+  {
+   "id": "site-publish.publish",
+   "skill": "site-publish",
+   "entry": "SKILL.md",
+   "argv": [],
+   "params": [
+    "target"
+   ],
+   "inputs": [
+    "static-site"
+   ],
+   "outputs": [
+    "public-url"
+   ],
+   "requires": [
+    "git"
+   ],
+   "check": false,
+   "success": [
+    0
+   ],
+   "manual": "the owner copies the site to the public host under TARGET",
+   "doc": "site-publish/SKILL.md lines 8"
+  },
+  {
+   "id": "handoff.handoff",
+   "skill": "handoff",
+   "entry": "SKILL.md",
+   "argv": [],
+   "inputs": [],
+   "outputs": [],
+   "requires": [
+    "git"
+   ],
+   "check": false,
+   "success": [
+    0
+   ],
+   "env_after": "workstation",
+   "manual": "commit the files, push the branch and go on in a session on the workstation",
+   "doc": "handoff/SKILL.md lines 10, 13"
+  }
+ ],
+ "tasks": {
+  "notes-site-builder": {
+   "start": [
+    "notes-md"
+   ],
+   "goal": [
+    {
+     "type": "lint-report",
+     "of": "notes-md"
+    },
+    {
+     "type": "probe-report",
+     "of": "notes-md"
+    }
+   ],
+   "env": "builder",
+   "description": "Turn notes into a site that passes the lint and answers in a browser, starting in a build container"
+  },
+  "notes-site-workstation": {
+   "start": [
+    "notes-md"
+   ],
+   "goal": [
+    {
+     "type": "lint-report",
+     "of": "notes-md"
+    },
+    {
+     "type": "probe-report",
+     "of": "notes-md"
+    }
+   ],
+   "env": "workstation",
+   "description": "The same, starting on the workstation"
+  }
+ }
+}
