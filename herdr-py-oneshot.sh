@@ -797,7 +797,7 @@ give the daemon its URL. What the launcher has to provide:
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 638 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 639 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # the sandbox in real containers when docker answers
 ```
 
@@ -1660,7 +1660,7 @@ LjE4LjMyIOmAmumBju+8m+WFtuS7lueJiOacrOWFiOi3kSBgY2hlY2tfb3BlbmNvZGUucHlgIHwK
 fCDkvaDopoHnmoTpmpTpm6IgfCDnrZbnlaXmsbrlrpogYWdlbnQg6IO95Z+36KGM5LuA6bq877yb
 T3BlbkNvZGUg6LeR5Zyo5ZOq6KOh77yI5a655Zmo5oiW6YCZ5Y+w5qmf5Zmo77yJ5rG65a6a6KKr
 5YWB6Kix55qE5oyH5Luk56Kw5b6X5Yiw5LuA6bq8IHwKCiMjIOa4rOippgoKYGBgYmFzaApweXRo
-b24zIC1tIHVuaXR0ZXN0IGRpc2NvdmVyIC1zIHRlc3RzICAgICAgICAjIDYzOCDpoIXvvIznlKjl
+b24zIC1tIHVuaXR0ZXN0IGRpc2NvdmVyIC1zIHRlc3RzICAgICAgICAjIDYzOSDpoIXvvIznlKjl
 gYfnmoQgT3BlbkNvZGUg5Ly65pyN5Zmo5ZKM5YGH55qEIENvZGV444CBQ2xhdWRlIENvZGUgQ0xJ
 77yM5LiN6ZyA6KaB5qih5Z6LCkhFUkRSX1BZX1RFU1RfSU1BR0U9cHl0aG9uOjMtc2xpbSBweXRo
 b24zIC1tIHVuaXR0ZXN0IGRpc2NvdmVyIC1zIHRlc3RzIC1wICd0ZXN0X3NhbmRib3gucHknICAj
@@ -2702,7 +2702,11 @@ The design follows the Palantir Foundry Ontology: object types, link types, inte
 criteria, and an action log (see [Palantir mapping](#palantir-mapping)). Standard library only, Python 3.6 and later.
 
 The skills in this folder are a demonstration: they turn a notes file into a one-page site, lint it, serve it, and
-probe its URL. Replace them with your own skills and catalog.
+probe its URL. Replace them with your own skills and catalog (see [Customizing](#customizing)).
+
+**Teaching another agent:** [`SKILL.md`](SKILL.md) is a skill an agent can load. It teaches the principles behind
+the design and the phases to build an ontology engine and catalog for another project, each with the tests that
+accept it, plus the pitfalls that happened. Link this folder as `build-ontology` into the agent's skills folder.
 
 ## Quick start
 
@@ -2897,6 +2901,34 @@ One action, in order:
 7. Commit objects, links and the log entry, which keeps every edit's value before and after; an unexpected error rolls
    everything back.
 
+## Customizing
+
+To build an ontology for your own skills, keep the engine and replace the catalog and the skill folder:
+
+```
+python3 -m herdr_py.ontology pin   --catalog my/catalog.json --lib my/skills     # record each skill's md5
+python3 -m herdr_py.ontology build --db my.db --catalog my/catalog.json --lib my/skills
+python3 -m herdr_py.ontology find  --db my.db --task my-task
+```
+
+- The catalog needs all of these keys: `declared_against`, `conditions`, `interfaces`, `artifact_types`,
+  `environments`, `operations`, `tasks` (an empty object is fine). A missing key stops the build.
+- The skill folders are needed, not only the catalog: `build` checks each entry point exists and compares each skill's
+  md5 with `declared_against`; `run` executes the skills' own scripts.
+- Without `pin`, every operation is refused ("checked against skill md5 n/a"): nobody has confirmed the declarations
+  match the skills yet.
+
+What the catalog can change, and what needs code:
+
+| Change | Where |
+| --- | --- |
+| Skills, operations, commands, success codes, parameters | catalog |
+| Artifact types, interfaces, conditions, environments, tasks | catalog |
+| A condition the probe can test (other than python3, python310, loopback, chrome, node22, git, tailscale, docker) | `_probe` in `ontology.py`, or declare it in an environment's `provides` |
+| A new artifact kind, placeholder, object type, link type or action | `ontology.py` |
+
+[`SKILL.md`](SKILL.md) walks through building a new ontology from an empty folder.
+
 ## Functions
 
 - **check_chain** (the criteria of proposeChain): step by step, the operation exists, its skill is current, no
@@ -2933,8 +2965,8 @@ One action, in order:
 
 | What | Result | Where |
 | --- | --- | --- |
-| Tests | 41, on Python 3.6 (UBI 8.10) and current Python 3 | tests/test_ontology.py |
-| Mutation check | 39 mutants of `ontology.py`, 36 caught; the 3 left change no behaviour (equivalent) | run with a throwaway copy, one edit at a time |
+| Tests | 42, on Python 3.6 (UBI 8.10) and current Python 3 | tests/test_ontology.py |
+| Mutation check | 40 mutants of `ontology.py`, 37 caught; the 3 left change no behaviour (equivalent) | run with a throwaway copy, one edit at a time |
 | The example chain | runs for real: build, lint, serve, probe (HTTP 200) | `test_the_example_chain_runs_for_real` |
 | Broken chains | 8 kinds refused before running, plus a missing parameter and a changed skill | `CheckChain`, `CatalogMatchesSkills` |
 
@@ -2963,6 +2995,235 @@ descriptions. That needs model calls.
 | Chains and runs are recorded | decisions and their outcomes are kept in the ontology ([why ontology](https://www.palantir.com/docs/foundry/ontology/why-ontology/)) |
 | Actions as tools for agents | "actions can be automatically surfaced as tools for all types of agents" ([why ontology](https://www.palantir.com/docs/foundry/ontology/why-ontology/)) |
 | Not implemented: revert | "can only be reverted if the action is the most recent edit to an object" ([action reverts](https://www.palantir.com/docs/foundry/action-types/action-reverts/)) |
+HERDR_PY_EOF
+cat > examples/ontology/SKILL.md <<'HERDR_PY_EOF'
+---
+name: build-ontology
+description: Teach an agent to build a skill ontology - a typed catalog of what each skill eats, makes and needs, an engine whose only writes are actions with submission criteria and an action log, and checks that refuse a broken chain of skills before it runs. Use when agents must chain skills for tasks no single skill covers, when asked to build or extend an ontology, or when a rule must be enforced by code instead of remembered.
+---
+
+# Build a skill ontology
+
+You will build three things and prove them:
+
+1. an **engine**: one Python file, standard library only;
+2. a **catalog**: one JSON file that declares the skills;
+3. **tests** that show the engine refuses everything it must refuse.
+
+Reference implementation: `herdr_py/ontology.py` (919 lines) and `tests/test_ontology.py` (42 tests). Example catalog
+and five demonstration skills (three with scripts): `catalog.json` and `skills/` next to this file. Read this file first. Open the
+reference only when a step tells you to, and use it to compare, not to copy blindly: your domain may need other types.
+
+## The spirit: eight principles
+
+Each principle prevents a failure that really happened while the reference was built. If you remember only this
+section, remember it.
+
+1. **A rule in code holds; a rule in memory does not.** The agent that built the reference had "numbers must come from
+   programs" in its own notes and still typed four wrong numbers by hand in one day. On the same day a commit hook that
+   enforced a different rule caught that agent every time. Put each rule you care about into a submission criterion or
+   a check, never only into a prompt.
+2. **Describe, check, record; let the agent compose; let an exit code decide.** The ontology says how skills connect
+   and refuses wrong chains. The agent picks the chain. Success is the exit code of the chain's last step, a check.
+   The agent that ran a chain never reports its result: a checker's exit code 2 means "could not check", and an agent
+   will happily call that "no problems".
+3. **Define before you build.** Write what the ontology must answer and how you will judge it before you choose any
+   type. Otherwise the types follow the data you happen to have, not the questions.
+4. **One way to write: actions.** An action takes parameters, checks its submission criteria, turns its rule into
+   edits, and commits them in one transaction with a log entry that keeps every value before and after. Replaying the
+   log must give the current state; anything written another way shows up as a difference.
+5. **Model the world, not the data.** One type stands for one kind of thing. An entity and an observation of it are
+   different types (a run is not a field of its chain). Every link answers one question you can say in a sentence.
+   Counts are computed, never stored.
+6. **Types are not enough; record where things came from.** A search once made a valid chain that probed the wrong
+   web page: every type matched, the subject did not. Each artifact carries the types it was made from, and a goal
+   names its source ("a probe report *from these notes*").
+7. **Some things do not travel.** A URL of a server started in a container is gone after you hand the work to another
+   machine; files in git are not. Give every artifact type a kind (file, dir, stdout, value) and drop values when the
+   chain changes environment.
+8. **Check your checks.** For every rule, write a test that fails when the rule is removed, then remove each rule one
+   at a time (a mutation check) and see the tests fail. A check that cannot fail proves nothing. The mutation check of
+   the reference found a search bug that every test had missed.
+
+## The operation
+
+Do the phases in order. Each ends with something you can run; do not start the next phase until it passes.
+
+### Phase 0 - Define (no code)
+
+- Write one paragraph: the question the ontology answers, who composes chains, and how success is decided.
+- Write two or three predictions that could turn out false, each with how you will test it. Examples: "every broken
+  chain is refused before it runs and no good chain is refused"; "the catalog matches the skills as shipped".
+- Inventory the skills. For every entry point, read its SKILL.md and write down: the command, what it reads, what it
+  writes, what it needs from the machine (a browser, a free port, git), which exit codes mean success, and the line
+  where the SKILL.md says so.
+
+Done when: the paragraph, the predictions and the inventory exist as a file.
+
+### Phase 1 - Model the types (the semantic layer)
+
+- Start from the reference's nine object types: Skill, Operation (one entry point of a skill), ArtifactType, Interface,
+  Condition, Environment, Task, Chain, ChainRun. Add a type only for something none of them stands for.
+- For each type write its key, its required properties, and the single action allowed to write it.
+- For each link type write the question it answers. Many-to-many links go in a links table; a one-to-many link is a
+  foreign-key property on the "many" side, checked on every write. A chain's step order is a property: links have no
+  order.
+- Give each artifact type a kind: `file`, `dir`, `stdout` (a command's output saved to a file) or `value`.
+
+Done when: the three tables (object types, link types, artifact kinds) are written down.
+
+### Phase 2 - The engine core (the kinetic layer)
+
+Five tables:
+
+```sql
+objects(type, pk, props JSON, PRIMARY KEY(type, pk))
+links(link, src, dst, PRIMARY KEY(link, src, dst))
+action_log(id, action, version, actor, params, started, committed, edits)   -- edits keep before and after
+log_touches(log_id, type, pk)                                                 -- which objects an action changed
+rejected(id, action, version, actor, params, t, reasons)
+```
+
+`act(conn, action, params, actor)` is the only function that writes:
+
+1. `BEGIN IMMEDIATE`: one write lock, so the criteria see the state the edits apply to.
+2. Refuse if the actor may not do this action (agents: `agent:...`; programs: `program:...`; the owner).
+3. Run the submission criteria; collect every reason, not just the first.
+4. Run the rule inside a `SAVEPOINT`; refuse the whole action if any edit has an undefined property, misses a required
+   one, or points a foreign key at nothing.
+5. Refused: roll back to the savepoint and insert only the rejected row with its reasons.
+6. Nothing changed: write no log entry, so building twice adds nothing.
+7. Commit objects, links and the log entry together; on any unexpected error, roll everything back and raise.
+
+`verify_log(conn)` replays the log onto an empty state and returns every difference from the current state.
+
+Done when these tests pass: an action writes its object and log entry together; a refused action writes only the
+rejection; a bad edit rolls back the action's earlier edits; an unexpected error rolls back and is raised; a foreign key
+must point at an existing object; an undefined property is refused; a no-op is not logged; `verify_log` finds a direct
+`UPDATE` and a direct `INSERT`; an agent cannot register operations or record runs.
+
+### Phase 3 - Catalog and build
+
+The catalog needs all of these keys: `declared_against`, `conditions`, `interfaces`, `artifact_types`, `environments`,
+`operations`, `tasks`. A missing key stops the build.
+
+- One operation per entry point. Its fields are listed in `README.md` ("Operation declarations"). The command is an
+  argv list, never a shell string. Placeholders: `{in:TYPE}`, `{out:TYPE}`, `{param:NAME}`, `{skill_dir}`,
+  `{lib_root}`, `{port}`, `{home}`, `{python}`.
+- `declared_against` holds each skill's md5 at the moment you checked its declarations. When a skill changes, its
+  operations turn stale and the chains using them need a recheck, in the same transaction. Check the declarations
+  again, then run `pin`.
+- An environment either declares its conditions (`"provides"`) or has them probed on this machine (`"probe"`). The
+  probe must never assume a condition it cannot test.
+- `build` registers everything through actions and stores the skill library as an absolute path.
+
+Done when: `build` reports no refused submission; building again writes nothing; a declaration checked against an older
+skill is refused; a changed skill marks its operations stale and its chains for a recheck; a relative library path still
+runs from another folder.
+
+### Phase 4 - The functions
+
+- **Applying an operation** (`_step`): bind each input to the artifact made last that fits it (an interface counts);
+  check every required condition against the current environment; record each output's origin as the union of its
+  inputs' origins; when the operation moves the chain to another environment, drop every `value` artifact.
+- **check_chain**: apply the steps in order and report, per step, an unknown operation, a stale one, a parameter it does
+  not take (and, for a proposal, a missing one), an input nobody made, or a missing condition. Then report every goal
+  not made from its source, and a last step that is not a check. An empty list means it passes. This function is also
+  the submission criterion of `proposeChain`, so there is one definition of a valid chain, not two.
+- **find_chains**: breadth-first, level by level, keeping only the shortest chains. Key a state by its artifacts (type
+  and origin) and its environment. When several paths reach the same state in one level, keep the one with the fewest
+  steps that need a person. Count a set of operations once and order it to hand off as late as possible and to check
+  as early as possible. Rank chains with fewer manual steps first, check each again, and return at most three.
+- **compile_script**: refuse a chain that fails the check; build argv lists only from the declarations; accept a
+  parameter only if it is one line that does not start with `-`; pass each step's output paths to the next step.
+- **run_script / run_chain**: propose, compile, run, record. Run services in the background and stop them when the
+  chain ends; stop at a step that needs a person or at an exit code that is not a success code. The program records
+  the run; the agent cannot.
+
+Done when: every good chain passes (include one with two artifacts of the same interface, so "the one made last"
+matters); each broken chain is refused with its own reason (wrong order, missing producer, missing condition, a value
+carried across a handoff, a report about the wrong source, a last step that is not a check, an unknown operation, an
+unknown parameter, a missing parameter); every chain `find_chains` returns passes the check and has no step that can be
+dropped; a chain with a manual step whose name sorts first still ranks after the automatic one; parameters cannot become
+options; a real chain runs end to end.
+
+### Phase 5 - Prove it
+
+- Run the whole suite on the oldest Python you support. The reference supports Python 3.6: no
+  `from __future__ import annotations`, no `capture_output` or `text=` in `subprocess.run`, and `http.server` has no
+  `--directory` (run it with `cwd` instead).
+- Mutation check: remove or flip each rule, one at a time, in a throwaway copy, and run the tests. The reference has
+  40 mutants; 37 make a test fail. The other 3 change no behaviour, and the reason is written next to each: a filter
+  repeated by a later check, a state that is already in the seen set, and a value drop that the check has already
+  enforced. Any other survivor is a missing test: write the test, see it fail on the mutant, run the check again.
+- Run one chain for real, on a skill's own example. Then `verify_log` must return nothing, and a rebuild must add no
+  log entry.
+
+### Phase 6 - Give it to agents
+
+- Agents get `find_chains`, `check_chain` and `proposeChain`, acting as `agent:<name>`. They never get
+  `registerOperation` or `recordChainRun`.
+- Read the `rejected` table now and then: the same refusal again and again means a skill's documentation or a
+  declaration is missing something.
+
+## Worked example: a new ontology from nothing
+
+One skill, one task, run from an empty folder (with this repository on `PYTHONPATH`):
+
+```
+my-ontology/skills/word-count/SKILL.md     python3 count.py TEXT  -> prints the word count; exit 0 if any words, 1 if none
+my-ontology/skills/word-count/count.py
+my-ontology/catalog.json:
+{"declared_against": {},
+ "conditions": {"python3": "a Python 3 interpreter"},
+ "interfaces": {},
+ "artifact_types": {"text": {"kind": "file", "ext": ".txt", "description": "a text file"},
+                    "count-report": {"kind": "stdout", "description": "the word count"}},
+ "environments": {"laptop": {"probe": ["python3"], "source": "probed when the ontology is built"}},
+ "operations": [{"id": "word-count.check", "skill": "word-count", "entry": "count.py",
+                 "argv": ["{python}", "{skill_dir}/count.py", "{in:text}"],
+                 "inputs": ["text"], "outputs": ["count-report"], "requires": ["python3"],
+                 "check": true, "success": [0], "doc": "word-count/SKILL.md line 3"}],
+ "tasks": {"count-words": {"start": ["text"], "goal": [{"type": "count-report", "of": "text"}],
+                           "env": "laptop", "description": "count the words of a text"}}}
+```
+
+```
+python3 -m herdr_py.ontology pin   --catalog my-ontology/catalog.json --lib my-ontology/skills
+python3 -m herdr_py.ontology build --db my.db --catalog my-ontology/catalog.json --lib my-ontology/skills
+python3 -m herdr_py.ontology find  --db my.db --task count-words          # [["word-count.check"]]
+python3 -m herdr_py.ontology run   --db my.db --task count-words --steps word-count.check \
+        --start text=hello.txt --work out                                 # succeeded; out/01-count-report.out holds the count
+```
+
+Without `pin`, `build` refuses the operation: "word-count.check was checked against skill md5 n/a, the skill is now
+...: check the declaration again". That is the intended behaviour: nobody has confirmed that the declaration matches
+the skill.
+
+## Pitfalls that happened (symptom, cause, fix)
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| The search returned a chain with a manual step and dropped the automatic one | states were deduplicated by "first path wins", and the manual step's name sorted first | per level, keep the path with the fewest manual steps; test with a manual step whose name sorts first |
+| A valid chain probed the wrong page | goals named only a type | artifacts carry their origin; goals name their source |
+| A chain used a local URL after handing the work to another machine | values were treated like files | drop `value` artifacts when the environment changes |
+| A chain built from a relative library path failed when run | skill folders were stored as given and steps run in another folder | store absolute paths; test from another working folder |
+| A ranking rule could be deleted with no test failing | in the example, alphabetical order happened to agree with the rule | add a case where the two disagree |
+| A privacy scan missed the new files | `git diff HEAD` ignores untracked files | stage first, then scan `git diff --cached` |
+| Tests broke on Python 3.6 | 3.7+ features | see Phase 5 |
+
+## Done means
+
+- [ ] Phase 0 file exists: the question, how success is decided, predictions, the skill inventory.
+- [ ] `build` refuses nothing, and building again writes nothing.
+- [ ] Every broken chain in Phase 4 is refused with its own reason; every good chain passes.
+- [ ] The mutation check leaves only survivors whose reason you have written down.
+- [ ] One chain ran for real; `verify_log` is empty.
+- [ ] The whole suite passes on the oldest Python you support.
+- [ ] Agents can propose chains but cannot record results or change declarations.
+
+Use this folder as a skill: copy or link it as `build-ontology` into your agent's skills folder (for example
+`~/.claude/skills/build-ontology` or `~/.agents/skills/build-ontology`).
 HERDR_PY_EOF
 cat > examples/ontology/catalog.json <<'HERDR_PY_EOF'
 {
@@ -20017,6 +20278,7 @@ def build(conn, catalog=CATALOG, lib=SKILL_LIB, probed=None, actor="program:onto
     when nothing changed. An environment with "probe": [...] gets the conditions this machine has (`probed`, a list,
     replaces the probe in tests). Returns the rejected submissions [(action, name, reasons)]."""
     cat = read_json(catalog)
+    lib = os.path.abspath(lib)                     # stored absolute: steps run in other folders
     rejected = []
 
     def do(name, params):
@@ -33524,6 +33786,18 @@ class RunScript(Base):
         res[1]["exit"] = 0
         self.assertTrue(o.act(self.conn, "recordChainRun", {"chain": cid, "status": "succeeded", "results": res}, "program:run")["ok"])
 
+    def test_a_relative_library_path_still_runs_from_another_folder(self):
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(self.tmp)
+        conn = o.open_db(":memory:")
+        self.addCleanup(conn.close)
+        self.assertEqual(o.build(conn, lib="skills", probed=PROBED), [])
+        self.assertTrue(os.path.isabs(o.View(conn).get("Skill", "notes2site")["dir"]))
+        out = o.run_chain(conn, "notes-site-workstation", steps_of(GOOD[0][1]),
+                          {"notes-md": os.path.join(os.path.dirname(o.CATALOG), "notes.md")}, os.path.join(self.tmp, "rel"))
+        self.assertEqual(out["status"], "succeeded", out["results"])
+
     def test_the_example_chain_runs_for_real(self):
         out = o.run_chain(self.conn, "notes-site-workstation", steps_of(GOOD[0][1]),
                           {"notes-md": os.path.join(os.path.dirname(o.CATALOG), "notes.md")}, os.path.join(self.tmp, "run"),
@@ -37239,8 +37513,8 @@ cat > "$sums" <<'HERDR_PY_EOF'
 5bcfa4072040f3c9296fb2158707d4ee31ba5812d1fc54002c8c963142f4977b  .github/workflows/tests.yml
 60c9bdd905fcf45ac485c680d32e9773962cf061b6f041dcddd033911558a672  .gitignore
 59802752a201a64e0a49a358493da129b95007c88bdafe4c8744e92b2d6691a0  LICENSE
-0313dab9dd45c5556839ff327032defbd509ba4815dffa6e652cfeb707505e18  README.md
-3c6f15355946de8cb2fdfafc9913137a889092fef6e937f3eff7013779aa1050  README.zh-TW.md
+4a5f6dfb76e68012faf4f08126fdcf71c30dc16340c20f8dcc1f5e17361ef5fc  README.md
+fa4d78e66b2dc0e136b1a29d1557cf0606ffd97760c8c64e3a4959bf16af2c4d  README.zh-TW.md
 204a8f05aa212e8c50105ce9b4dca83c16691ea695b2d49181e5a58d0a7d8a98  bench/herdr_compare/herdr_driver.py
 4e712c3712b0c85891a36d06eba9da6ad4104dc853dccd5034827b6801deb2ca  examples/coop/packing_judge.py
 f03ae62e0fd2bacd90423e6238b93862827ddb5cb1423f1e097ba79a5c5d914d  examples/coop/packing_member.py
@@ -37261,7 +37535,8 @@ b78a30c3bb4c860e97172b038e4089fb597f061b9a5747ae93d88c6334aed80f  examples/noteb
 cc4591feb82273c89f6997bc0036ddc375acb980f766ea6bce1308c7edbfe4ca  examples/notebook/report_member.py
 f65d61eb94ef28fc435bfabc0502367947ab07a3380b20930fcdf70a8dd07c18  examples/notebook/report_planner.py
 50bfe7a50db4e83a08169919fc66397d64a8b1414ae585fae7d3869e4d5487dc  examples/notebook/report_task.md
-4c85ba60371c238c8563d09c55984eeaf96afb62d1779c8336d77ed00de0ee45  examples/ontology/README.md
+1d01795870d0a74eae611c3dc770e9bcac371a7d576ed8e02f6e7de0e48b6427  examples/ontology/README.md
+fef9bec8df2f29c12e46c6e69ae2b1c29a6c6e0fbef02ad08231c0d72b6f323c  examples/ontology/SKILL.md
 00ae43e73baff416f77d51a3051ef1f94a3af3f9dcb95b9b576b3fedafce8357  examples/ontology/catalog.json
 1e72316fb37b83bacb135c03b48589f7a52369e1995b1761f332a986450aaa1a  examples/ontology/notes.md
 7bfaeb72b3f4a762105f7d8d49f8b8cb14890ec42ee90e973dbb41e77f840975  examples/ontology/skills/handoff/SKILL.md
@@ -37328,7 +37603,7 @@ f76a0a043bc0290e1c34f703d649673305ace4b86a55c9df15a6bc53cd991cfa  herdr_py/engin
 b4309f92353ea05656156c7df5f1991f4738bd4c058d5b946e6a5a3f78b2858b  herdr_py/members.py
 d87a05b20f604aa7ed8ce287756ea403c121e995a93323931f2241c6d8bc6a5c  herdr_py/notebook.py
 f680988949cc94a9f97c46c324d9bba47d08f7ca7a91252d380a77589f180a23  herdr_py/notebookview.py
-39d119f2e21dc3d9002e797854380972c5df70bf213defcf307958ce261ef338  herdr_py/ontology.py
+ec3228c74e7bb63090abbcd748d68cb22daac6578eae2a811870e3db12416f06  herdr_py/ontology.py
 b2d7f0de434cbd43872f6c954bf814d4b55184d14977e8777da43d1a83b6524e  herdr_py/opencode.py
 129f87320f3c8da3a1ccac241c422e265ecd99cb254b489d1629430660cc5b66  herdr_py/organize.py
 b0d60369df166859b7f3c1250be392b9cc59b78d2a1f72d203b17bdcef010d75  herdr_py/policy.py
@@ -37415,7 +37690,7 @@ ef3e8a934c3205c95bb0f839721d15e1380bfd16e10f9bfe8c6859fa07b255b1  tests/test_exa
 88478892eb9ca74e5af8b3ed0a2d47c2aa5194990e334437a6cae15e1b2ea8d0  tests/test_members.py
 8bf44dc53be401bed122ce2c9015ab389cf87874c95a5d5e575ba5c5c909971c  tests/test_notebook.py
 1cb320f33baff47834a19a8c4f46a6ed0be8c033c84b145d6f1af3b1b4b92f06  tests/test_oneshot.py
-ff6353cf5c9081ad2a48ab127126ad1275339d81d1b148598f55c3e302be57b4  tests/test_ontology.py
+56cc0f02208882e7a458f2fa4af6f26b3413dcb010c0b26ca170d56ee8a9c91a  tests/test_ontology.py
 f6e4daa3c67b08d75136853634e00cd250981b2ddac8656107c0a83abf9c5832  tests/test_opencode_config.py
 6f6e39586f447331a8eeae14fb2bc2156c24678bf8a8d596fdaa9a5d02db4a4a  tests/test_organize.py
 145b4cccb7a47eae3a744bc6d8edc4ab6d2fef00b3be3f7773ed6f4777595c80  tests/test_rundiag.py
@@ -37436,7 +37711,7 @@ HERDR_PY_EOF
 if command -v sha256sum >/dev/null 2>&1; then check="sha256sum -c"; else check="shasum -a 256 -c"; fi
 if $check "$sums" > "$sums.out" 2>/dev/null; then
   rm -f "$sums" "$sums.out"
-  echo "herdr-py: 196 files written to $(pwd); every file's sha256 matches the original"
+  echo "herdr-py: 197 files written to $(pwd); every file's sha256 matches the original"
 else
   grep -v ': OK$' "$sums.out" >&2 || echo "herdr-py: the sha256 check could not run" >&2
   rm -f "$sums" "$sums.out"

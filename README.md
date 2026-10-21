@@ -687,7 +687,7 @@ give the daemon its URL. What the launcher has to provide:
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests        # 638 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
+python3 -m unittest discover -s tests        # 639 tests; fake OpenCode server, fake Codex and Claude Code CLIs, no model needed
 HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # the sandbox in real containers when docker answers
 ```
 

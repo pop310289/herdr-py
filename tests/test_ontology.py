@@ -371,6 +371,18 @@ class RunScript(Base):
         res[1]["exit"] = 0
         self.assertTrue(o.act(self.conn, "recordChainRun", {"chain": cid, "status": "succeeded", "results": res}, "program:run")["ok"])
 
+    def test_a_relative_library_path_still_runs_from_another_folder(self):
+        here = os.getcwd()
+        self.addCleanup(os.chdir, here)
+        os.chdir(self.tmp)
+        conn = o.open_db(":memory:")
+        self.addCleanup(conn.close)
+        self.assertEqual(o.build(conn, lib="skills", probed=PROBED), [])
+        self.assertTrue(os.path.isabs(o.View(conn).get("Skill", "notes2site")["dir"]))
+        out = o.run_chain(conn, "notes-site-workstation", steps_of(GOOD[0][1]),
+                          {"notes-md": os.path.join(os.path.dirname(o.CATALOG), "notes.md")}, os.path.join(self.tmp, "rel"))
+        self.assertEqual(out["status"], "succeeded", out["results"])
+
     def test_the_example_chain_runs_for_real(self):
         out = o.run_chain(self.conn, "notes-site-workstation", steps_of(GOOD[0][1]),
                           {"notes-md": os.path.join(os.path.dirname(o.CATALOG), "notes.md")}, os.path.join(self.tmp, "run"),

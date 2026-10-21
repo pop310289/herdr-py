@@ -350,7 +350,7 @@ herdr-py 不會自己啟動 OpenCode：用你自己的 launcher 啟動（容器�
 ## 測試
 
 ```bash
-python3 -m unittest discover -s tests        # 638 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
+python3 -m unittest discover -s tests        # 639 項，用假的 OpenCode 伺服器和假的 Codex、Claude Code CLI，不需要模型
 HERDR_PY_TEST_IMAGE=python:3-slim python3 -m unittest discover -s tests -p 'test_sandbox.py'  # docker 能用時，沙箱在真的容器裡測
 ```
 

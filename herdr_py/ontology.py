@@ -811,6 +811,7 @@ def build(conn, catalog=CATALOG, lib=SKILL_LIB, probed=None, actor="program:onto
     when nothing changed. An environment with "probe": [...] gets the conditions this machine has (`probed`, a list,
     replaces the probe in tests). Returns the rejected submissions [(action, name, reasons)]."""
     cat = read_json(catalog)
+    lib = os.path.abspath(lib)                     # stored absolute: steps run in other folders
     rejected = []
 
     def do(name, params):

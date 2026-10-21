@@ -9,7 +9,11 @@ The design follows the Palantir Foundry Ontology: object types, link types, inte
 criteria, and an action log (see [Palantir mapping](#palantir-mapping)). Standard library only, Python 3.6 and later.
 
 The skills in this folder are a demonstration: they turn a notes file into a one-page site, lint it, serve it, and
-probe its URL. Replace them with your own skills and catalog.
+probe its URL. Replace them with your own skills and catalog (see [Customizing](#customizing)).
+
+**Teaching another agent:** [`SKILL.md`](SKILL.md) is a skill an agent can load. It teaches the principles behind
+the design and the phases to build an ontology engine and catalog for another project, each with the tests that
+accept it, plus the pitfalls that happened. Link this folder as `build-ontology` into the agent's skills folder.
 
 ## Quick start
 
@@ -204,6 +208,34 @@ One action, in order:
 7. Commit objects, links and the log entry, which keeps every edit's value before and after; an unexpected error rolls
    everything back.
 
+## Customizing
+
+To build an ontology for your own skills, keep the engine and replace the catalog and the skill folder:
+
+```
+python3 -m herdr_py.ontology pin   --catalog my/catalog.json --lib my/skills     # record each skill's md5
+python3 -m herdr_py.ontology build --db my.db --catalog my/catalog.json --lib my/skills
+python3 -m herdr_py.ontology find  --db my.db --task my-task
+```
+
+- The catalog needs all of these keys: `declared_against`, `conditions`, `interfaces`, `artifact_types`,
+  `environments`, `operations`, `tasks` (an empty object is fine). A missing key stops the build.
+- The skill folders are needed, not only the catalog: `build` checks each entry point exists and compares each skill's
+  md5 with `declared_against`; `run` executes the skills' own scripts.
+- Without `pin`, every operation is refused ("checked against skill md5 n/a"): nobody has confirmed the declarations
+  match the skills yet.
+
+What the catalog can change, and what needs code:
+
+| Change | Where |
+| --- | --- |
+| Skills, operations, commands, success codes, parameters | catalog |
+| Artifact types, interfaces, conditions, environments, tasks | catalog |
+| A condition the probe can test (other than python3, python310, loopback, chrome, node22, git, tailscale, docker) | `_probe` in `ontology.py`, or declare it in an environment's `provides` |
+| A new artifact kind, placeholder, object type, link type or action | `ontology.py` |
+
+[`SKILL.md`](SKILL.md) walks through building a new ontology from an empty folder.
+
 ## Functions
 
 - **check_chain** (the criteria of proposeChain): step by step, the operation exists, its skill is current, no
@@ -240,8 +272,8 @@ One action, in order:
 
 | What | Result | Where |
 | --- | --- | --- |
-| Tests | 41, on Python 3.6 (UBI 8.10) and current Python 3 | tests/test_ontology.py |
-| Mutation check | 39 mutants of `ontology.py`, 36 caught; the 3 left change no behaviour (equivalent) | run with a throwaway copy, one edit at a time |
+| Tests | 42, on Python 3.6 (UBI 8.10) and current Python 3 | tests/test_ontology.py |
+| Mutation check | 40 mutants of `ontology.py`, 37 caught; the 3 left change no behaviour (equivalent) | run with a throwaway copy, one edit at a time |
 | The example chain | runs for real: build, lint, serve, probe (HTTP 200) | `test_the_example_chain_runs_for_real` |
 | Broken chains | 8 kinds refused before running, plus a missing parameter and a changed skill | `CheckChain`, `CatalogMatchesSkills` |
 
